@@ -136,7 +136,6 @@ Result<GainMapMetadata> gain_map_metadata_from_c(
   metadata.version.minimum_version = input.minimum_version;
   metadata.version.writer_version = input.writer_version;
   metadata.channel_count = input.channel_count;
-  metadata.is_multichannel = input.channel_count == 3;
   metadata.use_base_colour_space =
       input.use_base_colour_space != 0;
   metadata.base_hdr_headroom = {
