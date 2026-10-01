@@ -35,6 +35,8 @@ set(libheif_headers
 set(libheif_sources
         bitstream.cc
         bitstream.h
+        gain_map_metadata.cc
+        gain_map_metadata.h
         box.cc
         box.h
         error.cc
