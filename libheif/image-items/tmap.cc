@@ -158,6 +158,17 @@ Error validate_tone_map_inputs(
     };
   }
 
+  const int gain_luma_bits = gain.get_luma_bits_per_pixel();
+  const int gain_chroma_bits = gain.get_chroma_bits_per_pixel();
+  if ((gain_luma_bits > 0 && gain_luma_bits < 8) ||
+      (gain_chroma_bits > 0 && gain_chroma_bits < 8)) {
+    return Error{
+        heif_error_Invalid_input,
+        heif_suberror_Unspecified,
+        "ISO 21496-1 gain-map components must use at least 8 bits"
+    };
+  }
+
   const nclx_profile gain_nclx =
       gain.get_color_profile_nclx();
   if (gain_nclx.get_colour_primaries() !=
