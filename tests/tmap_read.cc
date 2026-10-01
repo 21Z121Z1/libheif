@@ -259,6 +259,168 @@ heif_image_handle* open_tmap(
   return tmap;
 }
 
+
+
+std::vector<uint8_t> build_two_tmap_file(
+    uint16_t second_base_id)
+{
+  constexpr uint32_t width = 2;
+  constexpr uint32_t height = 2;
+
+  const std::vector<uint8_t> tmap_payload =
+      make_tone_map_payload();
+
+  std::vector<uint8_t> ftyp_payload;
+  append_fourcc(ftyp_payload, "mif1");
+  put_u32_be(ftyp_payload, 0);
+  append_fourcc(ftyp_payload, "mif1");
+  append_fourcc(ftyp_payload, "tmap");
+  auto ftyp = make_box("ftyp", ftyp_payload);
+
+  std::vector<uint8_t> hdlr_payload;
+  put_u32_be(hdlr_payload, 0);
+  append_fourcc(hdlr_payload, "pict");
+  put_u32_be(hdlr_payload, 0);
+  put_u32_be(hdlr_payload, 0);
+  put_u32_be(hdlr_payload, 0);
+  hdlr_payload.push_back(0);
+  auto hdlr = make_box("hdlr", hdlr_payload, true);
+
+  std::vector<uint8_t> pitm_payload;
+  put_u16_be(pitm_payload, 1);
+  auto pitm = make_box("pitm", pitm_payload, true);
+
+  std::vector<uint8_t> iinf_payload;
+  put_u16_be(iinf_payload, 5);
+  for (uint16_t id = 1; id <= 5; ++id) {
+    std::vector<uint8_t> infe;
+    put_u16_be(infe, id);
+    put_u16_be(infe, 0);
+    const bool is_tmap = id == 3 || id == 5;
+    append_fourcc(infe, is_tmap ? "tmap" : "mski");
+    infe.push_back(0);
+    const bool hidden_gain = id == 2 || id == 4;
+    append(iinf_payload,
+           make_box("infe", infe, true, 2,
+                    hidden_gain ? 1 : 0));
+  }
+  auto iinf = make_box("iinf", iinf_payload, true);
+
+  std::vector<uint8_t> ispe_payload;
+  put_u32_be(ispe_payload, width);
+  put_u32_be(ispe_payload, height);
+  auto ispe = make_box("ispe", ispe_payload, true);
+  auto mskC = make_box(
+      "mskC", std::vector<uint8_t>{8}, true);
+  auto base_colr = make_nclx(1, 13, 1, true);
+  auto gain_colr = make_nclx(2, 2, 0, true);
+  auto tmap_colr = make_nclx(9, 16, 9, true);
+
+  std::vector<uint8_t> ipco_payload;
+  append(ipco_payload, ispe);      // 1
+  append(ipco_payload, mskC);      // 2
+  append(ipco_payload, base_colr); // 3
+  append(ipco_payload, gain_colr); // 4
+  append(ipco_payload, tmap_colr); // 5
+  auto ipco = make_box("ipco", ipco_payload);
+
+  std::vector<uint8_t> ipma_payload;
+  put_u32_be(ipma_payload, 5);
+  for (uint16_t id = 1; id <= 5; ++id) {
+    put_u16_be(ipma_payload, id);
+    if (id == 1) {
+      ipma_payload.push_back(3);
+      ipma_payload.push_back(0x80 | 1);
+      ipma_payload.push_back(0x80 | 2);
+      ipma_payload.push_back(3);
+    }
+    else if (id == 2 || id == 4) {
+      ipma_payload.push_back(3);
+      ipma_payload.push_back(0x80 | 1);
+      ipma_payload.push_back(0x80 | 2);
+      ipma_payload.push_back(4);
+    }
+    else {
+      ipma_payload.push_back(2);
+      ipma_payload.push_back(0x80 | 1);
+      ipma_payload.push_back(5);
+    }
+  }
+  auto ipma = make_box("ipma", ipma_payload, true);
+
+  std::vector<uint8_t> iprp_payload;
+  append(iprp_payload, ipco);
+  append(iprp_payload, ipma);
+  auto iprp = make_box("iprp", iprp_payload);
+
+  std::vector<uint8_t> idat_payload;
+  std::vector<uint32_t> item_offsets;
+  std::vector<uint32_t> item_lengths;
+  for (uint16_t id = 1; id <= 5; ++id) {
+    item_offsets.push_back(
+        static_cast<uint32_t>(idat_payload.size()));
+    if (id == 3 || id == 5) {
+      item_lengths.push_back(
+          static_cast<uint32_t>(tmap_payload.size()));
+      idat_payload.insert(
+          idat_payload.end(),
+          tmap_payload.begin(), tmap_payload.end());
+    }
+    else {
+      item_lengths.push_back(width * height);
+      idat_payload.insert(
+          idat_payload.end(), width * height, 0x7F);
+    }
+  }
+  auto idat = make_box("idat", idat_payload);
+
+  std::vector<uint8_t> iloc_payload;
+  iloc_payload.push_back((4 << 4) | 4);
+  iloc_payload.push_back(0);
+  put_u16_be(iloc_payload, 5);
+  for (uint16_t id = 1; id <= 5; ++id) {
+    put_u16_be(iloc_payload, id);
+    put_u16_be(iloc_payload, 0x0001);
+    put_u16_be(iloc_payload, 0);
+    put_u16_be(iloc_payload, 1);
+    put_u32_be(iloc_payload, item_offsets[id - 1]);
+    put_u32_be(iloc_payload, item_lengths[id - 1]);
+  }
+  auto iloc = make_box("iloc", iloc_payload, true, 1);
+
+  std::vector<uint8_t> dimg_first;
+  put_u16_be(dimg_first, 3);
+  put_u16_be(dimg_first, 2);
+  put_u16_be(dimg_first, 1);
+  put_u16_be(dimg_first, 2);
+
+  std::vector<uint8_t> dimg_second;
+  put_u16_be(dimg_second, 5);
+  put_u16_be(dimg_second, 2);
+  put_u16_be(dimg_second, second_base_id);
+  put_u16_be(dimg_second, 4);
+
+  std::vector<uint8_t> iref_payload;
+  append(iref_payload, make_box("dimg", dimg_first));
+  append(iref_payload, make_box("dimg", dimg_second));
+  auto iref = make_box("iref", iref_payload, true);
+
+  std::vector<uint8_t> meta_payload;
+  append(meta_payload, hdlr);
+  append(meta_payload, pitm);
+  append(meta_payload, iinf);
+  append(meta_payload, iprp);
+  append(meta_payload, iloc);
+  append(meta_payload, iref);
+  append(meta_payload, idat);
+  auto meta = make_box("meta", meta_payload, true);
+
+  std::vector<uint8_t> file;
+  append(file, ftyp);
+  append(file, meta);
+  return file;
+}
+
 }  // namespace
 
 
@@ -426,5 +588,75 @@ TEST_CASE("tmap decode is explicitly unsupported until reconstruction lands")
   REQUIRE(image == nullptr);
 
   heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+
+TEST_CASE("multiple tmap items can share the same base")
+{
+  std::vector<uint8_t> file = build_two_tmap_file(1);
+
+  heif_context* context = heif_context_alloc();
+  REQUIRE(context != nullptr);
+  REQUIRE(heif_context_read_from_memory(
+              context, file.data(), file.size(), nullptr).code ==
+          heif_error_Ok);
+
+  heif_image_handle* first = nullptr;
+  heif_image_handle* second = nullptr;
+  REQUIRE(heif_context_get_image_handle(
+              context, 3, &first).code == heif_error_Ok);
+  REQUIRE(heif_context_get_image_handle(
+              context, 5, &second).code == heif_error_Ok);
+
+  heif_image_handle* first_base = nullptr;
+  heif_image_handle* second_base = nullptr;
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(
+              first, &first_base).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(
+              second, &second_base).code == heif_error_Ok);
+
+  REQUIRE(heif_image_handle_get_item_id(first_base) == 1);
+  REQUIRE(heif_image_handle_get_item_id(second_base) == 1);
+  REQUIRE(heif_image_handle_get_gain_map_metadata_status(first) ==
+          heif_gain_map_metadata_status_parsed);
+  REQUIRE(heif_image_handle_get_gain_map_metadata_status(second) ==
+          heif_gain_map_metadata_status_parsed);
+
+  heif_image_handle_release(second_base);
+  heif_image_handle_release(first_base);
+  heif_image_handle_release(second);
+  heif_image_handle_release(first);
+  heif_context_free(context);
+}
+
+
+TEST_CASE("tmap input may itself be a derived tmap image")
+{
+  std::vector<uint8_t> file = build_two_tmap_file(3);
+
+  heif_context* context = heif_context_alloc();
+  REQUIRE(context != nullptr);
+  REQUIRE(heif_context_read_from_memory(
+              context, file.data(), file.size(), nullptr).code ==
+          heif_error_Ok);
+
+  heif_image_handle* outer = nullptr;
+  REQUIRE(heif_context_get_image_handle(
+              context, 5, &outer).code == heif_error_Ok);
+
+  heif_image_handle* derived_base = nullptr;
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(
+              outer, &derived_base).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_item_id(derived_base) == 3);
+  REQUIRE(heif_image_handle_is_tone_map_derived_image(
+              derived_base) == 1);
+
+  heif_gain_map_metadata metadata{};
+  REQUIRE(heif_image_handle_get_gain_map_metadata(
+              outer, &metadata).code == heif_error_Ok);
+
+  heif_image_handle_release(derived_base);
+  heif_image_handle_release(outer);
   heif_context_free(context);
 }
