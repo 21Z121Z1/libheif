@@ -43,9 +43,22 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
     return error;
   }
   for (auto channel : image->get_channel_set()) {
+    const uint16_t bits = image->get_bits_per_pixel(channel);
     if (image->get_datatype(channel) != heif_component_datatype_unsigned_integer ||
-        image->get_bits_per_pixel(channel) > 16) {
+        bits > 16) {
       return unsupported("Tone-map inputs require unsigned samples of at most 16 bits");
+    }
+
+    const bool is_gain_colour_component =
+        channel == heif_channel_Y ||
+        channel == heif_channel_Cb ||
+        channel == heif_channel_Cr ||
+        channel == heif_channel_R ||
+        channel == heif_channel_G ||
+        channel == heif_channel_B;
+    if (gain_samples && is_gain_colour_component && bits < 8) {
+      return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
+                   "ISO 21496-1 gain-map components must use at least 8 bits"};
     }
   }
   auto profile = image->get_color_profile_nclx();
