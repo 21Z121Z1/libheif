@@ -250,6 +250,9 @@ double matrix_difference(const GainMapMatrix& a, const GainMapMatrix& b)
 
 Result<GainMapRGB> parse_xyz_tag(const IccView& view, const IccTag& tag)
 {
+  if (!view.bytes) {
+    return malformed_icc();
+  }
   const auto& data = *view.bytes;
   uint32_t type = 0;
   if (tag.size < 20 || !read_u32(data, tag.offset, type) ||
@@ -270,6 +273,9 @@ Result<GainMapRGB> parse_xyz_tag(const IccView& view, const IccTag& tag)
 
 Result<GainMapMatrix> parse_chad_tag(const IccView& view, const IccTag& tag)
 {
+  if (!view.bytes) {
+    return malformed_icc();
+  }
   const auto& data = *view.bytes;
   uint32_t type = 0;
   if (tag.size < 44 || !read_u32(data, tag.offset, type) ||
@@ -292,6 +298,9 @@ Result<GainMapMatrix> parse_chad_tag(const IccView& view, const IccTag& tag)
 
 Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x)
 {
+  if (!view.bytes) {
+    return malformed_icc();
+  }
   const auto& data = *view.bytes;
   uint32_t type = 0;
   if (tag.size < 12 || !read_u32(data, tag.offset, type)) {
@@ -424,6 +433,9 @@ Result<uint16_t> classify_matrix_trc_transfer(const IccView& view,
 
 Result<nclx_profile> nclx_from_cicp(const IccView& view, const IccTag& tag)
 {
+  if (!view.bytes) {
+    return malformed_icc();
+  }
   const auto& data = *view.bytes;
   uint32_t type = 0;
   if (tag.size < 12 || !read_u32(data, tag.offset, type) ||
