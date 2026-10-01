@@ -42,8 +42,9 @@ TEST_CASE("User-provided ISO sample directory interoperability")
     SKIP("Set LIBHEIF_TMAP_INTEROP_DIR to test external HEIC fixtures without redistributing them");
   }
   size_t adaptive_count = 0, pq_count = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-    if (entry.path().extension() != ".heic") {
+  const auto traversal_options = std::filesystem::directory_options::skip_permission_denied;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(directory, traversal_options)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".heic") {
       continue;
     }
     const std::string filename = entry.path().filename().string();
