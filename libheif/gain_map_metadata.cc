@@ -496,9 +496,10 @@ Result<std::vector<uint8_t>> serialize_tone_map_image(
     return gain_map_data.error();
   }
 
-  std::vector<uint8_t> data;
-  data.reserve(1 + gain_map_data->size());
-  data.push_back(0);
-  data.insert(data.end(), gain_map_data->begin(), gain_map_data->end());
+  std::vector<uint8_t> data(gain_map_data->size() + 1);
+  data[0] = 0;
+  for (size_t i = 0; i < gain_map_data->size(); ++i) {
+    data[i + 1] = (*gain_map_data)[i];
+  }
   return data;
 }

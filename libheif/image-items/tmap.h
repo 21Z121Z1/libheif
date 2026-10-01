@@ -25,6 +25,7 @@
 #include "gain_map_metadata.h"
 
 #include <array>
+#include <memory>
 
 
 class ImageItem_tmap final : public ImageItem

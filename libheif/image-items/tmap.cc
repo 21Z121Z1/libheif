@@ -23,6 +23,9 @@
 #include "context.h"
 #include "file.h"
 
+#include <memory>
+#include <vector>
+
 
 ImageItem_tmap::ImageItem_tmap(HeifContext* ctx, heif_item_id id)
     : ImageItem(ctx, id)
