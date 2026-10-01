@@ -70,7 +70,7 @@ heif_error make_tmap_input_handle(
 
   auto input_ids = tmap->get_input_item_ids();
   if (!input_ids) {
-    return input_ids.error_struct(tmap.get());
+    return input_ids.error_struct(tmap_handle->context.get());
   }
 
   auto image = tmap_handle->context->get_image(
@@ -84,7 +84,7 @@ heif_error make_tmap_input_handle(
   }
 
   if (Error error = image->get_item_error()) {
-    return error.error_struct(tmap.get());
+    return error.error_struct(tmap_handle->context.get());
   }
 
   *out_handle = new heif_image_handle;
@@ -209,11 +209,11 @@ heif_error heif_image_handle_get_gain_map_metadata(
       };
     }
     if (parsed.status == ToneMapImageParseStatus::malformed) {
-      return parsed.error.error_struct(item.get());
+      return parsed.error.error_struct(tmap->context.get());
     }
 
     if (Error error = item->validate_tone_map_structure()) {
-      return error.error_struct(item.get());
+      return error.error_struct(tmap->context.get());
     }
 
     const GainMapMetadata& metadata =
