@@ -562,6 +562,7 @@ static bool item_type_is_image(uint32_t item_type, const std::string& content_ty
   return (item_type == fourcc("hvc1") ||
           item_type == fourcc("av01") ||
           item_type == fourcc("grid") ||
+          item_type == fourcc("tmap") ||
           item_type == fourcc("tili") ||
           item_type == fourcc("iden") ||
           item_type == fourcc("iovl") ||

@@ -30,6 +30,7 @@
 #include "grid.h"
 #include "overlay.h"
 #include "iden.h"
+#include "tmap.h"
 #include "tiled.h"
 #include "codecs/decoder.h"
 #include "color-conversion/colorconversion.h"
@@ -206,6 +207,9 @@ std::shared_ptr<ImageItem> ImageItem::alloc_for_infe_box(HeifContext* ctx, const
   }
   else if (item_type == fourcc("iden")) {
     return std::make_shared<ImageItem_iden>(ctx, id);
+  }
+  else if (item_type == fourcc("tmap")) {
+    return std::make_shared<ImageItem_tmap>(ctx, id);
   }
 #if HEIF_ENABLE_EXPERIMENTAL_FEATURES
   else if (item_type == fourcc("tili")) {

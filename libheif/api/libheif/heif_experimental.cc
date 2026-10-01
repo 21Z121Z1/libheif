@@ -23,12 +23,239 @@
 #include "api_structs.h"
 #include "image-items/unc_image.h"
 #include "image-items/tiled.h"
+#include "image-items/tmap.h"
 
 #include <array>
 #include <cstring>
 #include <memory>
 #include <vector>
 #include <limits>
+
+
+
+
+namespace
+{
+
+std::shared_ptr<ImageItem_tmap> get_tmap_item(
+    const heif_image_handle* handle)
+{
+  if (!handle || !handle->image) {
+    return nullptr;
+  }
+
+  return std::dynamic_pointer_cast<ImageItem_tmap>(handle->image);
+}
+
+
+heif_error make_tmap_input_handle(
+    const heif_image_handle* tmap_handle,
+    size_t input_index,
+    heif_image_handle** out_handle)
+{
+  if (!tmap_handle || !out_handle) {
+    return heif_error_null_pointer_argument;
+  }
+
+  *out_handle = nullptr;
+  auto tmap = get_tmap_item(tmap_handle);
+  if (!tmap) {
+    return {
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Image handle is not a tone-map derived image"
+    };
+  }
+
+  auto input_ids = tmap->get_input_item_ids();
+  if (!input_ids) {
+    return input_ids.error_struct(tmap.get());
+  }
+
+  auto image = tmap_handle->context->get_image(
+      (*input_ids)[input_index], true);
+  if (!image) {
+    return {
+        heif_error_Invalid_input,
+        heif_suberror_Nonexisting_item_referenced,
+        "Tone-map input image is unavailable"
+    };
+  }
+
+  if (Error error = image->get_item_error()) {
+    return error.error_struct(tmap.get());
+  }
+
+  *out_handle = new heif_image_handle;
+  (*out_handle)->image = std::move(image);
+  (*out_handle)->context = tmap_handle->context;
+  return heif_error_success;
+}
+
+
+void copy_signed_rational(
+    const GainMapSignedRational32& input,
+    heif_signed_rational32* output)
+{
+  output->numerator = input.numerator;
+  output->denominator = input.denominator;
+}
+
+
+void copy_unsigned_rational(
+    const GainMapUnsignedRational32& input,
+    heif_unsigned_rational32* output)
+{
+  output->numerator = input.numerator;
+  output->denominator = input.denominator;
+}
+
+
+heif_gain_map_metadata_status to_c_status(
+    ToneMapImageParseStatus status)
+{
+  switch (status) {
+    case ToneMapImageParseStatus::parsed:
+      return heif_gain_map_metadata_status_parsed;
+    case ToneMapImageParseStatus::unsupported_tone_map_version:
+      return heif_gain_map_metadata_status_unsupported_tone_map_version;
+    case ToneMapImageParseStatus::unsupported_minimum_version:
+      return heif_gain_map_metadata_status_unsupported_minimum_version;
+    case ToneMapImageParseStatus::malformed:
+      return heif_gain_map_metadata_status_malformed;
+  }
+
+  return heif_gain_map_metadata_status_malformed;
+}
+
+}  // namespace
+
+
+int heif_image_handle_is_tone_map_derived_image(
+    const heif_image_handle* handle)
+{
+  return get_tmap_item(handle) ? 1 : 0;
+}
+
+
+heif_error heif_image_handle_get_tone_map_base_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_base)
+{
+  return exception_guard([&]() -> heif_error {
+    return make_tmap_input_handle(tmap, 0, out_base);
+  });
+}
+
+
+heif_error heif_image_handle_get_tone_map_gain_map_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_gain_map)
+{
+  return exception_guard([&]() -> heif_error {
+    return make_tmap_input_handle(tmap, 1, out_gain_map);
+  });
+}
+
+
+heif_gain_map_metadata_status
+heif_image_handle_get_gain_map_metadata_status(
+    const heif_image_handle* tmap)
+{
+  auto item = get_tmap_item(tmap);
+  if (!item) {
+    return heif_gain_map_metadata_status_not_a_tone_map;
+  }
+
+  return to_c_status(item->read_tone_map_image().status);
+}
+
+
+heif_error heif_image_handle_get_gain_map_metadata(
+    const heif_image_handle* tmap,
+    heif_gain_map_metadata* out_metadata)
+{
+  return exception_guard([&]() -> heif_error {
+    if (!tmap || !out_metadata) {
+      return heif_error_null_pointer_argument;
+    }
+
+    auto item = get_tmap_item(tmap);
+    if (!item) {
+      return {
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Image handle is not a tone-map derived image"
+      };
+    }
+
+    ToneMapImageParseResult parsed =
+        item->read_tone_map_image();
+    if (parsed.status ==
+        ToneMapImageParseStatus::unsupported_tone_map_version) {
+      return {
+          heif_error_Unsupported_feature,
+          heif_suberror_Unsupported_data_version,
+          "Unsupported ToneMapImage version"
+      };
+    }
+    if (parsed.status ==
+        ToneMapImageParseStatus::unsupported_minimum_version) {
+      return {
+          heif_error_Unsupported_feature,
+          heif_suberror_Unsupported_data_version,
+          "Unsupported ISO 21496-1 gain map metadata minimum version"
+      };
+    }
+    if (parsed.status == ToneMapImageParseStatus::malformed) {
+      return parsed.error.error_struct(item.get());
+    }
+
+    if (Error error = item->validate_tone_map_structure()) {
+      return error.error_struct(item.get());
+    }
+
+    const GainMapMetadata& metadata =
+        parsed.tone_map_image->gain_map_metadata;
+
+    *out_metadata = {};
+    out_metadata->struct_version = 1;
+    out_metadata->minimum_version =
+        metadata.version.minimum_version;
+    out_metadata->writer_version =
+        metadata.version.writer_version;
+    out_metadata->channel_count = metadata.channel_count;
+    out_metadata->use_base_colour_space =
+        metadata.use_base_colour_space ? 1 : 0;
+
+    copy_unsigned_rational(
+        metadata.base_hdr_headroom,
+        &out_metadata->base_hdr_headroom);
+    copy_unsigned_rational(
+        metadata.alternate_hdr_headroom,
+        &out_metadata->alternate_hdr_headroom);
+
+    for (uint8_t i = 0; i < metadata.channel_count; ++i) {
+      copy_signed_rational(
+          metadata.channels[i].gain_map_min,
+          &out_metadata->channels[i].gain_map_min);
+      copy_signed_rational(
+          metadata.channels[i].gain_map_max,
+          &out_metadata->channels[i].gain_map_max);
+      copy_unsigned_rational(
+          metadata.channels[i].gamma,
+          &out_metadata->channels[i].gamma);
+      copy_signed_rational(
+          metadata.channels[i].base_offset,
+          &out_metadata->channels[i].base_offset);
+      copy_signed_rational(
+          metadata.channels[i].alternate_offset,
+          &out_metadata->channels[i].alternate_offset);
+    }
+
+    return heif_error_success;
+  });
+}
 
 
 struct heif_property_camera_intrinsic_matrix

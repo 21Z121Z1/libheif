@@ -102,4 +102,38 @@ Error validate_gain_map_metadata(const GainMapMetadata& metadata);
 Result<std::vector<uint8_t>> serialize_gain_map_metadata(
     const GainMapMetadata& metadata);
 
+
+struct ToneMapImage
+{
+  uint8_t version = 0;
+  GainMapMetadata gain_map_metadata;
+};
+
+
+enum class ToneMapImageParseStatus
+{
+  parsed,
+  unsupported_tone_map_version,
+  unsupported_minimum_version,
+  malformed
+};
+
+
+struct ToneMapImageParseResult
+{
+  ToneMapImageParseStatus status =
+      ToneMapImageParseStatus::malformed;
+  uint8_t version = 0;
+  std::optional<ToneMapImage> tone_map_image;
+  Error error;
+  size_t bytes_consumed = 0;
+};
+
+
+ToneMapImageParseResult parse_tone_map_image(
+    std::span<const uint8_t> data);
+
+Result<std::vector<uint8_t>> serialize_tone_map_image(
+    const ToneMapImage& tone_map_image);
+
 #endif

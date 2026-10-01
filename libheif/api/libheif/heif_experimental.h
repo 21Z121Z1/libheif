@@ -35,6 +35,78 @@ extern "C" {
  */
 
 
+
+// --- ISO 21496-1 / HEIF 'tmap' inspection
+
+typedef struct heif_signed_rational32
+{
+  int32_t numerator;
+  uint32_t denominator;
+} heif_signed_rational32;
+
+typedef struct heif_unsigned_rational32
+{
+  uint32_t numerator;
+  uint32_t denominator;
+} heif_unsigned_rational32;
+
+typedef struct heif_gain_map_channel
+{
+  heif_signed_rational32 gain_map_min;
+  heif_signed_rational32 gain_map_max;
+  heif_unsigned_rational32 gamma;
+  heif_signed_rational32 base_offset;
+  heif_signed_rational32 alternate_offset;
+} heif_gain_map_channel;
+
+typedef struct heif_gain_map_metadata
+{
+  uint32_t struct_version;
+
+  uint16_t minimum_version;
+  uint16_t writer_version;
+
+  uint8_t channel_count;
+  uint8_t use_base_colour_space;
+
+  heif_unsigned_rational32 base_hdr_headroom;
+  heif_unsigned_rational32 alternate_hdr_headroom;
+  heif_gain_map_channel channels[3];
+} heif_gain_map_metadata;
+
+typedef enum heif_gain_map_metadata_status
+{
+  heif_gain_map_metadata_status_not_a_tone_map = 0,
+  heif_gain_map_metadata_status_parsed = 1,
+  heif_gain_map_metadata_status_unsupported_tone_map_version = 2,
+  heif_gain_map_metadata_status_unsupported_minimum_version = 3,
+  heif_gain_map_metadata_status_malformed = 4
+} heif_gain_map_metadata_status;
+
+LIBHEIF_API
+int heif_image_handle_is_tone_map_derived_image(
+    const heif_image_handle* handle);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_base_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_base);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_gain_map_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_gain_map);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_gain_map_metadata(
+    const heif_image_handle* tmap,
+    heif_gain_map_metadata* out_metadata);
+
+LIBHEIF_API
+heif_gain_map_metadata_status
+heif_image_handle_get_gain_map_metadata_status(
+    const heif_image_handle* tmap);
+
 /*
 heif_item_property_type_camera_intrinsic_matrix = heif_fourcc('c', 'm', 'i', 'n'),
 heif_item_property_type_camera_extrinsic_matrix = heif_fourcc('c', 'm', 'e', 'x')

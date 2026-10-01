@@ -364,3 +364,87 @@ TEST_CASE("gain map metadata serializer rejects invalid metadata")
   REQUIRE(unsupported.error().sub_error_code ==
           heif_suberror_Unsupported_data_version);
 }
+
+
+TEST_CASE("ToneMapImage version 0 wraps Annex C metadata")
+{
+  std::vector<uint8_t> payload;
+  payload.push_back(0);
+  payload.insert(payload.end(), kMonoGolden.begin(), kMonoGolden.end());
+
+  ToneMapImageParseResult parsed =
+      parse_tone_map_image(payload);
+
+  REQUIRE(parsed.status == ToneMapImageParseStatus::parsed);
+  REQUIRE(parsed.tone_map_image.has_value());
+  REQUIRE(parsed.version == 0);
+  REQUIRE(parsed.bytes_consumed == 62);
+  REQUIRE(parsed.tone_map_image->gain_map_metadata.channel_count == 1);
+
+  auto encoded = serialize_tone_map_image(*parsed.tone_map_image);
+  REQUIRE(encoded);
+  REQUIRE(*encoded == payload);
+}
+
+
+TEST_CASE("ToneMapImage unknown outer version is not processed")
+{
+  std::vector<uint8_t> payload = {1};
+  payload.insert(payload.end(), kMonoGolden.begin(), kMonoGolden.end());
+
+  ToneMapImageParseResult parsed =
+      parse_tone_map_image(payload);
+
+  REQUIRE(parsed.status ==
+          ToneMapImageParseStatus::unsupported_tone_map_version);
+  REQUIRE(!parsed.tone_map_image.has_value());
+  REQUIRE(parsed.bytes_consumed == 1);
+}
+
+
+TEST_CASE("ToneMapImage propagates unknown minimum version")
+{
+  const std::vector<uint8_t> payload = {
+      0x00,
+      0x00, 0x01,
+      0x00, 0x01,
+      0xDE, 0xAD
+  };
+
+  ToneMapImageParseResult parsed =
+      parse_tone_map_image(payload);
+
+  REQUIRE(parsed.status ==
+          ToneMapImageParseStatus::unsupported_minimum_version);
+  REQUIRE(!parsed.tone_map_image.has_value());
+  REQUIRE(parsed.bytes_consumed == 5);
+}
+
+
+TEST_CASE("ToneMapImage accepts trailing data")
+{
+  std::vector<uint8_t> payload;
+  payload.push_back(0);
+  payload.insert(payload.end(), kMonoGolden.begin(), kMonoGolden.end());
+  payload.insert(payload.end(), {0x12, 0x34, 0x56});
+
+  ToneMapImageParseResult parsed =
+      parse_tone_map_image(payload);
+
+  REQUIRE(parsed.status == ToneMapImageParseStatus::parsed);
+  REQUIRE(parsed.bytes_consumed == 62);
+}
+
+
+TEST_CASE("ToneMapImage serializer rejects unknown outer version")
+{
+  ToneMapImage tone_map_image;
+  tone_map_image.version = 1;
+  tone_map_image.gain_map_metadata = make_valid_metadata();
+
+  auto encoded = serialize_tone_map_image(tone_map_image);
+  REQUIRE(!encoded);
+  REQUIRE(encoded.error().error_code == heif_error_Unsupported_feature);
+  REQUIRE(encoded.error().sub_error_code ==
+          heif_suberror_Unsupported_data_version);
+}

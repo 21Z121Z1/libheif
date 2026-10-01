@@ -427,3 +427,78 @@ Result<std::vector<uint8_t>> serialize_gain_map_metadata(
 
   return writer.data();
 }
+
+
+ToneMapImageParseResult parse_tone_map_image(
+    std::span<const uint8_t> data)
+{
+  ToneMapImageParseResult result;
+
+  if (data.empty()) {
+    result.error = truncated_metadata_error();
+    return result;
+  }
+
+  result.version = data[0];
+  result.bytes_consumed = 1;
+
+  if (result.version != 0) {
+    result.status =
+        ToneMapImageParseStatus::unsupported_tone_map_version;
+    return result;
+  }
+
+  GainMapMetadataParseResult gain_map =
+      parse_gain_map_metadata(data.subspan(1));
+  result.bytes_consumed += gain_map.bytes_consumed;
+
+  switch (gain_map.status) {
+    case GainMapMetadataParseStatus::parsed: {
+      ToneMapImage tone_map_image;
+      tone_map_image.version = 0;
+      tone_map_image.gain_map_metadata = *gain_map.metadata;
+      result.status = ToneMapImageParseStatus::parsed;
+      result.tone_map_image = tone_map_image;
+      return result;
+    }
+
+    case GainMapMetadataParseStatus::unsupported_minimum_version:
+      result.status =
+          ToneMapImageParseStatus::unsupported_minimum_version;
+      return result;
+
+    case GainMapMetadataParseStatus::malformed:
+      result.status = ToneMapImageParseStatus::malformed;
+      result.error = gain_map.error;
+      return result;
+  }
+
+  result.error = invalid_metadata_error(
+      "Invalid ISO 21496-1 gain map metadata parse status");
+  return result;
+}
+
+
+Result<std::vector<uint8_t>> serialize_tone_map_image(
+    const ToneMapImage& tone_map_image)
+{
+  if (tone_map_image.version != 0) {
+    return Error{
+        heif_error_Unsupported_feature,
+        heif_suberror_Unsupported_data_version,
+        "Unsupported ToneMapImage version"
+    };
+  }
+
+  auto gain_map_data =
+      serialize_gain_map_metadata(tone_map_image.gain_map_metadata);
+  if (!gain_map_data) {
+    return gain_map_data.error();
+  }
+
+  std::vector<uint8_t> data;
+  data.reserve(1 + gain_map_data->size());
+  data.push_back(0);
+  data.insert(data.end(), gain_map_data->begin(), gain_map_data->end());
+  return data;
+}

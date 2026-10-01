@@ -162,6 +162,8 @@ set(libheif_sources
         image-items/overlay.cc
         image-items/iden.h
         image-items/iden.cc
+        image-items/tmap.h
+        image-items/tmap.cc
         image-items/tiled.h
         image-items/tiled.cc
         color-conversion/colorconversion.cc
