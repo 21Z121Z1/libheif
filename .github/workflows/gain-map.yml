@@ -49,3 +49,30 @@ jobs:
         with:
           name: gain-map-${{ matrix.experimental }}
           path: build-gain-map/Testing/Temporary/
+
+  interop-binary:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install HEVC decoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libde265-dev
+      - name: Build external-sample interop harness
+        run: |
+          cmake --preset testing -S . -B build-interop \
+            -DENABLE_EXPERIMENTAL_FEATURES=ON \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=ON -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF
+          cmake --build build-interop --target tmap_interop --parallel 2
+      - name: Upload interop harness
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: tmap-interop-linux-x86_64
+          path: |
+            build-interop/tests/tmap_interop
+            build-interop/libheif/libheif.so*
+
