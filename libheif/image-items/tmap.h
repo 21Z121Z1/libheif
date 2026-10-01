@@ -26,6 +26,7 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 
 
 class ImageItem_tmap final : public ImageItem
@@ -40,6 +41,15 @@ public:
   ToneMapImageParseResult read_tone_map_image() const;
 
   Error validate_tone_map_structure() const;
+
+  static Result<std::shared_ptr<ImageItem_tmap>> add_new_tone_map_item(
+      HeifContext* ctx,
+      const std::shared_ptr<ImageItem>& base,
+      const std::shared_ptr<ImageItem>& gain,
+      const ToneMapImage& tone_map_image,
+      const nclx_profile& alternate_nclx,
+      const heif_content_light_level* clli,
+      const std::vector<uint8_t>& pixi_bits);
 
   Result<std::shared_ptr<HeifPixelImage>> decode_compressed_image(
       const heif_decoding_options& options,

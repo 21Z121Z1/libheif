@@ -102,15 +102,28 @@ ToneMapImageParseResult ImageItem_tmap::read_tone_map_image() const
 }
 
 
-Error ImageItem_tmap::validate_tone_map_structure() const
+namespace
 {
-  auto input_ids = get_input_item_ids();
-  if (!input_ids) {
-    return input_ids.error();
+
+Error validate_tone_map_inputs(
+    const std::shared_ptr<ImageItem>& base,
+    const std::shared_ptr<ImageItem>& gain)
+{
+  if (!base || !gain) {
+    return Error{
+        heif_error_Input_does_not_exist,
+        heif_suberror_Nonexisting_item_referenced,
+        "Tone-map input image is unavailable"
+    };
   }
 
-  auto base = get_context()->get_image((*input_ids)[0], true);
-  auto gain = get_context()->get_image((*input_ids)[1], true);
+  if (base->get_id() == gain->get_id()) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Tone-map base and gain-map inputs must be distinct image items"
+    };
+  }
 
   if (Error error = base->get_item_error()) {
     return error;
@@ -149,6 +162,26 @@ Error ImageItem_tmap::validate_tone_map_structure() const
     };
   }
 
+  return Error::Ok;
+}
+
+}  // namespace
+
+
+Error ImageItem_tmap::validate_tone_map_structure() const
+{
+  auto input_ids = get_input_item_ids();
+  if (!input_ids) {
+    return input_ids.error();
+  }
+
+  auto base = get_context()->get_image((*input_ids)[0], true);
+  auto gain = get_context()->get_image((*input_ids)[1], true);
+
+  if (Error error = validate_tone_map_inputs(base, gain)) {
+    return error;
+  }
+
   if (!has_nclx_color_profile() &&
       !has_icc_color_profile()) {
     return Error{
@@ -159,6 +192,150 @@ Error ImageItem_tmap::validate_tone_map_structure() const
   }
 
   return Error::Ok;
+}
+
+
+Result<std::shared_ptr<ImageItem_tmap>>
+ImageItem_tmap::add_new_tone_map_item(
+    HeifContext* ctx,
+    const std::shared_ptr<ImageItem>& base,
+    const std::shared_ptr<ImageItem>& gain,
+    const ToneMapImage& tone_map_image,
+    const nclx_profile& alternate_nclx,
+    const heif_content_light_level* clli,
+    const std::vector<uint8_t>& pixi_bits)
+{
+  if (!ctx || !base || !gain) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Null_pointer_argument,
+        "Tone-map writer requires a context, base image, and gain-map image"
+    };
+  }
+
+  if (base->get_context() != ctx ||
+      gain->get_context() != ctx) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Tone-map input images must belong to the target context"
+    };
+  }
+
+  if (Error error = validate_tone_map_inputs(base, gain)) {
+    return error;
+  }
+
+  if (tone_map_image.version != 0) {
+    return Error{
+        heif_error_Unsupported_feature,
+        heif_suberror_Unsupported_data_version,
+        "Unsupported ToneMapImage version"
+    };
+  }
+
+  auto payload = serialize_tone_map_image(tone_map_image);
+  if (!payload) {
+    return payload.error();
+  }
+
+  uint32_t width = base->get_width();
+  uint32_t height = base->get_height();
+  if (width == 0 || height == 0) {
+    width = base->get_ispe_width();
+    height = base->get_ispe_height();
+  }
+  if (width == 0 || height == 0) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_image_size,
+        "Tone-map base image has no usable image dimensions"
+    };
+  }
+
+  if (pixi_bits.size() > 4) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Tone-map PIXI hint may contain at most four channels"
+    };
+  }
+  for (uint8_t bits : pixi_bits) {
+    if (bits == 0) {
+      return Error{
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Tone-map PIXI bit depth must be nonzero"
+      };
+    }
+  }
+
+  auto file = ctx->get_heif_file();
+  auto id_result = file->add_new_image(fourcc("tmap"));
+  if (!id_result) {
+    return id_result.error();
+  }
+
+  const heif_item_id tmap_id = *id_result;
+  auto tmap = std::make_shared<ImageItem_tmap>(ctx, tmap_id);
+  tmap->set_resolution(width, height);
+  ctx->insert_image_item(tmap_id, tmap);
+
+  constexpr uint8_t construction_method_idat = 1;
+  file->append_iloc_data(
+      tmap_id, *payload, construction_method_idat);
+  file->add_iref_reference(
+      tmap_id, fourcc("dimg"), {base->get_id(), gain->get_id()});
+
+  auto ispe = std::make_shared<Box_ispe>();
+  ispe->set_size(width, height);
+  if (tmap->add_property(ispe, false) == 0) {
+    return Error{
+        heif_error_Encoding_error,
+        heif_suberror_Unspecified,
+        "Could not add tone-map 'ispe' property"
+    };
+  }
+
+  tmap->set_color_profile_nclx(alternate_nclx);
+  if (!tmap->has_nclx_color_profile()) {
+    return Error{
+        heif_error_Encoding_error,
+        heif_suberror_Unspecified,
+        "Could not add tone-map alternate colour profile"
+    };
+  }
+
+  if (clli) {
+    tmap->set_clli(*clli);
+  }
+
+  if (!pixi_bits.empty()) {
+    auto pixi = std::make_shared<Box_pixi>();
+    for (uint8_t bits : pixi_bits) {
+      if (!pixi->add_channel_bits(bits)) {
+        return Error{
+            heif_error_Usage_error,
+            heif_suberror_Invalid_parameter_value,
+            "Invalid tone-map PIXI bit depth"
+        };
+      }
+    }
+    if (tmap->add_property(pixi, false) == 0) {
+      return Error{
+          heif_error_Encoding_error,
+          heif_suberror_Unspecified,
+          "Could not add tone-map 'pixi' property"
+      };
+    }
+  }
+
+  auto ftyp = file->get_ftyp_box();
+  if (ftyp) {
+    ftyp->add_compatible_brand(fourcc("tmap"));
+  }
+
+  return tmap;
 }
 
 

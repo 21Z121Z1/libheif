@@ -107,6 +107,32 @@ heif_gain_map_metadata_status
 heif_image_handle_get_gain_map_metadata_status(
     const heif_image_handle* tmap);
 
+
+typedef struct heif_tone_map_options
+{
+  uint32_t version;
+
+  // Required in version 1. Describes the fully-applied alternate image.
+  const heif_color_profile_nclx* alternate_nclx;
+
+  // Optional version-1 properties.
+  int has_clli;
+  heif_content_light_level clli;
+
+  // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI.
+  uint8_t pixi_num_channels;
+  uint8_t pixi_bits_per_channel[4];
+} heif_tone_map_options;
+
+LIBHEIF_API
+heif_error heif_context_add_tone_map_derived_image(
+    heif_context* ctx,
+    const heif_image_handle* base,
+    const heif_image_handle* gain,
+    const heif_gain_map_metadata* metadata,
+    const heif_tone_map_options* options,
+    heif_image_handle** out_tmap);
+
 /*
 heif_item_property_type_camera_intrinsic_matrix = heif_fourcc('c', 'm', 'i', 'n'),
 heif_item_property_type_camera_extrinsic_matrix = heif_fourcc('c', 'm', 'e', 'x')

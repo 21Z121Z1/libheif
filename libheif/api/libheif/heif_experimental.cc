@@ -112,6 +112,69 @@ void copy_unsigned_rational(
 }
 
 
+
+Result<GainMapMetadata> gain_map_metadata_from_c(
+    const heif_gain_map_metadata& input)
+{
+  if (input.struct_version != 1) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Unsupported heif_gain_map_metadata struct version"
+    };
+  }
+
+  if (input.channel_count != 1 && input.channel_count != 3) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Gain-map metadata must have one or three channels"
+    };
+  }
+
+  GainMapMetadata metadata;
+  metadata.version.minimum_version = input.minimum_version;
+  metadata.version.writer_version = input.writer_version;
+  metadata.channel_count = input.channel_count;
+  metadata.is_multichannel = input.channel_count == 3;
+  metadata.use_base_colour_space =
+      input.use_base_colour_space != 0;
+  metadata.base_hdr_headroom = {
+      input.base_hdr_headroom.numerator,
+      input.base_hdr_headroom.denominator
+  };
+  metadata.alternate_hdr_headroom = {
+      input.alternate_hdr_headroom.numerator,
+      input.alternate_hdr_headroom.denominator
+  };
+
+  for (uint8_t i = 0; i < input.channel_count; ++i) {
+    metadata.channels[i].gain_map_min = {
+        input.channels[i].gain_map_min.numerator,
+        input.channels[i].gain_map_min.denominator
+    };
+    metadata.channels[i].gain_map_max = {
+        input.channels[i].gain_map_max.numerator,
+        input.channels[i].gain_map_max.denominator
+    };
+    metadata.channels[i].gamma = {
+        input.channels[i].gamma.numerator,
+        input.channels[i].gamma.denominator
+    };
+    metadata.channels[i].base_offset = {
+        input.channels[i].base_offset.numerator,
+        input.channels[i].base_offset.denominator
+    };
+    metadata.channels[i].alternate_offset = {
+        input.channels[i].alternate_offset.numerator,
+        input.channels[i].alternate_offset.denominator
+    };
+  }
+
+  return metadata;
+}
+
+
 heif_gain_map_metadata_status to_c_status(
     ToneMapImageParseStatus status)
 {
@@ -252,6 +315,107 @@ heif_error heif_image_handle_get_gain_map_metadata(
       copy_signed_rational(
           metadata.channels[i].alternate_offset,
           &out_metadata->channels[i].alternate_offset);
+    }
+
+    return heif_error_success;
+  });
+}
+
+
+
+heif_error heif_context_add_tone_map_derived_image(
+    heif_context* ctx,
+    const heif_image_handle* base,
+    const heif_image_handle* gain,
+    const heif_gain_map_metadata* metadata,
+    const heif_tone_map_options* options,
+    heif_image_handle** out_tmap)
+{
+  return exception_guard([&]() -> heif_error {
+    if (out_tmap) {
+      *out_tmap = nullptr;
+    }
+
+    if (!ctx || !base || !gain || !metadata || !options) {
+      return heif_error_null_pointer_argument;
+    }
+
+    if (!base->image || !gain->image ||
+        base->context.get() != ctx->context.get() ||
+        gain->context.get() != ctx->context.get()) {
+      return {
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Tone-map input handles must belong to the target context"
+      };
+    }
+
+    if (options->version != 1) {
+      return {
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Unsupported heif_tone_map_options version"
+      };
+    }
+
+    if (!options->alternate_nclx) {
+      return {
+          heif_error_Usage_error,
+          heif_suberror_Null_pointer_argument,
+          "Tone-map writer currently requires an alternate NCLX profile"
+      };
+    }
+
+    if (options->pixi_num_channels > 4) {
+      return {
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Tone-map PIXI hint may contain at most four channels"
+      };
+    }
+
+    auto internal_metadata =
+        gain_map_metadata_from_c(*metadata);
+    if (!internal_metadata) {
+      return internal_metadata.error_struct(ctx->context.get());
+    }
+
+    ToneMapImage tone_map_image;
+    tone_map_image.version = 0;
+    tone_map_image.gain_map_metadata =
+        *internal_metadata;
+
+    nclx_profile alternate_nclx;
+    alternate_nclx.set_from_heif_color_profile_nclx(
+        options->alternate_nclx);
+
+    std::vector<uint8_t> pixi_bits;
+    pixi_bits.reserve(options->pixi_num_channels);
+    for (uint8_t i = 0;
+         i < options->pixi_num_channels; ++i) {
+      pixi_bits.push_back(
+          options->pixi_bits_per_channel[i]);
+    }
+
+    const heif_content_light_level* clli =
+        options->has_clli ? &options->clli : nullptr;
+
+    auto result = ImageItem_tmap::add_new_tone_map_item(
+        ctx->context.get(),
+        base->image,
+        gain->image,
+        tone_map_image,
+        alternate_nclx,
+        clli,
+        pixi_bits);
+    if (!result) {
+      return result.error_struct(ctx->context.get());
+    }
+
+    if (out_tmap) {
+      *out_tmap = new heif_image_handle;
+      (*out_tmap)->image = *result;
+      (*out_tmap)->context = ctx->context;
     }
 
     return heif_error_success;
