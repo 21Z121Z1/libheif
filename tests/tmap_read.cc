@@ -95,7 +95,8 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t gain_primaries = 2,
     uint16_t gain_transfer = 2,
     uint16_t primary_item = 1,
-    bool rotate_base = false)
+    bool rotate_base = false,
+    bool duplicate_dimg_entry = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -233,8 +234,16 @@ std::vector<uint8_t> build_tmap_file(
   for (int i = 2; i < dimg_count; ++i) {
     put_u16_be(dimg_payload, 1);
   }
-  auto iref = make_box(
-      "iref", make_box("dimg", dimg_payload), true);
+  std::vector<uint8_t> iref_payload;
+  append(iref_payload, make_box("dimg", dimg_payload));
+  if (duplicate_dimg_entry) {
+    std::vector<uint8_t> duplicate_payload;
+    put_u16_be(duplicate_payload, 3);
+    put_u16_be(duplicate_payload, 1);
+    put_u16_be(duplicate_payload, 1);
+    append(iref_payload, make_box("dimg", duplicate_payload));
+  }
+  auto iref = make_box("iref", iref_payload, true);
 
   std::vector<uint8_t> meta_payload;
   append(meta_payload, hdlr);
@@ -521,6 +530,31 @@ TEST_CASE("malformed tmap does not prevent base access")
   REQUIRE(input == nullptr);
 
   heif_image_handle_release(base);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+
+TEST_CASE("tmap rejects multiple dimg reference entries")
+{
+  std::vector<uint8_t> file = build_tmap_file(
+      2, 0, 0, 2, 2, 1, false, true);
+
+  heif_context* context = nullptr;
+  heif_image_handle* tmap = open_tmap(&context, file);
+
+  heif_image_handle* base = nullptr;
+  heif_error error =
+      heif_image_handle_get_tone_map_base_image_handle(
+          tmap, &base);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(base == nullptr);
+
+  heif_gain_map_metadata metadata{};
+  error = heif_image_handle_get_gain_map_metadata(
+      tmap, &metadata);
+  REQUIRE(error.code == heif_error_Invalid_input);
+
   heif_image_handle_release(tmap);
   heif_context_free(context);
 }
