@@ -239,12 +239,16 @@ ImageItem_tmap::add_new_tone_map_item(
     return payload.error();
   }
 
-  uint32_t width = base->get_width();
-  uint32_t height = base->get_height();
-  if (width == 0 || height == 0) {
-    width = base->get_ispe_width();
-    height = base->get_ispe_height();
+  heif_image_tiling base_tiling =
+      base->get_heif_image_tiling();
+  if (Error error =
+          base->process_image_transformations_on_tiling(
+              base_tiling)) {
+    return error;
   }
+
+  const uint32_t width = base_tiling.image_width;
+  const uint32_t height = base_tiling.image_height;
   if (width == 0 || height == 0) {
     return Error{
         heif_error_Usage_error,
