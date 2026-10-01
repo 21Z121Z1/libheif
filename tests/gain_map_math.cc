@@ -107,14 +107,15 @@ TEST_CASE("D65 primaries conversions preserve white and match reference red")
 }
 
 namespace {
-std::shared_ptr<HeifPixelImage> make_pixels(uint32_t width, bool mono, uint16_t sample, uint16_t transfer)
+std::shared_ptr<HeifPixelImage> make_pixels(uint32_t width, bool mono, uint16_t sample,
+                                            uint16_t transfer, uint8_t bit_depth = 16)
 {
   auto image = std::make_shared<HeifPixelImage>();
   image->create(width, 1, mono ? heif_colorspace_monochrome : heif_colorspace_RGB,
                 mono ? heif_chroma_monochrome : heif_chroma_444);
   for (auto c : mono ? std::vector<heif_channel>{heif_channel_Y} :
                       std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B}) {
-    REQUIRE_FALSE(image->add_channel(c, width, 1, 16, nullptr));
+    REQUIRE_FALSE(image->add_channel(c, width, 1, bit_depth, nullptr));
     image->fill_channel(c, sample);
   }
   nclx_profile profile;
@@ -178,6 +179,23 @@ TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
   REQUIRE(sample_at(**result, heif_channel_R, 3) == 32768);
   heif_decoding_options_free(options);
 }
+
+TEST_CASE("Gain-map components below 8 bits are rejected")
+{
+  auto base = make_pixels(1, false, 16384, 8);
+  auto gain = make_pixels(1, true, 15, 2, 4);
+  GainMapMetadata metadata;
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+
+  auto result = reconstruct_tone_map(
+      base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().error_code == heif_error_Invalid_input);
+
+  heif_decoding_options_free(options);
+}
+
 
 TEST_CASE("Mono limited-range gain endpoints are normalized then clipped")
 {
