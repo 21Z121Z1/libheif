@@ -42,6 +42,11 @@ public:
 
   Error validate_tone_map_structure() const;
 
+  bool use_item_color_profile_for_decoding() const override;
+  Error get_coded_image_colorspace(heif_colorspace*, heif_chroma*) const override;
+  int get_luma_bits_per_pixel() const override { return 16; }
+  int get_chroma_bits_per_pixel() const override { return 16; }
+
   static Result<std::shared_ptr<ImageItem_tmap>> add_new_tone_map_item(
       HeifContext* ctx,
       const std::shared_ptr<ImageItem>& base,

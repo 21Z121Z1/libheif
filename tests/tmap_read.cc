@@ -143,7 +143,7 @@ std::vector<uint8_t> build_tmap_file(
   auto mskC = make_box("mskC", std::vector<uint8_t>{8}, true);
   auto base_colr = make_nclx(1, 13, 1, true);
   auto gain_colr =
-      make_nclx(gain_primaries, gain_transfer, 0, true);
+      make_nclx(gain_primaries, gain_transfer, 2, true);
   auto tmap_colr = make_nclx(9, 16, 9, true);
 
   std::vector<uint8_t> ipco_payload;
@@ -570,7 +570,7 @@ TEST_CASE("tmap validates gain-map NCLX role")
 }
 
 
-TEST_CASE("tmap decode is explicitly unsupported until reconstruction lands")
+TEST_CASE("tmap reconstructs synthetic uncompressed inputs")
 {
   std::vector<uint8_t> file = build_tmap_file();
 
@@ -584,8 +584,11 @@ TEST_CASE("tmap decode is explicitly unsupported until reconstruction lands")
       heif_chroma_undefined,
       nullptr);
 
-  REQUIRE(error.code == heif_error_Unsupported_feature);
-  REQUIRE(image == nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image != nullptr);
+  REQUIRE(heif_image_get_colorspace(image) == heif_colorspace_RGB);
+  heif_image_release(image);
 
   heif_image_handle_release(tmap);
   heif_context_free(context);
@@ -659,4 +662,51 @@ TEST_CASE("tmap input may itself be a derived tmap image")
   heif_image_handle_release(derived_base);
   heif_image_handle_release(outer);
   heif_context_free(context);
+}
+
+TEST_CASE("Unknown minimum metadata version decodes baseline without alternate colour tagging")
+{
+  std::vector<uint8_t> file = build_tmap_file(2, 0, 1);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
+  REQUIRE(profile->color_primaries == heif_color_primaries_ITU_R_BT_709_5);
+  REQUIRE(profile->transfer_characteristics == heif_transfer_characteristic_IEC_61966_2_1);
+  size_t stride = 0;
+  const auto* pixels = heif_image_get_plane_readonly2(image, heif_channel_Y, &stride);
+  REQUIRE(pixels);
+  REQUIRE(pixels[0] == 127);
+  heif_nclx_color_profile_free(profile);
+  heif_image_release(image);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
+{
+  const auto file = build_two_tmap_file(3);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, 5, &handle).code == heif_error_Ok);
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(handle, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_R) == 16);
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
+  REQUIRE(profile->color_primaries == heif_color_primaries_ITU_R_BT_2020_2_and_2100_0);
+  REQUIRE(profile->transfer_characteristics == heif_transfer_characteristic_ITU_R_BT_2100_0_PQ);
+  heif_nclx_color_profile_free(profile);
+  heif_image_release(image);
+  heif_image_handle_release(handle);
+  heif_context_free(ctx);
 }

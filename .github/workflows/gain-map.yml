@@ -1,0 +1,47 @@
+name: gain-map-conformance
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [iso21496-gain-map-metadata-core]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        experimental: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build with ASan and UBSan
+        run: |
+          cmake --preset testing -S . -B build-gain-map \
+            -DENABLE_EXPERIMENTAL_FEATURES=${{ matrix.experimental }} \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-gain-map --parallel 2
+      - name: Run metadata, reconstruction and graph regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read' --output-on-failure
+      - name: Check stable public headers and exported symbols
+        run: |
+          ./scripts/check-c-headers.sh
+          ./scripts/check-api-symbols.sh build-gain-map/libheif/libheif.so
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: gain-map-${{ matrix.experimental }}
+          path: build-gain-map/Testing/Temporary/

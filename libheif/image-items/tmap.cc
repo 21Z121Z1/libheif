@@ -22,6 +22,7 @@
 
 #include "context.h"
 #include "file.h"
+#include "gain_map_reconstruction.h"
 
 #include <memory>
 #include <vector>
@@ -133,7 +134,22 @@ Error validate_tone_map_inputs(
     };
   }
 
-  if (!gain.has_nclx_color_profile()) {
+  // An explicitly associated NCLX (2,2,2,full) is valid for a mono
+  // gain map even though ImageDescription treats that tuple as undefined.
+  // Presence must be checked on the associated property, not the values.
+  bool gain_has_nclx = false;
+  auto properties = gain.get_properties();
+  if (!properties) {
+    return properties.error();
+  }
+  for (const auto& property : *properties) {
+    auto colr = std::dynamic_pointer_cast<Box_colr>(property);
+    if (colr && colr->get_color_profile_type() == fourcc("nclx")) {
+      gain_has_nclx = true;
+      break;
+    }
+  }
+  if (!gain_has_nclx) {
     return Error{
         heif_error_Invalid_input,
         heif_suberror_Unspecified,
@@ -345,10 +361,10 @@ ImageItem_tmap::add_new_tone_map_item(
 
 Result<std::shared_ptr<HeifPixelImage>>
 ImageItem_tmap::decode_compressed_image(
-    const heif_decoding_options&,
-    bool,
-    uint32_t,
-    uint32_t,
+    const heif_decoding_options& options,
+    bool decode_tile_only,
+    uint32_t tile_x0,
+    uint32_t tile_y0,
     DecodeTraversalState decode_state) const
 {
   if (decode_state.processed_ids.contains(get_id())) {
@@ -369,12 +385,16 @@ ImageItem_tmap::decode_compressed_image(
           "Unsupported ToneMapImage version"
       };
 
-    case ToneMapImageParseStatus::unsupported_minimum_version:
-      return Error{
-          heif_error_Unsupported_feature,
-          heif_suberror_Unsupported_data_version,
-          "Unsupported ISO 21496-1 gain map metadata minimum version"
-      };
+    case ToneMapImageParseStatus::unsupported_minimum_version: {
+      auto ids = get_input_item_ids();
+      if (!ids) {
+        return ids.error();
+      }
+      // Annex C requires the baseline when the minimum version is unknown.
+      // Do not decode or interpret the gain input in this case.
+      auto base = get_context()->get_image((*ids)[0], true);
+      return base->decode_image(options, decode_tile_only, tile_x0, tile_y0, decode_state);
+    }
 
     case ToneMapImageParseStatus::malformed:
       return payload.error;
@@ -387,9 +407,48 @@ ImageItem_tmap::decode_compressed_image(
     return error;
   }
 
-  return Error{
-      heif_error_Unsupported_feature,
-      heif_suberror_Unsupported_image_type,
-      "ISO 21496-1 tone-map reconstruction is not implemented yet"
-  };
+  if (decode_tile_only) {
+    return Error{heif_error_Unsupported_feature, heif_suberror_Unspecified,
+                 "Tone-map tile-only decoding is not supported"};
+  }
+  auto ids = get_input_item_ids();
+  if (!ids) {
+    return ids.error();
+  }
+  auto base = get_context()->get_image((*ids)[0], true);
+  auto gain = get_context()->get_image((*ids)[1], true);
+  if (!base->has_nclx_color_profile() || !has_nclx_color_profile()) {
+    return Error{heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
+                 "ICC-only tone-map reconstruction is not supported"};
+  }
+  // Child transformations establish their display-space geometry regardless
+  // of whether the caller suppresses the ROOT tmap's transformations.
+  auto child_options = options;
+  child_options.ignore_transformations = false;
+  child_options.autocorrect_broken_input = false;
+  auto base_pixels = base->decode_image(child_options, false, 0, 0, decode_state);
+  if (!base_pixels) {
+    return base_pixels.error();
+  }
+  auto gain_pixels = gain->decode_image(child_options, false, 0, 0, decode_state);
+  if (!gain_pixels) {
+    return gain_pixels.error();
+  }
+  return reconstruct_tone_map(*base_pixels, *gain_pixels,
+                             payload.tone_map_image->gain_map_metadata,
+                             get_color_profile_nclx(), options,
+                             get_context()->get_security_limits());
+}
+
+
+bool ImageItem_tmap::use_item_color_profile_for_decoding() const
+{
+  return read_tone_map_image().status != ToneMapImageParseStatus::unsupported_minimum_version;
+}
+
+Error ImageItem_tmap::get_coded_image_colorspace(heif_colorspace* colorspace, heif_chroma* chroma) const
+{
+  if (colorspace) { *colorspace = heif_colorspace_RGB; }
+  if (chroma) { *chroma = heif_chroma_444; }
+  return Error::Ok;
 }

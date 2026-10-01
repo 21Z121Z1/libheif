@@ -35,6 +35,12 @@ set(libheif_headers
 set(libheif_sources
         bitstream.cc
         bitstream.h
+        gain_map_color.cc
+        gain_map_color.h
+        gain_map_reconstruction.cc
+        gain_map_reconstruction.h
+        gain_map_math.cc
+        gain_map_math.h
         gain_map_metadata.cc
         gain_map_metadata.h
         box.cc
