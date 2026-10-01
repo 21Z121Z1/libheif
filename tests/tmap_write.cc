@@ -109,7 +109,7 @@ heif_image_handle* encode_image_with_profile(
   heif_image_handle* handle = nullptr;
   heif_error error = heif_context_encode_image(
       ctx, image, encoder, options, &handle);
-  INFO(error.message ? error.message : "");
+  INFO((error.message ? error.message : ""));
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(handle != nullptr);
 
@@ -156,7 +156,7 @@ std::vector<uint8_t> write_context(heif_context* ctx)
   writer.write = memory_writer;
   heif_error error =
       heif_context_write(ctx, &writer, &encoded);
-  INFO(error.message ? error.message : "");
+  INFO((error.message ? error.message : ""));
   REQUIRE(error.code == heif_error_Ok);
   return encoded;
 }
@@ -170,7 +170,7 @@ heif_context* reopen(
   heif_error error =
       heif_context_read_from_memory_without_copy(
           ctx, encoded.data(), encoded.size(), nullptr);
-  INFO(error.message ? error.message : "");
+  INFO((error.message ? error.message : ""));
   REQUIRE(error.code == heif_error_Ok);
   return ctx;
 }
@@ -260,7 +260,7 @@ TEST_CASE("tmap writer round-trips graph metadata colour and brand")
   heif_error error =
       heif_context_add_tone_map_derived_image(
           ctx, base, gain, &metadata, &options, &tmap);
-  INFO(error.message ? error.message : "");
+  INFO((error.message ? error.message : ""));
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(tmap != nullptr);
 
