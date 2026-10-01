@@ -47,8 +47,25 @@ ImageItem_tmap::get_input_item_ids() const
     };
   }
 
-  std::vector<heif_item_id> references =
-      iref->get_references(get_id(), fourcc("dimg"));
+  std::vector<heif_item_id> references;
+  size_t dimg_entry_count = 0;
+  for (const auto& reference : iref->get_references_from(get_id())) {
+    if (reference.header.get_short_type() != fourcc("dimg")) {
+      continue;
+    }
+
+    ++dimg_entry_count;
+    references = reference.to_item_ID;
+  }
+
+  if (dimg_entry_count != 1) {
+    return Error{
+        heif_error_Invalid_input,
+        heif_suberror_Unspecified,
+        "Tone-map derived image must have exactly one 'dimg' reference entry"
+    };
+  }
+
   if (references.size() != 2) {
     return Error{
         heif_error_Invalid_input,
