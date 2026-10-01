@@ -22,6 +22,7 @@
 
 #include "context.h"
 #include "file.h"
+#include "gain_map_color.h"
 #include "gain_map_reconstruction.h"
 
 #include <memory>
@@ -171,6 +172,24 @@ Error validate_tone_map_inputs(
   }
 
   return Error::Ok;
+}
+
+Result<nclx_profile> resolve_tone_map_colour(const ImageItem& item)
+{
+  if (item.has_nclx_color_profile()) {
+    return item.get_color_profile_nclx();
+  }
+
+  const auto& icc = item.get_color_profile_icc();
+  if (icc) {
+    return gain_map_nclx_from_icc(*icc);
+  }
+
+  return Error{
+      heif_error_Unsupported_feature,
+      heif_suberror_Unsupported_color_conversion,
+      "Tone-map item has no supported colour description"
+  };
 }
 
 }  // namespace
@@ -420,10 +439,16 @@ ImageItem_tmap::decode_compressed_image(
   }
   auto base = get_context()->get_image((*ids)[0], true);
   auto gain = get_context()->get_image((*ids)[1], true);
-  if (!base->has_nclx_color_profile() || !has_nclx_color_profile()) {
-    return Error{heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
-                 "ICC-only tone-map reconstruction is not supported"};
+
+  auto baseline_colour = resolve_tone_map_colour(*base);
+  if (!baseline_colour) {
+    return baseline_colour.error();
   }
+  auto alternate_colour = resolve_tone_map_colour(*this);
+  if (!alternate_colour) {
+    return alternate_colour.error();
+  }
+
   // Child transformations establish their display-space geometry regardless
   // of whether the caller suppresses the ROOT tmap's transformations.
   auto child_options = options;
@@ -438,9 +463,10 @@ ImageItem_tmap::decode_compressed_image(
     return gain_pixels.error();
   }
   return reconstruct_tone_map(*base_pixels, *gain_pixels,
-                             payload.tone_map_image->gain_map_metadata,
-                             get_color_profile_nclx(), options,
-                             get_context()->get_security_limits());
+                              payload.tone_map_image->gain_map_metadata,
+                              *alternate_colour, options,
+                              get_context()->get_security_limits(),
+                              *baseline_colour);
 }
 
 

@@ -22,6 +22,7 @@
 #define LIBHEIF_GAIN_MAP_RECONSTRUCTION_H
 
 #include <memory>
+#include <optional>
 
 #include "gain_map_metadata.h"
 #include "image/pixelimage.h"
@@ -32,6 +33,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const GainMapMetadata& metadata,
     const nclx_profile& alternate,
     const heif_decoding_options& options,
-    const heif_security_limits* limits);
+    const heif_security_limits* limits,
+    std::optional<nclx_profile> baseline_colour_override = std::nullopt);
 
 #endif

@@ -30,9 +30,9 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
           if [ "${{ matrix.experimental }}" = "ON" ]; then
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math tmap_read --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read --parallel 2
           else
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color --parallel 2
           fi
       - name: Run metadata, reconstruction and graph regressions
         env:

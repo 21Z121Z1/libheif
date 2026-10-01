@@ -89,23 +89,15 @@ TEST_CASE("User-provided ISO sample directory interoperability")
       }
       heif_image* pixels = nullptr;
       error = heif_decode_image(handle, &pixels, heif_colorspace_undefined, heif_chroma_undefined, options);
-      const bool icc_only = heif_image_handle_get_color_profile_type(handle) != heif_color_profile_type_nclx ||
-                            heif_image_handle_get_color_profile_type(base) != heif_color_profile_type_nclx;
-      if (icc_only) {
-        REQUIRE(error.code == heif_error_Unsupported_feature);
-        REQUIRE(error.subcode == heif_suberror_Unsupported_color_conversion);
-        REQUIRE(pixels == nullptr);
-      }
-      else {
-        INFO(error.message);
-        REQUIRE(error.code == heif_error_Ok);
-        heif_image_release(pixels);
-      }
+      INFO(error.message);
+      REQUIRE(error.code == heif_error_Ok);
+      REQUIRE(pixels);
+      heif_image_release(pixels);
       std::cout << filename << " tmap=" << id
                 << " channels=" << static_cast<int>(metadata.channel_count)
                 << " base=" << heif_image_handle_get_item_id(base)
                 << " gain=" << heif_image_handle_get_item_id(gain)
-                << " reconstruction=" << (icc_only ? "unsupported ICC" : "success") << '\n';
+                << " reconstruction=success" << '\n';
       heif_image_handle_release(base);
       heif_image_handle_release(gain);
       heif_image_handle_release(handle);

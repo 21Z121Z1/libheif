@@ -116,7 +116,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const GainMapMetadata& metadata,
     const nclx_profile& alternate,
     const heif_decoding_options& options,
-    const heif_security_limits* limits)
+    const heif_security_limits* limits,
+    std::optional<nclx_profile> baseline_colour_override)
 {
   if (!limits) {
     limits = &global_security_limits;
@@ -135,9 +136,18 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   if (auto error = check_for_valid_image_size(limits, gain->get_width(), gain->get_height())) {
     return error;
   }
-  const auto baseline = base->get_color_profile_nclx();
+  auto baseline = base->get_color_profile_nclx();
+  if (baseline_colour_override) {
+    // The decoded raster still carries the codec's matrix/range signalling.
+    // Item-level ICC/NCLX colourimetry supplies the RGB primaries and transfer
+    // function used by ISO 21496 without overwriting those storage semantics.
+    baseline.m_colour_primaries =
+        baseline_colour_override->m_colour_primaries;
+    baseline.m_transfer_characteristics =
+        baseline_colour_override->m_transfer_characteristics;
+  }
   if (!baseline.is_defined() || !alternate.is_defined()) {
-    return unsupported("ICC-only tone-map reconstruction requires a colour-management implementation");
+    return unsupported("Tone-map reconstruction has no supported colour description");
   }
   if (!gain_map_supports_transfer(baseline.m_transfer_characteristics) ||
       !gain_map_supports_transfer(alternate.m_transfer_characteristics)) {

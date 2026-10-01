@@ -22,18 +22,24 @@
 #define LIBHEIF_GAIN_MAP_COLOR_H
 
 #include "error.h"
+#include "nclx.h"
+
 #include <array>
 #include <cstdint>
 
 using GainMapRGB = std::array<double, 3>;
 using GainMapMatrix = std::array<GainMapRGB, 3>;
 
-// A conservative NCLX subset. PQ uses BT.2408 HDR reference white (203 cd/m2).
-// ICC and HLG require a separate rendering/viewing configuration.
+// A conservative colour subset. PQ uses BT.2408 HDR reference white
+// (203 cd/m2). ICC profiles are accepted only when they can be mapped
+// losslessly enough to this CICP subset: first through ICC.1:2022 'cicp',
+// then through a recognized RGB matrix/TRC profile.
 bool gain_map_supports_transfer(uint16_t transfer);
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer);
 Result<double> gain_map_encode_transfer(double value, uint16_t transfer);
 Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target);
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value);
+
+Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile);
 
 #endif
