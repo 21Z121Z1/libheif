@@ -63,6 +63,7 @@ jobs:
       - name: Build external-sample interop harness
         run: |
           cmake --preset testing -S . -B build-interop \
+            -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_EXPERIMENTAL_FEATURES=ON \
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
             -DWITH_LIBDE265=ON -DWITH_X265=OFF \
