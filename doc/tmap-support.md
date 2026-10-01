@@ -2,8 +2,10 @@
 
 This branch implements final-2025 Annex C metadata parsing/writing, first-class
 `tmap` inspection, construction from existing base/gain items, and canonical
-reconstruction for a conservative NCLX subset. It is not a complete implementation
-of every colour profile allowed by HEIF.
+reconstruction for a conservative colour subset. NCLX is handled directly, and
+selected ICC profiles are mapped to equivalent CICP descriptions for the ISO
+gain-map operation. It is not a complete implementation of every colour profile
+allowed by HEIF.
 
 ## Reconstruction
 
@@ -17,6 +19,12 @@ Supported primaries are BT.709, P3-D65 and BT.2020. Supported transfer curves
 are linear, sRGB, BT.709/BT.601 and PQ. PQ uses the BT.2408 reference-white
 convention of 203 cd/m2. This is an explicit implementation convention, not an
 additional ISO 21496 metadata field.
+
+For ICC-described base or alternate items, reconstruction currently recognizes
+an ICC `cicp` tag when it names the supported CICP subset, and conservative
+RGB matrix/TRC profiles whose primaries and transfer curve can be matched to
+that same subset. Arbitrary LUT/device-link ICC transforms are not approximated.
+The original ICC property remains available on the decoded image.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
 then unnormalized to log2 gains before co-sited bilinear resampling with edge
@@ -35,8 +43,9 @@ is not part of this implementation.
 
 ## Remaining limitations
 
-- ICC-only base/alternate reconstruction requires a real CMS, including a defined
-  HDR reference-white interpretation. ICC data remain available for inspection.
+- General ICC reconstruction still requires a real CMS, including a defined HDR
+  reference-white interpretation. Only the explicitly recognized ICC-to-CICP
+  subset described above is reconstructed without a CMS.
 - HLG requires an explicit viewing/system-gamma configuration.
 - Unsupported YCbCr matrices, premultiplied baseline alpha and tile-only `tmap`
   decode return explicit errors.
@@ -62,7 +71,10 @@ LIBHEIF_TMAP_INTEROP_DIR=/path/to/samples build/tests/tmap_interop
 ```
 
 The supplied 4.93 archives contain 24 Adaptive HDR and 24 ordinary PQ images.
-All 24 Adaptive HDR metadata/graphs parse and both inputs decode. Their base and
-alternate profiles are ICC-only: canonical rendering explicitly returns
-`Unsupported_color_conversion`. All 24 ordinary PQ primary images decode.
-These outcomes are inspection/input-codec evidence, not ICC rendering conformance.
+The interoperability test walks the sample directory recursively, so the two
+archives may be extracted into separate subdirectories under one parent. Each
+Adaptive HDR file is required to expose exactly one `tmap`, parse its final
+Annex C metadata, decode both ordered inputs, and complete canonical
+reconstruction. Each ordinary PQ file is required to decode its primary image.
+Because these fixtures are external and are not redistributed, they are an
+opt-in interoperability gate rather than part of the repository test corpus.
