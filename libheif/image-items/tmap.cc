@@ -106,18 +106,10 @@ namespace
 {
 
 Error validate_tone_map_inputs(
-    const std::shared_ptr<ImageItem>& base,
-    const std::shared_ptr<ImageItem>& gain)
+    const ImageItem& base,
+    const ImageItem& gain)
 {
-  if (!base || !gain) {
-    return Error{
-        heif_error_Input_does_not_exist,
-        heif_suberror_Nonexisting_item_referenced,
-        "Tone-map input image is unavailable"
-    };
-  }
-
-  if (base->get_id() == gain->get_id()) {
+  if (base.get_id() == gain.get_id()) {
     return Error{
         heif_error_Usage_error,
         heif_suberror_Invalid_parameter_value,
@@ -125,15 +117,15 @@ Error validate_tone_map_inputs(
     };
   }
 
-  if (Error error = base->get_item_error()) {
+  if (Error error = base.get_item_error()) {
     return error;
   }
-  if (Error error = gain->get_item_error()) {
+  if (Error error = gain.get_item_error()) {
     return error;
   }
 
-  if (!base->has_nclx_color_profile() &&
-      !base->has_icc_color_profile()) {
+  if (!base.has_nclx_color_profile() &&
+      !base.has_icc_color_profile()) {
     return Error{
         heif_error_Invalid_input,
         heif_suberror_Unspecified,
@@ -141,7 +133,7 @@ Error validate_tone_map_inputs(
     };
   }
 
-  if (!gain->has_nclx_color_profile()) {
+  if (!gain.has_nclx_color_profile()) {
     return Error{
         heif_error_Invalid_input,
         heif_suberror_Unspecified,
@@ -150,7 +142,7 @@ Error validate_tone_map_inputs(
   }
 
   const nclx_profile gain_nclx =
-      gain->get_color_profile_nclx();
+      gain.get_color_profile_nclx();
   if (gain_nclx.get_colour_primaries() !=
           heif_color_primaries_unspecified ||
       gain_nclx.get_transfer_characteristics() !=
@@ -178,7 +170,15 @@ Error ImageItem_tmap::validate_tone_map_structure() const
   auto base = get_context()->get_image((*input_ids)[0], true);
   auto gain = get_context()->get_image((*input_ids)[1], true);
 
-  if (Error error = validate_tone_map_inputs(base, gain)) {
+  if (!base || !gain) {
+    return Error{
+        heif_error_Input_does_not_exist,
+        heif_suberror_Nonexisting_item_referenced,
+        "Tone-map input image is unavailable"
+    };
+  }
+
+  if (Error error = validate_tone_map_inputs(*base, *gain)) {
     return error;
   }
 
@@ -222,7 +222,7 @@ ImageItem_tmap::add_new_tone_map_item(
     };
   }
 
-  if (Error error = validate_tone_map_inputs(base, gain)) {
+  if (Error error = validate_tone_map_inputs(*base, *gain)) {
     return error;
   }
 
