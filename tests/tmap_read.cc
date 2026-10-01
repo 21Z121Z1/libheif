@@ -94,7 +94,8 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t minimum_version = 0,
     uint16_t gain_primaries = 2,
     uint16_t gain_transfer = 2,
-    uint16_t primary_item = 1)
+    uint16_t primary_item = 1,
+    bool rotate_base = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -152,16 +153,22 @@ std::vector<uint8_t> build_tmap_file(
   append(ipco_payload, base_colr);
   append(ipco_payload, gain_colr);
   append(ipco_payload, tmap_colr);
+  if (rotate_base) {
+    append(ipco_payload, make_box("irot", std::vector<uint8_t>{1}));
+  }
   auto ipco = make_box("ipco", ipco_payload);
 
   std::vector<uint8_t> ipma_payload;
   put_u32_be(ipma_payload, 3);
 
   put_u16_be(ipma_payload, 1);
-  ipma_payload.push_back(3);
+  ipma_payload.push_back(rotate_base ? 4 : 3);
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(3);
+  if (rotate_base) {
+    ipma_payload.push_back(0x80 | 6);
+  }
 
   put_u16_be(ipma_payload, 2);
   ipma_payload.push_back(3);
@@ -182,6 +189,12 @@ std::vector<uint8_t> build_tmap_file(
   auto iprp = make_box("iprp", iprp_payload);
 
   std::vector<uint8_t> idat_payload(width * height * 2, 0x7F);
+  if (rotate_base) {
+    idat_payload[0] = 0;
+    idat_payload[1] = 63;
+    idat_payload[2] = 127;
+    idat_payload[3] = 255;
+  }
   idat_payload.insert(
       idat_payload.end(), tmap_payload.begin(), tmap_payload.end());
   auto idat = make_box("idat", idat_payload);
@@ -708,5 +721,27 @@ TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
   heif_nclx_color_profile_free(profile);
   heif_image_release(image);
   heif_image_handle_release(handle);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Baseline fallback applies child transforms when root transforms are suppressed")
+{
+  const auto file = build_tmap_file(2, 0, 1, 2, 2, 1, true);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  auto* options = heif_decoding_options_alloc();
+  options->ignore_transformations = true;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  size_t stride = 0;
+  const auto* pixels = heif_image_get_plane_readonly2(image, heif_channel_Y, &stride);
+  REQUIRE(pixels);
+  REQUIRE(pixels[0] == 63);
+  REQUIRE(pixels[1] == 255);
+  heif_image_release(image);
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
   heif_context_free(ctx);
 }

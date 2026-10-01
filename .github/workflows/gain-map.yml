@@ -29,7 +29,11 @@ jobs:
             -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
-          cmake --build build-gain-map --parallel 2
+          if [ "${{ matrix.experimental }}" = "ON" ]; then
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math tmap_read --parallel 2
+          else
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math --parallel 2
+          fi
       - name: Run metadata, reconstruction and graph regressions
         env:
           ASAN_OPTIONS: detect_leaks=1

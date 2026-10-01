@@ -393,7 +393,10 @@ ImageItem_tmap::decode_compressed_image(
       // Annex C requires the baseline when the minimum version is unknown.
       // Do not decode or interpret the gain input in this case.
       auto base = get_context()->get_image((*ids)[0], true);
-      return base->decode_image(options, decode_tile_only, tile_x0, tile_y0, decode_state);
+      auto base_options = options;
+      base_options.ignore_transformations = false;
+      base_options.autocorrect_broken_input = false;
+      return base->decode_image(base_options, decode_tile_only, tile_x0, tile_y0, decode_state);
     }
 
     case ToneMapImageParseStatus::malformed:
