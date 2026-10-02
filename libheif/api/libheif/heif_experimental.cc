@@ -377,7 +377,7 @@ heif_error heif_context_encode_gain_map_image(
     // component. Readers may choose to tolerate non-conforming files, but the
     // standards-aware writer must not emit them.
     for (auto channel : source->get_channel_set()) {
-      if (source->get_bits_per_pixel_range(channel) < 8) {
+      if (source->get_bits_per_pixel(channel) < 8) {
         return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
                 "ISO 21496-1 gain-map components require at least 8 bits"};
       }
