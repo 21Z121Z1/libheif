@@ -631,6 +631,138 @@ TEST_CASE("Constant-luminance gain rasters cannot infer missing transfer or prim
   heif_decoding_options_free(options);
 }
 
+
+TEST_CASE("Tone maps invert LMS matrices with independent high precision references")
+{
+  struct Reference {
+    uint16_t matrix, transfer;
+    int y_bits, c_bits;
+    bool limited;
+    std::array<uint16_t, 3> encoded, rgb;
+  };
+  // Independent 70-digit Gaussian elimination of H.273 Eq.14-22 and
+  // Eq.79-87. Mixed Y/C depths and both chroma signs exercise raster scaling.
+  const auto reference = GENERATE(
+Reference{14, 16, 16, 16, false, {32768, 30720, 33792}, {33231, 32758, 31093}},
+      Reference{14, 16, 16, 16, false, {32768, 34816, 31744}, {32297, 32720, 34402}},
+      Reference{14, 16, 16, 16, true, {32768, 30720, 33792}, {34044, 33500, 31598}},
+      Reference{14, 16, 16, 16, true, {32768, 34816, 31744}, {32977, 33455, 35380}},
+      Reference{14, 16, 12, 10, false, {2048, 480, 528}, {33239, 32765, 31099}},
+      Reference{14, 16, 12, 10, false, {2048, 544, 496}, {32304, 32727, 34411}},
+      Reference{14, 16, 12, 10, true, {2048, 480, 528}, {34044, 33500, 31598}},
+      Reference{14, 16, 12, 10, true, {2048, 544, 496}, {32977, 33455, 35380}},
+      Reference{14, 18, 16, 16, false, {32768, 30720, 33792}, {33641, 32761, 29715}},
+      Reference{14, 18, 16, 16, false, {32768, 34816, 31744}, {31883, 32690, 35767}},
+      Reference{14, 18, 16, 16, true, {32768, 30720, 33792}, {34514, 33487, 30023}},
+      Reference{14, 18, 16, 16, true, {32768, 34816, 31744}, {32484, 33414, 36938}},
+      Reference{14, 18, 12, 10, false, {2048, 480, 528}, {33649, 32769, 29720}},
+      Reference{14, 18, 12, 10, false, {2048, 544, 496}, {31890, 32697, 35778}},
+      Reference{14, 18, 12, 10, true, {2048, 480, 528}, {34514, 33487, 30023}},
+      Reference{14, 18, 12, 10, true, {2048, 544, 496}, {32484, 33414, 36938}},
+      Reference{15, 16, 16, 16, false, {32768, 30720, 33792}, {31792, 33544, 31918}},
+      Reference{15, 16, 16, 16, false, {32768, 34816, 31744}, {33591, 31923, 33604}},
+      Reference{15, 16, 16, 16, true, {32768, 30720, 33792}, {32385, 34397, 32543}},
+      Reference{15, 16, 16, 16, true, {32768, 34816, 31744}, {34446, 32543, 34470}},
+      Reference{15, 16, 12, 10, false, {2048, 480, 528}, {31799, 33552, 31925}},
+      Reference{15, 16, 12, 10, false, {2048, 544, 496}, {33599, 31929, 33612}},
+      Reference{15, 16, 12, 10, true, {2048, 480, 528}, {32385, 34397, 32543}},
+      Reference{15, 16, 12, 10, true, {2048, 544, 496}, {34446, 32543, 34470}},
+      Reference{15, 18, 16, 16, false, {32768, 30720, 33792}, {31851, 33558, 31924}},
+      Reference{15, 18, 16, 16, false, {32768, 34816, 31744}, {33625, 31950, 33607}},
+      Reference{15, 18, 16, 16, true, {32768, 30720, 33792}, {32436, 34413, 32548}},
+      Reference{15, 18, 16, 16, true, {32768, 34816, 31744}, {34479, 32565, 34473}},
+      Reference{15, 18, 12, 10, false, {2048, 480, 528}, {31857, 33566, 31930}},
+      Reference{15, 18, 12, 10, false, {2048, 544, 496}, {33633, 31957, 33615}},
+      Reference{15, 18, 12, 10, true, {2048, 480, 528}, {32436, 34413, 32548}},
+      Reference{15, 18, 12, 10, true, {2048, 544, 496}, {34479, 32565, 34473}},
+      Reference{15, 8, 16, 16, false, {32768, 30720, 33792}, {31877, 33576, 31925}},
+      Reference{15, 8, 16, 16, false, {32768, 34816, 31744}, {33659, 31960, 33611}},
+      Reference{15, 8, 16, 16, true, {32768, 30720, 33792}, {32497, 34439, 32553}},
+      Reference{15, 8, 16, 16, true, {32768, 34816, 31744}, {34534, 32593, 34478}},
+      Reference{15, 8, 12, 10, false, {2048, 480, 528}, {31883, 33584, 31932}},
+      Reference{15, 8, 12, 10, false, {2048, 544, 496}, {33668, 31967, 33619}},
+      Reference{15, 8, 12, 10, true, {2048, 480, 528}, {32497, 34439, 32553}},
+      Reference{15, 8, 12, 10, true, {2048, 544, 496}, {34534, 32593, 34478}});
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  for (size_t c = 0; c < channels.size(); ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 1, 1, c == 0 ? reference.y_bits : reference.c_bits, nullptr));
+    base->fill_channel(channels[c], reference.encoded[c]);
+  }
+  nclx_profile profile;
+  profile.set_colour_primaries(9);
+  profile.set_transfer_characteristics(reference.transfer);
+  profile.set_matrix_coefficients(reference.matrix);
+  profile.set_full_range_flag(!reference.limited);
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_matrix_coefficients(0);
+  alternate.set_full_range_flag(true);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  INFO(reference.matrix << "/" << reference.transfer << "/" << reference.limited);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2),
+                                     GainMapMetadata{}, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<heif_channel, 3> rgb_channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < rgb_channels.size(); ++c) {
+    REQUIRE(sample_at(**result, rgb_channels[c], 0) == Catch::Approx(reference.rgb[c]).margin(1));
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("LMS conversion precedes unequal linear RGB gains and the HLG OOTF")
+{
+  const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const std::array<uint16_t, 3> values{32768, 30720, 33792};
+  for (size_t c = 0; c < channels.size(); ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 1, 1, 16, nullptr));
+    base->fill_channel(channels[c], values[c]);
+  }
+  nclx_profile profile;
+  profile.set_colour_primaries(9);
+  profile.set_transfer_characteristics(transfer);
+  profile.set_matrix_coefficients(14);
+  profile.set_full_range_flag(true);
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_matrix_coefficients(0);
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  for (size_t c = 0; c < 3; ++c) { metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1}; }
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 65535, 2), metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  // Independent Decimal oracle: RGB gains 1/2/4, with the luminance-dependent
+  // HLG OOTF and its inverse around the ISO linear gain equation.
+  const std::array<uint16_t, 3> expected = transfer == 16 ? std::array<uint16_t, 3>{33231, 37392, 40396} :
+                                                         std::array<uint16_t, 3>{32022, 41636, 48300};
+  const std::array<heif_channel, 3> rgb_channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < rgb_channels.size(); ++c) {
+    REQUIRE(sample_at(**result, rgb_channels[c], 0) == Catch::Approx(expected[c]).margin(2));
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("LMS matrices preserve neutral signals and reject unresolved transfer")
+{
+  const uint16_t matrix = GENERATE(uint16_t{14}, uint16_t{15});
+  const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  for (double level : {0.0, 0.5, 1.0}) {
+    auto result = gain_map_decode_lms_matrix({level, 0, 0}, matrix, transfer);
+    REQUIRE(result);
+    for (double value : *result) { REQUIRE(value == Catch::Approx(level).margin(1e-6)); }
+  }
+  REQUIRE_FALSE(gain_map_decode_lms_matrix({0.5, 0, 0}, matrix, 2));
+  REQUIRE_FALSE(gain_map_decode_lms_matrix({std::numeric_limits<double>::infinity(), 0, 0}, matrix, transfer));
+  REQUIRE_FALSE(gain_map_decode_lms_matrix({0.5, 0, 0}, 2, transfer));
+}
+
 TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
 {
   auto base = make_pixels(4, false, 8192, 8);

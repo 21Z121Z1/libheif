@@ -42,6 +42,9 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer);
 // HLG display OOTF. Non-identity matrices also use the signed sYCC extension.
 Result<double> gain_map_decode_matrix_signal(double value, uint16_t transfer);
 Result<double> gain_map_encode_matrix_signal(double value, uint16_t transfer);
+// Invert H.273 ICtCp/IPT-C2 storage through nonlinear LMS signals and linear
+// RGB. Input chroma is already centered and normalized by its raster depth.
+Result<GainMapRGB> gain_map_decode_lms_matrix(const GainMapRGB& value, uint16_t matrix, uint16_t transfer);
 // HLG is a luminance-dependent RGB transform. Use the BT.2100 reference
 // display (1000 cd/m2, gamma 1.2, zero black) and HDR reference white 203.
 // Scalar transfer helpers intentionally cannot interpret HLG.

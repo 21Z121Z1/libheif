@@ -42,6 +42,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   auto profile = image->get_color_profile_nclx();
   const auto matrix = profile.m_matrix_coefficients;
   const bool constant_luminance = matrix == 10 || matrix == 13;
+  const bool lms_matrix = matrix == 14 || matrix == 15;
   const int y_bits = image->get_bits_per_pixel(heif_channel_Y);
   const int c_bits = image->get_bits_per_pixel(heif_channel_Cb);
   if (y_bits < 1 || c_bits < 1 || c_bits != image->get_bits_per_pixel(heif_channel_Cr)) {
@@ -49,7 +50,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   }
   const int rgb_bits = y_bits - (matrix == 16 ? 2 : matrix == 17 ? 1 : 0);
   if (rgb_bits < 1 || (!profile.get_full_range_flag() &&
-                      (rgb_bits < 8 || ((matrix == 11 || constant_luminance) && c_bits < 8))) ||
+                      (rgb_bits < 8 || ((matrix == 11 || constant_luminance || lms_matrix) && c_bits < 8))) ||
       (matrix == 8 && c_bits != y_bits && c_bits != y_bits + 1)) {
     return unsupported("Unsupported tone-map matrix bit depths");
   }
@@ -106,7 +107,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   const double rgb_offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (rgb_bits - 8));
   const double rgb_scale = profile.get_full_range_flag() ? rgb_max : 219.0 * (1U << (rgb_bits - 8));
   const int32_t c_mid = 1U << (c_bits - 1);
-  const double c_scale = matrix != 11 && !constant_luminance ? 1 :
+  const double c_scale = matrix != 11 && !constant_luminance && !lms_matrix ? 1 :
                         profile.get_full_range_flag() ? (1U << c_bits) - 1 :
                                                         224.0 * (1U << (c_bits - 8));
   // Portable arithmetic right shift for negative, odd lifting differences.
@@ -123,10 +124,16 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
       }
       const int32_t cb = sample[1] - c_mid, cr = sample[2] - c_mid;
       GainMapRGB signal{};
-      if (matrix == 11 || constant_luminance) {
+      if (matrix == 11 || constant_luminance || lms_matrix) {
         // H.273 (2024) Eq.30-38 and 76-78, with independent Y/C depths.
         const double ey = (sample[0] - rgb_offset) / rgb_scale;
-        if (constant_luminance) {
+        if (lms_matrix) {
+          auto rgb = gain_map_decode_lms_matrix({ey, cb / c_scale, cr / c_scale}, matrix,
+                                                profile.m_transfer_characteristics);
+          if (!rgb) { return rgb.error(); }
+          signal = *rgb;
+        }
+        else if (constant_luminance) {
           // Eq.66-75: restore R'/B', solve linear G from luminance, then
           // reapply the transfer. Applying an NCL matrix here is incorrect.
           const double r = ey + 2 * cr / c_scale * cl[cr <= 0 ? 4 : 5];
@@ -242,7 +249,7 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
   }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
     const auto matrix = profile.m_matrix_coefficients;
-    if (matrix == 8 || matrix == 10 || matrix == 11 || matrix == 13 || matrix == 16 || matrix == 17) {
+    if (matrix == 8 || (matrix >= 10 && matrix <= 17 && matrix != 12)) {
       return decode_special_ycbcr(image, options, limits);
     }
     // Guard both inputs: the generic converter still substitutes NCL for CL

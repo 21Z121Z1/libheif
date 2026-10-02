@@ -202,3 +202,13 @@ transfer or chromaticity-derived storage primaries remain explicit errors.
 Native math passes 4,094 assertions in 23 cases. Experimental ON sanitizer
 checks pass math, colour, reader and writer; OFF passes math and colour (the
 public experimental tmap targets are not built in OFF).
+
+ICtCp (14) and IPT-C2 (15) now invert the H.273 chroma/LMS and linear LMS/RGB
+matrices around the normalized transfer signal. PQ and HLG use their distinct
+ICtCp coefficient sets. Independent 70-digit Gaussian-elimination references
+cover coloured signals, mixed Y/C depths, range and chroma signs. Unequal RGB
+gains 1/2/4 also verify that the ISO gain equation and HLG display OOTF follow
+storage inversion. Native math passes 4,532 assertions in 26 cases; the same
+ON/OFF sanitizer targets and local clang-tidy pass. This covers the defined
+matrix equations within the documented integer raster and sampling subset,
+not general floating-point/ICC-LUT or unspecified-signalling compatibility.

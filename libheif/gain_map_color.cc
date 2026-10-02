@@ -722,6 +722,42 @@ Result<double> gain_map_encode_matrix_signal(double value, uint16_t transfer)
   return transfer == 13 ? std::copysign(*signal, value) : *signal;
 }
 
+Result<GainMapRGB> gain_map_decode_lms_matrix(const GainMapRGB& value, uint16_t matrix, uint16_t transfer)
+{
+  if (matrix != 14 && matrix != 15) { return unsupported_colour(); }
+  // H.273 (2024) Eq.14-19 and Eq.79-87. All specified matrix numerators
+  // divide by 4096; their inverses are computed once in double precision.
+  static const GainMapMatrix lms_to_rgb = inverse({{{1688.0 / 4096, 2146.0 / 4096, 262.0 / 4096},
+                                                   {683.0 / 4096, 2951.0 / 4096, 462.0 / 4096},
+                                                   {99.0 / 4096, 309.0 / 4096, 3688.0 / 4096}}});
+  static const GainMapMatrix ipt_lms_to_rgb = inverse({{{1747.0 / 4096, 2169.0 / 4096, 180.0 / 4096},
+                                                       {673.0 / 4096, 3029.0 / 4096, 394.0 / 4096},
+                                                       {50.0 / 4096, 207.0 / 4096, 3839.0 / 4096}}});
+  static const GainMapMatrix pq_to_lms = inverse({{{0.5, 0.5, 0},
+                                                  {6610.0 / 4096, -13613.0 / 4096, 7003.0 / 4096},
+                                                  {17933.0 / 4096, -17390.0 / 4096, -543.0 / 4096}}});
+  static const GainMapMatrix hlg_to_lms = inverse({{{0.5, 0.5, 0},
+                                                   {3625.0 / 4096, -7465.0 / 4096, 3840.0 / 4096},
+                                                   {9500.0 / 4096, -9212.0 / 4096, -288.0 / 4096}}});
+  static const GainMapMatrix ipt_to_lms = inverse({{{1638.0 / 4096, 1638.0 / 4096, 820.0 / 4096},
+                                                   {18248.0 / 4096, -19870.0 / 4096, 1622.0 / 4096},
+                                                   {3300.0 / 4096, 1463.0 / 4096, -4763.0 / 4096}}});
+  auto lms = gain_map_transform(matrix == 15 ? ipt_to_lms : transfer == 18 ? hlg_to_lms : pq_to_lms, value);
+  for (auto& component : lms) {
+    auto linear = gain_map_decode_matrix_signal(component, transfer);
+    if (!linear) { return linear.error(); }
+    component = *linear;
+  }
+  auto rgb = gain_map_transform(matrix == 15 ? ipt_lms_to_rgb : lms_to_rgb, lms);
+  for (auto& component : rgb) {
+    auto encoded = gain_map_encode_matrix_signal(component, transfer);
+    if (!encoded) { return encoded.error(); }
+    if (!std::isfinite(*encoded)) { return invalid_value(); }
+    component = *encoded;
+  }
+  return rgb;
+}
+
 namespace {
 Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile, bool decode)
 {
