@@ -179,3 +179,5 @@ mixed-depth RGB data; source pixels and primary selection remain unchanged.
 Low-depth limited-range/other-layout input stays explicit, and out-of-range
 sample values fail before adding an encoded item. This closes the former blanket
 minimum-depth writer policy without inventing lower-depth YCbCr normalization.
+The byte-interleaved RGB layout also expands each component independently;
+lossless AV1 checks cover its unequal component values and padded image rows.

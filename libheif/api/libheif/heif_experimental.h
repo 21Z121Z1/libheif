@@ -178,7 +178,7 @@ LIBHEIF_API
 void heif_gain_map_image_options_free(heif_gain_map_image_options* options);
 
 // Input samples are normalized gain data, not an SDR/HDR colour image.
-// Full-range monochrome and planar RGB below 8 bits are normalized to a common
+// Full-range monochrome and RGB (planar or byte interleaved) below 8 bits are normalized to a common
 // unsigned depth of at least 8 bits before encoding, rounded to the nearest
 // representable level. Other lower-depth layouts/ranges are rejected.
 // Does not modify the input image or select a primary image. NULL gain_options

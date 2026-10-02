@@ -429,9 +429,11 @@ heif_error heif_context_encode_gain_map_image(
       // different normalization/zero point, so do not infer their expansion.
       if (!signalling.full_range_flag ||
           (space != heif_colorspace_monochrome &&
-           (space != heif_colorspace_RGB || source->get_chroma_format() != heif_chroma_444))) {
+           (space != heif_colorspace_RGB ||
+            (source->get_chroma_format() != heif_chroma_444 &&
+             source->get_chroma_format() != heif_chroma_interleaved_RGB)))) {
         return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
-                "Lower-depth gain encoding requires full-range monochrome or planar RGB"};
+                "Lower-depth gain encoding requires full-range monochrome or RGB"};
       }
       for (auto channel : source->get_channel_set()) {
         const auto depth = source->get_bits_per_pixel(channel);
@@ -464,10 +466,11 @@ heif_error heif_context_encode_gain_map_image(
         size_t input_stride = 0, output_stride = 0;
         const auto* input = source->get_channel_memory(channel, &input_stride);
         auto* output = pixels->get_channel_memory(channel, &output_stride);
+        const size_t row_samples = size_t(width) * (channel == heif_channel_interleaved ? 3 : 1);
         for (uint32_t y = 0; y < height; ++y) {
           const auto* input_row = input + size_t(y) * input_stride;
           auto* output_row = output + size_t(y) * output_stride;
-          for (uint32_t x = 0; x < width; ++x) {
+          for (size_t x = 0; x < row_samples; ++x) {
             const uint32_t value = depth <= 8 ? input_row[x] : reinterpret_cast<const uint16_t*>(input_row)[x];
             if (value > input_maximum) {
               return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,

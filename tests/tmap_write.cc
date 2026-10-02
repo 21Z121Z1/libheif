@@ -506,6 +506,58 @@ TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB inp
   heif_context_free(ctx);
 }
 
+TEST_CASE("Lower-depth byte interleaved RGB gain retains independently normalized components")
+{
+  const int depth = GENERATE(1, 2, 3, 4, 5, 6, 7);
+  const uint32_t maximum = (1U << depth) - 1;
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
+  REQUIRE(heif_encoder_set_parameter_string(encoder, "chroma", "444").code == heif_error_Ok);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(16, 16, heif_colorspace_RGB,
+                           heif_chroma_interleaved_RGB, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_interleaved, 16, 16, depth).code == heif_error_Ok);
+  int stride = 0;
+  auto* plane = heif_image_get_plane(pixels, heif_channel_interleaved, &stride);
+  REQUIRE(plane);
+  for (int y = 0; y < 16; ++y) {
+    for (int x = 0; x < 16; ++x) {
+      for (uint32_t c = 0; c < 3; ++c) {
+        plane[y * stride + x * 3 + c] = static_cast<uint8_t>((x + c) % (maximum + 1));
+      }
+    }
+  }
+  heif_image_handle* gain = nullptr;
+  const auto error = heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain);
+  INFO((error.message ? error.message : ""));
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(gain);
+  heif_image* decoded = nullptr;
+  REQUIRE(heif_decode_image(gain, &decoded, heif_colorspace_RGB, heif_chroma_444, nullptr).code == heif_error_Ok);
+  REQUIRE(decoded);
+  uint32_t component = 0;
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int output_stride = 0;
+    const auto* output = heif_image_get_plane_readonly(decoded, channel, &output_stride);
+    REQUIRE(output);
+    for (int y : {0, 7, 15}) {
+      for (int x = 0; x < 16; ++x) {
+        const uint32_t original = (x + component) % (maximum + 1);
+        REQUIRE(output[y * output_stride + x] == std::round(original * 255.0 / maximum));
+        REQUIRE(plane[y * stride + x * 3 + component] == original);
+      }
+    }
+    ++component;
+  }
+  REQUIRE(heif_image_get_bits_per_pixel_range(pixels, heif_channel_interleaved) == depth);
+  heif_image_release(decoded);
+  heif_image_handle_release(gain);
+  heif_image_release(pixels);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("Lower-depth gain writer rejects unresolved range and invalid samples before encoding")
 {
   const bool limited = GENERATE(false, true);
