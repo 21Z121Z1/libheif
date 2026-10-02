@@ -94,11 +94,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
     if (cl[0] < 0 || cl[1] < 0 || cl[0] + cl[1] >= 1) {
       return unsupported("Invalid constant-luminance primary weights");
     }
-    auto peak = gain_map_decode_matrix_signal(1, profile.m_transfer_characteristics);
-    if (!peak) { return peak.error(); }
     const std::array<double, 4> fractions{1 - cl[1], cl[1], 1 - cl[0], cl[0]};
     for (size_t c = 0; c < fractions.size(); ++c) {
-      auto encoded = gain_map_encode_matrix_signal(*peak * fractions[c], profile.m_transfer_characteristics);
+      auto encoded = gain_map_encode_matrix_signal(fractions[c], profile.m_transfer_characteristics);
       if (!encoded) { return encoded.error(); }
       cl[c + 2] = c % 2 == 0 ? *encoded : 1 - *encoded;
       if (!std::isfinite(cl[c + 2]) || cl[c + 2] <= 0) {
