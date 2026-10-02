@@ -81,9 +81,11 @@ its history from upstream PR #1893, commit
 `a30c8fbc0be21f2807260a8da5d3e779f8555363`. The integration adds visibility
 consistency checks and C-boundary exception guards.
 
-ISO 21496-1 4.4 recommends, rather than requires, at least eight bits per gain
-component. Full-range lower-depth mono data is supported; unsupported sample
-formats still return an explicit error.
+ISO 21496-1 4.4 requires at least eight bits per gain component. The
+standards-aware gain-map writer rejects lower-depth inputs. The reconstruction
+path remains deliberately tolerant of lower-depth full-range samples when
+reading a non-conforming file, while unsupported sample formats still return an
+explicit error.
 
 ## Remaining limitations
 
