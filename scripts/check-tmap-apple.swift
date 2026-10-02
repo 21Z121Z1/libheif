@@ -69,6 +69,27 @@ for rgb in [false, true] {
     // extended-linear pixels are the cross-version evidence that DecodeToHDR
     // actually applied the gain map; contentHeadroom remains diagnostic only.
     print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
+    // An independent public Core Image load helps distinguish the ImageIO
+    // decode-request path from file discovery/reconstruction on hosted Macs.
+    // It does not replace or relax the ImageIO pixel gate below.
+    if let direct = CIImage(contentsOf: url, options: [.expandToHDR: true]) {
+        var directPixels = [Float](repeating: 0, count: 64 * 64 * 4)
+        directPixels.withUnsafeMutableBytes { bytes in
+            context.render(direct, toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
+                           bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
+        }
+        var directError = 0.0
+        var directMaximum = 0.0
+        for i in 0..<(64 * 64) {
+            for c in 0..<3 {
+                let value = Double(directPixels[i * 4 + c])
+                require(value.isFinite, "Non-finite Core Image HDR pixel")
+                directMaximum = max(directMaximum, value)
+                directError = max(directError, abs(value - baselineLinear * gains[c]))
+            }
+        }
+        print("CHECK Core Image consumer \(name) maxLinear=\(directMaximum) maxLinearError=\(directError) space=\(String(describing: direct.colorSpace?.name))")
+    }
     if maximumLinearValue <= 1.0 {
         failures.append("ImageIO HDR decode stayed in SDR range for \(name)")
     }

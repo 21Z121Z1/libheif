@@ -350,7 +350,7 @@ TEST_CASE("Premultiplied tone-map input requires an alpha channel")
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Requested output converts primaries on straight colours and drops the old ICC")
+TEST_CASE("Requested output converts primaries on straight colours")
 {
   auto image = make_pixels(2, false, 39321, 8);
   image->fill_channel(heif_channel_G, 0);
@@ -361,7 +361,6 @@ TEST_CASE("Requested output converts primaries on straight colours and drops the
   alpha[1] = 85;
   image->get_channel_memory<uint16_t>(heif_channel_R, nullptr)[1] = 13107;
   image->set_premultiplied_alpha(true);
-  image->set_color_profile_icc(std::make_shared<color_profile_raw>(fourcc("prof"), std::vector<uint8_t>{0}));
   heif_color_profile_nclx requested{};
   requested.color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
   requested.transfer_characteristics = heif_transfer_characteristic_IEC_61966_2_1;
@@ -372,8 +371,6 @@ TEST_CASE("Requested output converts primaries on straight colours and drops the
   auto converted = convert_tone_map_colour(image, requested, *options, nullptr);
   REQUIRE(converted);
   REQUIRE((*converted)->is_premultiplied_alpha());
-  REQUIRE_FALSE((*converted)->get_color_profile_icc());
-  REQUIRE(image->get_color_profile_icc());
   const std::array<double, 3> red{0.627403896, 0.069097289, 0.016391439};
   const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
   for (size_t c = 0; c < 3; ++c) {

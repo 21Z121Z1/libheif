@@ -185,16 +185,21 @@ Error validate_tone_map_inputs(
   return Error::Ok;
 }
 
-Result<nclx_profile> resolve_tone_map_colour(const ImageItem& item)
+Result<GainMapColour> resolve_tone_map_colour(const ImageItem& item)
 {
-  if (item.has_nclx_color_profile()) {
-    return item.get_color_profile_nclx();
+  const auto nclx = item.get_color_profile_nclx();
+  // HEIF 6.5.5 allows ICC plus NCLX: the latter then describes storage,
+  // with CP=2/TC=2, while the ICC supplies RGB colourimetry.
+  if (item.has_nclx_color_profile() &&
+      nclx.m_colour_primaries != 2 && nclx.m_transfer_characteristics != 2) {
+    return GainMapColour(item.get_color_profile_nclx());
   }
 
   const auto& icc = item.get_color_profile_icc();
   if (icc) {
-    return gain_map_nclx_from_icc(*icc);
+    return GainMapColour::from_icc(icc);
   }
+  if (item.has_nclx_color_profile()) { return GainMapColour(nclx); }
 
   return Error{
       heif_error_Unsupported_feature,

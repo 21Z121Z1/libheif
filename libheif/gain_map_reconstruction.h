@@ -25,16 +25,17 @@
 #include <optional>
 
 #include "gain_map_metadata.h"
+#include "gain_map_color.h"
 #include "image/pixelimage.h"
 
 Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const std::shared_ptr<HeifPixelImage>& base,
     const std::shared_ptr<HeifPixelImage>& gain,
     const GainMapMetadata& metadata,
-    const nclx_profile& alternate,
+    const GainMapColour& alternate_colour,
     const heif_decoding_options& options,
     const heif_security_limits* limits,
-    std::optional<nclx_profile> baseline_colour_override = std::nullopt,
+    std::optional<GainMapColour> baseline_colour_override = std::nullopt,
     std::optional<double> target_headroom = std::nullopt);
 
 // Root output conversion, after all nested ISO gain-map operations complete.

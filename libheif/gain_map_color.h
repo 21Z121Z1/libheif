@@ -26,6 +26,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 
 using GainMapRGB = std::array<double, 3>;
 using GainMapMatrix = std::array<GainMapRGB, 3>;
@@ -46,5 +47,26 @@ Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value);
 
 Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile);
+
+struct GainMapIccColour;
+
+// A linear RGB application space, independent of codec matrix/range storage.
+// ICC matrix/TRC profiles retain their actual colourants and per-channel curves.
+class GainMapColour
+{
+public:
+  GainMapColour(const nclx_profile& profile) : m_nclx(profile) {}
+  static Result<GainMapColour> from_icc(const std::shared_ptr<const color_profile_raw>& profile);
+  Result<GainMapRGB> decode(const GainMapRGB& signal) const;
+  Result<GainMapRGB> encode(const GainMapRGB& linear) const;
+  Result<GainMapMatrix> matrix_to(const GainMapColour& target) const;
+  const nclx_profile& raster_profile() const { return m_nclx; }
+  const std::shared_ptr<const color_profile_raw>& icc_profile() const { return m_profile; }
+
+private:
+  nclx_profile m_nclx;
+  std::shared_ptr<const color_profile_raw> m_profile;
+  std::shared_ptr<const GainMapIccColour> m_matrix_trc;
+};
 
 #endif

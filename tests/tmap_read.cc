@@ -26,6 +26,7 @@
 
 #include "catch_amalgamated.hpp"
 #include "gain_map_metadata.h"
+#include "common_utils.h"
 #include "libheif/heif.h"
 #include "libheif/heif_experimental.h"
 #include "test_utils.h"
@@ -105,7 +106,9 @@ std::vector<uint8_t> build_tmap_file(
     bool rotate_base = false,
     bool duplicate_dimg_entry = false,
     const GainMapMetadata* override_metadata = nullptr,
-    bool premultiplied_base = false)
+    bool premultiplied_base = false,
+    const std::vector<uint8_t>* baseline_icc = nullptr,
+    const std::vector<uint8_t>* alternate_icc = nullptr)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -153,10 +156,10 @@ std::vector<uint8_t> build_tmap_file(
   auto ispe = make_box("ispe", ispe_payload, true);
 
   auto mskC = make_box("mskC", std::vector<uint8_t>{8}, true);
-  auto base_colr = make_nclx(1, 13, 1, true);
+  auto base_colr = baseline_icc ? make_nclx(2, 2, 1, true) : make_nclx(1, 13, 1, true);
   auto gain_colr =
       make_nclx(gain_primaries, gain_transfer, 2, true);
-  auto tmap_colr = make_nclx(9, 16, 9, true);
+  auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, true) : make_nclx(9, 16, 9, true);
 
   std::vector<uint8_t> ipco_payload;
   append(ipco_payload, ispe);
@@ -172,19 +175,32 @@ std::vector<uint8_t> build_tmap_file(
     const std::vector<uint8_t> auxiliary_payload(auxiliary_type, auxiliary_type + sizeof(auxiliary_type));
     append(ipco_payload, make_box("auxC", auxiliary_payload, true));
   }
+  uint8_t next_property = static_cast<uint8_t>(6 + (rotate_base ? 1 : 0) + (premultiplied_base ? 1 : 0));
+  uint8_t baseline_icc_property = 0, alternate_icc_property = 0;
+  for (const auto* profile : {baseline_icc, alternate_icc}) {
+    if (!profile) { continue; }
+    std::vector<uint8_t> payload;
+    append_fourcc(payload, "prof");
+    append(payload, *profile);
+    append(ipco_payload, make_box("colr", payload));
+    if (profile == baseline_icc && !baseline_icc_property) { baseline_icc_property = next_property; }
+    else { alternate_icc_property = next_property; }
+    ++next_property;
+  }
   auto ipco = make_box("ipco", ipco_payload);
 
   std::vector<uint8_t> ipma_payload;
   put_u32_be(ipma_payload, item_count);
 
   put_u16_be(ipma_payload, 1);
-  ipma_payload.push_back(rotate_base ? 4 : 3);
+  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_base ? 1 : 0) + (baseline_icc ? 1 : 0)));
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(3);
   if (rotate_base) {
     ipma_payload.push_back(0x80 | 6);
   }
+  if (baseline_icc) { ipma_payload.push_back(baseline_icc_property); }
 
   put_u16_be(ipma_payload, 2);
   ipma_payload.push_back(3);
@@ -193,9 +209,10 @@ std::vector<uint8_t> build_tmap_file(
   ipma_payload.push_back(4);
 
   put_u16_be(ipma_payload, 3);
-  ipma_payload.push_back(2);
+  ipma_payload.push_back(alternate_icc ? 3 : 2);
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(5);
+  if (alternate_icc) { ipma_payload.push_back(alternate_icc_property); }
   if (premultiplied_base) {
     put_u16_be(ipma_payload, 4);
     ipma_payload.push_back(3);
@@ -318,6 +335,46 @@ heif_image_handle* open_tmap(
 
   *out_context = context;
   return tmap;
+}
+
+std::vector<uint8_t> make_custom_gamma_icc()
+{
+  std::vector<uint8_t> bytes(132 + 6 * 12, 0);
+  const auto patch = [&bytes](size_t offset, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) { bytes[offset + i] = static_cast<uint8_t>(value >> ((3 - i) * 8)); }
+  };
+  patch(8, 0x04400000);
+  patch(12, fourcc("mntr"));
+  patch(16, fourcc("RGB "));
+  patch(20, fourcc("XYZ "));
+  patch(36, fourcc("acsp"));
+  patch(128, 6);
+  const double columns[3][3] = {{0.5, 0.25, 0.02}, {0.3, 0.65, 0.15}, {0.1642, 0.1, 0.6549}};
+  for (size_t c = 0; c < 3; ++c) {
+    for (size_t kind = 0; kind < 2; ++kind) {
+      while (bytes.size() % 4) { bytes.push_back(0); }
+      const size_t offset = bytes.size();
+      if (kind == 0) {
+        append_fourcc(bytes, "XYZ ");
+        put_u32_be(bytes, 0);
+        for (double value : columns[c]) { put_u32_be(bytes, static_cast<uint32_t>(std::llround(value * 65536))); }
+      }
+      else {
+        append_fourcc(bytes, "curv");
+        put_u32_be(bytes, 0);
+        put_u32_be(bytes, 1);
+        put_u16_be(bytes, 512); // Gamma 2, not a supported CICP transfer curve.
+      }
+      const char name[5] = {"rgb"[c], kind == 0 ? 'X' : 'T', kind == 0 ? 'Y' : 'R',
+                             kind == 0 ? 'Z' : 'C', 0};
+      const size_t entry = 132 + (c * 2 + kind) * 12;
+      patch(entry, fourcc(name));
+      patch(entry + 4, static_cast<uint32_t>(offset));
+      patch(entry + 8, static_cast<uint32_t>(bytes.size() - offset));
+    }
+  }
+  patch(0, static_cast<uint32_t>(bytes.size()));
+  return bytes;
 }
 
 
@@ -765,6 +822,48 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   REQUIRE(alpha);
   REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[0] == 0);
   REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[1] == 21845);
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline fallback")
+{
+  const bool fallback = GENERATE(false, true);
+  const bool alternate_icc = GENERATE(false, true);
+  const auto icc = make_custom_gamma_icc();
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  const auto file = build_tmap_file(2, 0, fallback ? 1 : 0, 2, 2, 1, false, false,
+                                   &metadata, false, &icc, alternate_icc ? &icc : nullptr);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  const double expected = std::pow(127.0 / 255, 2) * (fallback ? 1 : 2);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t stride = 0;
+    const auto* plane = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, channel, &stride));
+    REQUIRE(plane);
+    REQUIRE(plane[0] == Catch::Approx(expected * 65535).margin(5));
+  }
+  REQUIRE(heif_image_get_raw_color_profile_size(image) == 0);
   heif_image_release(image);
   heif_nclx_color_profile_free(requested);
   options->output_image_nclx_profile = nullptr;

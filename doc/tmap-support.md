@@ -2,9 +2,9 @@
 
 This branch implements final-2025 Annex C metadata parsing/writing, first-class
 `tmap` inspection, gain-raster encoding, construction from existing base/gain items, and canonical
-reconstruction for a conservative colour subset. NCLX is handled directly, and
-selected ICC profiles are mapped to equivalent CICP descriptions for the ISO
-gain-map operation. It is not a complete implementation of every colour profile
+reconstruction with direct NCLX and RGB ICC colour descriptions. ICC matrix/TRC
+profiles use their actual colourants and per-channel curves for the ISO gain-map
+operation. It is not a complete implementation of every colour profile
 allowed by HEIF.
 
 ## Reconstruction
@@ -34,11 +34,23 @@ HLG uses the BT.2100 reference display (1000 cd/m2, zero black, system gamma
 1.2), including its RGB-luminance-dependent OOTF, with the same 203 cd/m2
 reference white. Other HLG viewing conditions are not configurable yet.
 
-For ICC-described base or alternate items, reconstruction currently recognizes
-an ICC `cicp` tag when it names the supported CICP subset, and conservative
-RGB matrix/TRC profiles whose primaries and transfer curve can be matched to
-that same subset. Arbitrary LUT/device-link ICC transforms are not approximated.
-The original ICC property remains available on the decoded image.
+For ICC-described base or alternate items, an ICC `cicp` tag uses the supported
+CICP subset and HDR reference-white convention above. RGB input/display
+matrix/TRC profiles use their stored D50 PCS colourants and each channel's
+monotone `curveType` or `parametricCurveType` (types 0-4), without matching them
+to a CICP approximation. Sampled curves use linear interpolation; inverse
+plateaus follow ICC.1:2022 Annex F.1. Cross-profile conversions use relative
+colourimetry through the D50 PCS, with a double-precision Bradford D65 adaptation
+for the supported NCLX spaces. No runtime CMS dependency is added.
+
+When ICC and NCLX are both associated, HEIF 6.5.5's CP=2/TC=2 storage NCLX
+does not replace the ICC colourimetry. Codec matrix/range handling remains on
+the decoded raster. A matrix/TRC alternate retains its original ICC and uses
+CP=2/TC=2 for the RGB raster instead of inventing a CICP encoding. Unknown-version
+baseline fallback also honours ICC during requested output conversion.
+LUT/device-link/non-RGB transforms are not approximated, and a LUT tag does not
+silently fall back to the matrix/TRC model. The original ICC property remains
+available on the canonical decoded image.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
 then unnormalized to log2 gains before co-sited bilinear resampling with edge
@@ -113,9 +125,9 @@ non-conforming. Unsupported sample formats still return an explicit error.
 
 ## Remaining limitations
 
-- General ICC reconstruction still requires a real CMS, including a defined HDR
-  reference-white interpretation. Only the explicitly recognized ICC-to-CICP
-  subset described above is reconstructed without a CMS.
+- ICC LUT, device-link, non-RGB and non-monotone shaper transforms remain
+  unsupported. They require a resolved linear RGB application space and a CMS
+  strategy; supported matrix/TRC and CICP cases are handled as described above.
 - HLG is limited to the reference viewing conditions described above.
 - Unsupported YCbCr matrices and tile-only `tmap`
   decode return explicit errors.
@@ -127,6 +139,12 @@ non-conforming. Unsupported sample formats still return an explicit error.
 reconciliation, limited-range endpoints and resampling order/phase. `tmap_read`
 checks canonical decode, nested reconstruction, baseline fallback and existing
 container error isolation. Existing `tmap_write` checks writer round trips.
+
+`gain_map_color` also checks custom ICC colourants, unequal channel curves,
+sampled-curve interpolation and plateau inverses, and actual reconstruction
+with ICC alternates. Optional `LIBHEIF_TEST_LCMS=ON` compares serialized profiles
+in both directions against independent Little CMS. Actions enables this oracle
+for both experimental modes; it is linked only into the test executable.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It

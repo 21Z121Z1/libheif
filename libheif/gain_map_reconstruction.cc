@@ -146,10 +146,10 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const std::shared_ptr<HeifPixelImage>& base,
     const std::shared_ptr<HeifPixelImage>& gain,
     const GainMapMetadata& metadata,
-    const nclx_profile& alternate,
+    const GainMapColour& alternate_colour,
     const heif_decoding_options& options,
     const heif_security_limits* limits,
-    std::optional<nclx_profile> baseline_colour_override,
+    std::optional<GainMapColour> baseline_colour_override,
     std::optional<double> target_headroom)
 {
   if (!limits) {
@@ -175,23 +175,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   if (auto error = check_for_valid_image_size(limits, gain->get_width(), gain->get_height())) {
     return error;
   }
-  auto baseline = base->get_color_profile_nclx();
-  if (baseline_colour_override) {
-    // The decoded raster still carries the codec's matrix/range signalling.
-    // Item-level ICC/NCLX colourimetry supplies the RGB primaries and transfer
-    // function used by ISO 21496 without overwriting those storage semantics.
-    baseline.m_colour_primaries =
-        baseline_colour_override->m_colour_primaries;
-    baseline.m_transfer_characteristics =
-        baseline_colour_override->m_transfer_characteristics;
-  }
-  if (!baseline.is_defined() || !alternate.is_defined()) {
-    return unsupported("Tone-map reconstruction has no supported colour description");
-  }
-  if (!gain_map_supports_transfer(baseline.m_transfer_characteristics) ||
-      !gain_map_supports_transfer(alternate.m_transfer_characteristics)) {
-    return unsupported("Unsupported tone-map transfer function");
-  }
+  // Codec matrix/range stays on the raster; the item colour description is
+  // used only after conversion to RGB sample values.
+  const auto baseline_colour = baseline_colour_override.value_or(GainMapColour(base->get_color_profile_nclx()));
   // Matrix interpretation cannot be guessed from unspecified primaries.
   const uint16_t gain_matrix = gain->get_color_profile_nclx().m_matrix_coefficients;
   if (gain->get_colorspace() == heif_colorspace_YCbCr &&
@@ -203,10 +189,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map baseline has no alpha channel"};
   }
-  const uint16_t application = metadata.use_base_colour_space ?
-                               baseline.m_colour_primaries : alternate.m_colour_primaries;
-  auto before = gain_map_primaries_matrix(baseline.m_colour_primaries, application);
-  auto after = gain_map_primaries_matrix(application, alternate.m_colour_primaries);
+  const auto& application = metadata.use_base_colour_space ? baseline_colour : alternate_colour;
+  auto before = baseline_colour.matrix_to(application);
+  auto after = application.matrix_to(alternate_colour);
   if (!before) { return before.error(); }
   if (!after) { return after.error(); }
 
@@ -262,7 +247,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
         // Undo it before the nonlinear EOTF and ISO's linear gain operation.
         for (auto& value : signal) { value = alpha > 0 ? value / alpha : 0; }
       }
-      auto decoded = gain_map_decode_rgb(signal, baseline);
+      auto decoded = baseline_colour.decode(signal);
       if (!decoded) { return decoded.error(); }
       GainMapRGB linear = *decoded;
       linear = gain_map_transform(*before, linear);
@@ -283,7 +268,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
         linear[c] = *value;
       }
       linear = gain_map_transform(*after, linear);
-      auto encoded = gain_map_encode_rgb(linear, alternate);
+      auto encoded = alternate_colour.encode(linear);
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
         out[c][size_t(y) * strides[c] + x] = static_cast<uint16_t>(
@@ -297,7 +282,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     }
   }
   output->set_premultiplied_alpha(premultiplied);
-  output->set_color_profile_nclx(alternate);
+  output->set_color_profile_nclx(alternate_colour.raster_profile());
+  output->set_color_profile_icc(alternate_colour.icc_profile());
   return output;
 }
 
@@ -309,22 +295,29 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
 {
   if (!limits) { limits = &global_security_limits; }
   auto source = image->get_color_profile_nclx();
-  auto target = source;
+  GainMapColour source_colour(source);
+  if (image->get_color_profile_icc()) {
+    auto resolved = GainMapColour::from_icc(image->get_color_profile_icc());
+    if (!resolved) { return resolved.error(); }
+    source_colour = *resolved;
+  }
+  const auto source_description = source_colour.raster_profile();
+  auto target = source_description;
   if (requested.color_primaries != heif_color_primaries_unspecified) {
     target.set_colour_primaries(requested.color_primaries);
   }
   if (requested.transfer_characteristics != heif_transfer_characteristic_unspecified) {
     target.set_transfer_characteristics(requested.transfer_characteristics);
   }
-  if (source.m_colour_primaries == target.m_colour_primaries &&
-      source.m_transfer_characteristics == target.m_transfer_characteristics) {
+  if (source_description.m_colour_primaries == target.m_colour_primaries &&
+      source_description.m_transfer_characteristics == target.m_transfer_characteristics) {
     return image;
   }
-  if (!gain_map_supports_transfer(source.m_transfer_characteristics) ||
-      !gain_map_supports_transfer(target.m_transfer_characteristics)) {
+  if (!gain_map_supports_transfer(target.m_transfer_characteristics)) {
     return unsupported("Unsupported tone-map requested-output transfer function");
   }
-  auto matrix = gain_map_primaries_matrix(source.m_colour_primaries, target.m_colour_primaries);
+  const GainMapColour target_colour(target);
+  auto matrix = source_colour.matrix_to(target_colour);
   if (!matrix) { return matrix.error(); }
   if (image->is_premultiplied_alpha() && !image->has_alpha()) {
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
@@ -357,9 +350,9 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
       if (premultiplied) {
         for (auto& value : signal) { value = alpha > 0 ? value / alpha : 0; }
       }
-      auto linear = gain_map_decode_rgb(signal, source);
+      auto linear = source_colour.decode(signal);
       if (!linear) { return linear.error(); }
-      auto encoded = gain_map_encode_rgb(gain_map_transform(*matrix, *linear), target);
+      auto encoded = target_colour.encode(gain_map_transform(*matrix, *linear));
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
         out[c][size_t(y) * strides[c] + x] = static_cast<uint16_t>(

@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -39,7 +40,7 @@ Error unsupported_colour()
 Error unsupported_icc()
 {
   return {heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
-          "ICC profile cannot be mapped to the supported ISO tone-map CICP subset"};
+          "Unsupported ISO tone-map ICC colour transform"};
 }
 
 Error malformed_icc()
@@ -301,7 +302,8 @@ Result<GainMapMatrix> parse_chad_tag(const IccView& view, const IccTag& tag)
   return matrix;
 }
 
-Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x)
+Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x,
+                                 bool allow_sampled = false)
 {
   if (!view.bytes) {
     return malformed_icc();
@@ -384,7 +386,17 @@ Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double
     else {
       // A sampled curve may represent an arbitrary device transform. Do not
       // infer a standard transfer function from a sparse coincidence.
-      return unsupported_icc();
+      if (!allow_sampled) { return unsupported_icc(); }
+      if (count > (tag.size - 12) / 2) { return malformed_icc(); }
+      const double position = std::clamp(x, 0.0, 1.0) * (count - 1);
+      const uint32_t low = static_cast<uint32_t>(position);
+      const uint32_t high = std::min(low + 1, count - 1);
+      uint16_t a = 0, b = 0;
+      if (!read_u16(data, tag.offset + 12 + size_t(low) * 2, a) ||
+          !read_u16(data, tag.offset + 12 + size_t(high) * 2, b)) {
+        return malformed_icc();
+      }
+      result = (a + (static_cast<double>(b) - a) * (position - low)) / 65535.0;
     }
   }
   else {
@@ -702,4 +714,243 @@ Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile)
     return nclx_from_cicp(*view, *cicp);
   }
   return nclx_from_matrix_trc(*view);
+}
+
+struct GainMapIccColour
+{
+  IccView view;
+  std::array<IccTag, 3> curves;
+  GainMapMatrix to_pcs;
+};
+
+namespace {
+Error validate_rgb_curve(const IccView& view, const IccTag& tag)
+{
+  const auto& bytes = *view.bytes;
+  auto first = evaluate_icc_curve(view, tag, 0, true);
+  auto last = evaluate_icc_curve(view, tag, 1, true);
+  if (!first) { return first.error(); }
+  if (!last) { return last.error(); }
+  if (*last <= *first) { return unsupported_icc(); }
+  uint32_t type = 0;
+  read_u32(bytes, tag.offset, type);
+  if (type == icc_sig('c', 'u', 'r', 'v')) {
+    uint32_t count = 0;
+    read_u32(bytes, tag.offset + 8, count);
+    if (count > 1) {
+      uint16_t previous = 0;
+      for (uint32_t i = 0; i < count; ++i) {
+        uint16_t value = 0;
+        if (!read_u16(bytes, tag.offset + 12 + size_t(i) * 2, value)) { return malformed_icc(); }
+        if (i && value < previous) { return unsupported_icc(); }
+        previous = value;
+      }
+    }
+  }
+  else {
+    uint16_t function = 0;
+    read_u16(bytes, tag.offset + 8, function);
+    if (function > 0) {
+      auto a = read_s15_fixed16(bytes, tag.offset + 16);
+      if (!a || *a <= 0) { return unsupported_icc(); }
+    }
+    if (function >= 3) {
+      auto a = read_s15_fixed16(bytes, tag.offset + 16);
+      auto b = read_s15_fixed16(bytes, tag.offset + 20);
+      auto c = read_s15_fixed16(bytes, tag.offset + 24);
+      auto d = read_s15_fixed16(bytes, tag.offset + 28);
+      if (!a || !b || !c || !d || *c < 0 || (*d <= 1 && *a * std::max(*d, 0.0) + *b < 0)) {
+        return unsupported_icc();
+      }
+      if (*d > 0 && *d <= 1) {
+        auto left = evaluate_icc_curve(view, tag, std::nextafter(*d, 0.0), true);
+        auto right = evaluate_icc_curve(view, tag, *d, true);
+        if (!left || !right || *left > *right) { return unsupported_icc(); }
+      }
+    }
+  }
+  return Error::Ok;
+}
+
+Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double value)
+{
+  if (!std::isfinite(value)) { return invalid_value(); }
+  auto first = evaluate_icc_curve(view, tag, 0, true);
+  auto last = evaluate_icc_curve(view, tag, 1, true);
+  if (!first) { return first.error(); }
+  if (!last) { return last.error(); }
+  const double target = std::clamp(value, *first, *last);
+  uint32_t type = 0;
+  read_u32(*view.bytes, tag.offset, type);
+  if (type == icc_sig('c', 'u', 'r', 'v')) {
+    uint32_t count = 0;
+    read_u32(*view.bytes, tag.offset + 8, count);
+    if (count == 0) { return target; }
+    if (count == 1) {
+      uint16_t gamma = 0;
+      read_u16(*view.bytes, tag.offset + 12, gamma);
+      return std::pow(target, 256.0 / gamma);
+    }
+    // Find the table interval in O(log n), retaining exact plateau endpoints.
+    const auto entry = [&view, &tag](uint32_t i) {
+      uint16_t sample = 0;
+      read_u16(*view.bytes, tag.offset + 12 + size_t(i) * 2, sample);
+      return sample / 65535.0;
+    };
+    uint32_t low = 0, high = count - 1;
+    if (target == *last) {
+      while (low < high) {
+        const uint32_t middle = low + (high - low) / 2;
+        if (entry(middle) < target) { low = middle + 1; }
+        else { high = middle; }
+      }
+      return static_cast<double>(low) / (count - 1);
+    }
+    while (low < high) {
+      const uint32_t middle = low + (high - low + 1) / 2;
+      if (entry(middle) <= target) { low = middle; }
+      else { high = middle - 1; }
+    }
+    const double a = entry(low), b = entry(low + 1);
+    return (low + (target - a) / (b - a)) / (count - 1);
+  }
+  else {
+    uint16_t function = 0;
+    read_u16(*view.bytes, tag.offset + 8, function);
+    constexpr std::array<size_t, 5> parameter_counts{1, 3, 4, 5, 7};
+    std::array<double, 7> p{};
+    for (size_t i = 0; i < parameter_counts[function]; ++i) {
+      auto parameter = read_s15_fixed16(*view.bytes, tag.offset + 12 + i * 4);
+      if (!parameter) { return parameter.error(); }
+      p[i] = *parameter;
+    }
+    if (function == 0) { return std::pow(target, 1.0 / p[0]); }
+    const double high_offset = function == 2 ? p[3] : (function == 4 ? p[5] : 0);
+    const double breakpoint = function <= 2 ? -p[2] / p[1] : p[4];
+    const double high_value = (std::pow(std::max(target - high_offset, 0.0), 1.0 / p[0]) - p[2]) / p[1];
+    if (function <= 2) { return std::clamp(high_value, 0.0, 1.0); }
+    const double low_offset = function == 4 ? p[6] : 0;
+    const double low_end = std::clamp(p[3] * breakpoint + low_offset, 0.0, 1.0);
+    if (breakpoint > 0 && (breakpoint > 1 || target < low_end || (target == *last && target <= low_end))) {
+      const double low_value = p[3] > 0 ? (target - low_offset) / p[3] : breakpoint;
+      return std::clamp(low_value, 0.0, std::min(breakpoint, 1.0));
+    }
+    return std::clamp(high_value, std::clamp(breakpoint, 0.0, 1.0), 1.0);
+  }
+}
+
+Result<GainMapMatrix> nclx_to_pcs(const nclx_profile& profile)
+{
+  auto xyz = to_xyz(profile.m_colour_primaries);
+  if (!xyz) { return xyz.error(); }
+  // Bradford adaptation from the declared D65 white to ICC's D50 PCS white.
+  // Compute in double precision instead of reusing an s15Fixed16 'chad' tag:
+  // its rounding is amplified by inverse TRCs near dark channel values.
+  static const GainMapMatrix adaptation = [] {
+    const GainMapMatrix bradford{{{0.8951, 0.2664, -0.1614},
+                                 {-0.7502, 1.7135, 0.0367},
+                                 {0.0389, -0.0685, 1.0296}}};
+    const auto source = gain_map_transform(bradford, {0.3127 / 0.3290, 1,
+                                                      (1 - 0.3127 - 0.3290) / 0.3290});
+    const auto target = gain_map_transform(bradford, {0.9642, 1, 0.8249});
+    GainMapMatrix scale{};
+    for (size_t c = 0; c < 3; ++c) { scale[c][c] = target[c] / source[c]; }
+    return multiply(inverse(bradford), multiply(scale, bradford));
+  }();
+  return multiply(adaptation, *xyz);
+}
+}  // namespace
+
+Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_profile_raw>& profile)
+{
+  if (!profile) { return unsupported_icc(); }
+  auto view = parse_icc(*profile);
+  if (!view) { return view.error(); }
+  uint32_t magic = 0;
+  if (!read_u32(profile->get_data(), 36, magic) || magic != icc_sig('a', 'c', 's', 'p')) {
+    return malformed_icc();
+  }
+  if (const auto* cicp = view->find(icc_sig('c', 'i', 'c', 'p'))) {
+    auto nclx = nclx_from_cicp(*view, *cicp);
+    if (!nclx) { return nclx.error(); }
+    GainMapColour result(*nclx);
+    result.m_profile = profile;
+    return result;
+  }
+  if (view->data_space != icc_sig('R', 'G', 'B', ' ') || view->pcs != icc_sig('X', 'Y', 'Z', ' ') ||
+      (view->profile_class != icc_sig('m', 'n', 't', 'r') &&
+       view->profile_class != icc_sig('s', 'c', 'n', 'r'))) {
+    return unsupported_icc();
+  }
+  // Respect ICC tag precedence; do not substitute the shaper for a LUT/CMM
+  // transform whose linear RGB application space has not been resolved.
+  for (char i : {'0', '1', '2', '3'}) {
+    for (uint32_t tag : {icc_sig('A', '2', 'B', i), icc_sig('B', '2', 'A', i),
+                         icc_sig('D', '2', 'B', i), icc_sig('B', '2', 'D', i)}) {
+      if (view->find(tag)) { return unsupported_icc(); }
+    }
+  }
+  auto transform = std::make_shared<GainMapIccColour>();
+  transform->view = *view;
+  for (size_t c = 0; c < 3; ++c) {
+    const char name = "rgb"[c];
+    const auto* xyz = view->find(icc_sig(name, 'X', 'Y', 'Z'));
+    const auto* curve = view->find(icc_sig(name, 'T', 'R', 'C'));
+    if (!xyz || !curve) { return unsupported_icc(); }
+    auto column = parse_xyz_tag(*view, *xyz);
+    if (!column) { return column.error(); }
+    if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
+    transform->curves[c] = *curve;
+    for (size_t row = 0; row < 3; ++row) { transform->to_pcs[row][c] = (*column)[row]; }
+  }
+  const double det = determinant(transform->to_pcs);
+  if (!std::isfinite(det) || std::abs(det) < 1e-12) { return unsupported_icc(); }
+  nclx_profile raster = nclx_profile::undefined();
+  raster.set_matrix_coefficients(0);
+  raster.set_full_range_flag(true);
+  GainMapColour result(raster);
+  result.m_profile = profile;
+  result.m_matrix_trc = std::move(transform);
+  return result;
+}
+
+Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
+{
+  if (!m_matrix_trc) { return gain_map_decode_rgb(signal, m_nclx); }
+  GainMapRGB result{};
+  for (size_t c = 0; c < 3; ++c) {
+    if (!std::isfinite(signal[c])) { return invalid_value(); }
+    auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[c],
+                                    std::clamp(signal[c], 0.0, 1.0), true);
+    if (!value) { return value.error(); }
+    result[c] = *value;
+  }
+  return result;
+}
+
+Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
+{
+  if (!m_matrix_trc) { return gain_map_encode_rgb(linear, m_nclx); }
+  GainMapRGB result{};
+  for (size_t c = 0; c < 3; ++c) {
+    auto value = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[c], linear[c]);
+    if (!value) { return value.error(); }
+    result[c] = *value;
+  }
+  return result;
+}
+
+Result<GainMapMatrix> GainMapColour::matrix_to(const GainMapColour& target) const
+{
+  if (!m_matrix_trc && !target.m_matrix_trc) {
+    return gain_map_primaries_matrix(m_nclx.m_colour_primaries, target.m_nclx.m_colour_primaries);
+  }
+  if (m_matrix_trc && m_matrix_trc == target.m_matrix_trc) {
+    return GainMapMatrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  }
+  auto source_pcs = m_matrix_trc ? Result<GainMapMatrix>(m_matrix_trc->to_pcs) : nclx_to_pcs(m_nclx);
+  auto target_pcs = target.m_matrix_trc ? Result<GainMapMatrix>(target.m_matrix_trc->to_pcs) : nclx_to_pcs(target.m_nclx);
+  if (!source_pcs) { return source_pcs.error(); }
+  if (!target_pcs) { return target_pcs.error(); }
+  return multiply(inverse(*target_pcs), *source_pcs);
 }

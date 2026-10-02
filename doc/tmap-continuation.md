@@ -77,7 +77,8 @@ not labelled non-conforming solely for that reason.
 | HEIF Amd.1 clause 6.6.2.4 | Ordered two-input `dimg`, image geometry, required colour roles and ordinary derived-item traversal | Covered by structural and decode tests |
 | HEIF writer and alternative selection | Gain NCLX, hidden-item policy, exact alternate ICC/NCLX preservation and noncolliding ordered `altr` groups | Tested with synthetic Apple consumers |
 | Alpha and requested output colour | Encoded RGB unpremultiplication, straight-colour ISO reconstruction, restored alpha, and root EOTF/matrix/OETF output conversion | Implemented and tested, including a real `prem` container graph |
-| All permitted colour descriptions and raster paths | Arbitrary ICC, other HLG viewing conditions, unsupported matrices and tile-only decode remain limited | Partial |
+| ICC colour pipeline | Exact RGB matrix/TRC colourants, per-channel parametric/sampled curves and D50 PCS conversion; independent Little CMS oracle in ON/OFF CI | Implemented for this profile model |
+| All permitted colour descriptions and raster paths | ICC LUT/device-link/non-RGB, other HLG viewing conditions, unsupported matrices and tile-only decode remain limited | Partial |
 | External consumers | Apple public-framework pixels and producer round trip; libultrahdr metadata round trip | Tested cases only; no universal consumer claim |
 
 There is no defensible “100% adapted” claim for the whole standards. HEIF
@@ -135,3 +136,14 @@ Its own Apple-produced fixture has baseline NCLX CP=2/TC=2/MC=6 and no ICC
 description, so strict libheif reconstruction cannot infer its baseline EOTF.
 That missing colour description is a separate observed limitation from the
 ImageIO consumer result; neither is counted as a compatibility pass.
+
+ICC matrix/TRC reconstruction now uses the actual profile model rather than
+classifying its primaries and transfer as a nearby CICP code. The tests include
+custom primaries, different channel curves, sampled curves with flat intervals,
+both application-space directions, and a real dual ICC/NCLX container through
+ordinary and unknown-version decoding. The independent Little CMS test found
+that reusing a quantized `chad` matrix amplified inverse-curve errors; deriving
+the Bradford adaptation in double precision resolves that regression without
+loosening the 0.0001 comparison tolerance. The existing Apple ImageIO 0.025 pixel
+gate also stays unchanged; a direct Core Image `expandToHDR` load now provides
+additional hosted diagnostics.
