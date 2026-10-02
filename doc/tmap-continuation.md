@@ -250,3 +250,18 @@ checking, which remains enabled in the Linux Actions jobs. Fresh Mac 27 Apple
 consumer/producer and pinned Google Annex C checks pass without wider tolerances.
 The preceding mixed-depth commit's four Linux gain-map jobs also passed;
 hosted Mac 15 acceptance remains unresolved.
+
+Integer YCbCr storage inversion now produces double-precision RGB signals at
+its original dimensions. Defined linear matrices join the existing nonlinear
+paths, removing the generic converter's 16-bit intermediate from the ISO gain
+operation. H.273's YCgCo code-domain clips remain in their specified order;
+TC 11/12 and non-identity TC 13 retain extended signals, while other transfers
+retain their nominal signal range. TC 13's original non-identity description
+also selects the signed sYCC RGB EOTF/OETF. Independent tests expose both the
+former ST2085 amplification precision loss and negative values lost before
+ISO offsets. A serialized uncompressed sYCC tmap verifies the public path.
+Native math passes 10,859 assertions in 37 cases, writer 8,065 in 13 cases,
+and the complete suite again has 97 passes/six skips with no failures.
+Experimental ON/OFF ASan/UBSan, local tidy/lint, unchanged stable symbols and
+fresh Mac 27 Apple/Google checks pass. The preceding typed-raster commit's
+four Linux gain-map jobs passed; its hosted Apple job remained queued.

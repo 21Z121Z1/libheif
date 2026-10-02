@@ -802,7 +802,10 @@ Result<GainMapRGB> gain_map_decode_rgb(const GainMapRGB& value, const nclx_profi
   }
   GainMapRGB result{};
   for (size_t c = 0; c < 3; ++c) {
-    auto component = gain_map_decode_transfer(value[c], profile.m_transfer_characteristics);
+    // H.273 TC 13 with a non-identity matrix denotes signed sYCC signals.
+    auto component = profile.m_transfer_characteristics == 13 && profile.m_matrix_coefficients != 0 ?
+                     gain_map_decode_matrix_signal(value[c], 13) :
+                     gain_map_decode_transfer(value[c], profile.m_transfer_characteristics);
     if (!component) { return component.error(); }
     result[c] = *component;
   }
@@ -816,7 +819,9 @@ Result<GainMapRGB> gain_map_encode_rgb(const GainMapRGB& value, const nclx_profi
   }
   GainMapRGB result{};
   for (size_t c = 0; c < 3; ++c) {
-    auto component = gain_map_encode_transfer(value[c], profile.m_transfer_characteristics);
+    auto component = profile.m_transfer_characteristics == 13 && profile.m_matrix_coefficients != 0 ?
+                     gain_map_encode_matrix_signal(value[c], 13) :
+                     gain_map_encode_transfer(value[c], profile.m_transfer_characteristics);
     if (!component) { return component.error(); }
     result[c] = *component;
   }

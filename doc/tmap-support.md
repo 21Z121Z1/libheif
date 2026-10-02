@@ -75,7 +75,7 @@ are applied in linear application primaries; gamut excursions are clipped at
 output encoding. Results are quantized to planar 16-bit RGB in alternate colour
 encoding. This decoded pixel depth is independent of the writer's caller-supplied
 `pixi` hint. All raster allocations use existing pixel-image security accounting;
-no full-resolution floating-point gain raster is allocated.
+no upscaled full-resolution floating-point gain raster is allocated.
 Planar RGB and monochrome rasters are read at their actual component types:
 unsigned integers of 1-64 bits and full-range IEEE float32/float64. Integer
 limited-range normalization uses each component's own depth and requires at
@@ -84,7 +84,13 @@ extended-transfer samples are retained through linear gain application.
 Floating gain values undergo the same logical normalization and inverse gamma
 as integer gains. Opacity must be finite and within [0,1]; its original value
 is used before final output quantization. No intermediate RGB raster is needed
-for these layouts. Floating limited-range, signed/complex component formats,
+for these layouts. Integer YCbCr inversions use double-precision RGB planes
+at the original raster dimensions rather than quantizing before gain. H.273's
+explicit YCgCo code-domain clipping remains in its required order; extended
+TC 11/12 and non-identity TC 13 signals retain their sign and range until the
+ISO linear operation and final output. Other transfers retain their nominal
+signal range. The original non-identity TC 13 description selects the signed
+sYCC EOTF/OETF rather than unsigned sRGB. Floating limited-range, signed/complex component formats,
 and floating or greater-than-16-bit YCbCr/interleaved rasters remain explicit
 unsupported cases.
 

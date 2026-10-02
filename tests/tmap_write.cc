@@ -1160,3 +1160,78 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
   heif_encoder_release(encoder);
   heif_context_free(ctx);
 }
+
+TEST_CASE("Serialized sYCC baseline preserves negative RGB until tone-map offsets")
+{
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_601_6, true);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_YCbCr, heif_chroma_444, &pixels).code == heif_error_Ok);
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const std::array<uint16_t, 3> codes{8192, 32768, 24768};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE(heif_image_add_plane(pixels, channels[c], 1, 1, 16).code == heif_error_Ok);
+    int stride = 0;
+    std::memcpy(heif_image_get_plane(pixels, channels[c], &stride), &codes[c], sizeof(uint16_t));
+  }
+  REQUIRE(heif_image_set_nclx_color_profile(pixels, &baseline).code == heif_error_Ok);
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_encode_image(ctx, pixels, encoder, encoding, &base).code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
+  heif_image_release(pixels);
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  int stride = 0;
+  heif_image_get_plane(pixels, heif_channel_Y, &stride)[0] = 0;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(pixels);
+  auto metadata = make_metadata();
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {0, 1};
+  metadata.channels[0].base_offset = {1, 4};
+  auto alternate = baseline;
+  alternate.transfer_characteristics = heif_transfer_characteristic_linear;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  auto options = make_options(&alternate);
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap).code == heif_error_Ok);
+  const auto bytes = write_context(ctx);
+  auto* read = reopen(bytes);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  auto* decoding = heif_decoding_options_alloc();
+  REQUIRE(decoding);
+  decoding->output_image_nclx_profile_passthrough = true;
+  heif_image* output = nullptr;
+  const auto error = heif_decode_image(handle, &output, heif_colorspace_RGB, heif_chroma_444, decoding);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const double y = 8192.0 / 65535, cr = -8000.0 / 65535;
+  const std::array<double, 3> signal{y + 2 * (1 - 0.299) * cr,
+                                   y - 2 * 0.299 * (1 - 0.299) / (1 - 0.299 - 0.114) * cr, y};
+  const std::array<heif_channel, 3> rgb{heif_channel_R, heif_channel_G, heif_channel_B};
+  REQUIRE(signal[0] < 0);
+  for (size_t c = 0; c < 3; ++c) {
+    const double v = std::abs(signal[c]);
+    const double linear = std::copysign(v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4), signal[c]);
+    uint16_t sample = 0;
+    std::memcpy(&sample, heif_image_get_plane_readonly(output, rgb[c], &stride), sizeof(sample));
+    REQUIRE(sample == Catch::Approx(std::round((linear + 0.25) * 65535)).margin(1));
+  }
+  heif_image_release(output);
+  heif_decoding_options_free(decoding);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}

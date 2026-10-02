@@ -267,9 +267,9 @@ TEST_CASE("Reconstruction reconciles mono pixels with RGB metadata and the rever
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Tone maps interpret FCC and SMPTE240 raster matrices for both inputs")
+TEST_CASE("Tone maps interpret defined linear raster matrices for both inputs")
 {
-  const uint16_t matrix = GENERATE(uint16_t{4}, uint16_t{7});
+  const uint16_t matrix = GENERATE(uint16_t{1}, uint16_t{4}, uint16_t{5}, uint16_t{6}, uint16_t{7}, uint16_t{9});
   const bool limited = GENERATE(false, true);
   const bool colour_is_gain = GENERATE(false, true);
   auto colour = std::make_shared<HeifPixelImage>();
@@ -297,8 +297,8 @@ TEST_CASE("Tone maps interpret FCC and SMPTE240 raster matrices for both inputs"
   const double y = limited ? (32768.0 - 4096) / 56064 : 32768.0 / 65535;
   const double cb = (40000.0 - 32768) / (limited ? 57344 : 65535);
   const double cr = (26000.0 - 32768) / (limited ? 57344 : 65535);
-  const double kr = matrix == 4 ? 0.30 : 0.212;
-  const double kb = matrix == 4 ? 0.11 : 0.087;
+  const double kr = matrix == 1 ? 0.2126 : matrix == 4 ? 0.30 : matrix == 7 ? 0.212 : matrix == 9 ? 0.2627 : 0.299;
+  const double kb = matrix == 1 ? 0.0722 : matrix == 4 ? 0.11 : matrix == 7 ? 0.087 : matrix == 9 ? 0.0593 : 0.114;
   const GainMapRGB signal{y + 2 * (1 - kr) * cr,
                            y - 2 * kb * (1 - kb) / (1 - kr - kb) * cb -
                                2 * kr * (1 - kr) / (1 - kr - kb) * cr,
@@ -1017,7 +1017,7 @@ TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
     auto* plane = base->get_channel_memory(channel, &stride);
     for (size_t y = 0; y < 2; ++y) {
       for (size_t x = 0; x < 3; ++x) {
-        const double value = 1.5 + x * 0.5 + y * 0.25;
+        const double value = 1.5 + static_cast<double>(x) * 0.5 + static_cast<double>(y) * 0.25;
         if (bits == 32) { reinterpret_cast<float*>(plane + y * stride)[x] = static_cast<float>(value); }
         else { reinterpret_cast<double*>(plane + y * stride)[x] = value; }
       }
@@ -1039,7 +1039,7 @@ TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
     const auto* plane = (*result)->get_channel_memory<uint16_t>(channel, &stride);
     for (size_t y = 0; y < 2; ++y) {
       for (size_t x = 0; x < 3; ++x) {
-        REQUIRE(plane[y * (stride / 2) + x] == std::round((1.5 + x * 0.5 + y * 0.25) / 4 * 65535));
+        REQUIRE(plane[y * (stride / 2) + x] == std::round((1.5 + static_cast<double>(x) * 0.5 + static_cast<double>(y) * 0.25) / 4 * 65535));
       }
     }
   }
@@ -1233,4 +1233,86 @@ TEST_CASE("Wide limited-range mono normalization uses its own code depth")
   REQUIRE(sample_at(**result, heif_channel_R, 1) == std::round(109.0 / 219 * 65535));
   REQUIRE(sample_at(**result, heif_channel_R, 2) == 65535);
   heif_decoding_options_free(options);
+}
+
+TEST_CASE("ST2085 matrix inversion retains precision until amplified gain")
+{
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  for (auto channel : {heif_channel_Y, heif_channel_Cb, heif_channel_Cr}) {
+    REQUIRE_FALSE(base->add_channel(channel, 1, 1, 16, nullptr));
+    base->fill_channel(channel, channel == heif_channel_Y ? 1 : 32768);
+  }
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  profile.set_matrix_coefficients(11);
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_matrix_coefficients(0);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {15, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 65535, 2), metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  REQUIRE(sample_at(**result, heif_channel_R, 0) == std::round(32768 * 0.991902));
+  REQUIRE(sample_at(**result, heif_channel_G, 0) == 32768);
+  REQUIRE(sample_at(**result, heif_channel_B, 0) == std::round(32768 / 0.986566));
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("YCbCr extended signals survive matrix inversion until ISO offsets")
+{
+  const int matrix = GENERATE(1, 6, 9, 11, 12);
+  const int transfer = GENERATE(11, 12, 13);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const std::array<uint16_t, 3> codes{8192, 32768, 24768};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 1, 1, 16, nullptr));
+    base->fill_channel(channels[c], codes[c]);
+  }
+  auto profile = make_pixels(1, false, 0, static_cast<uint16_t>(transfer))->get_color_profile_nclx();
+  profile.set_matrix_coefficients(static_cast<uint16_t>(matrix));
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_transfer_characteristics(8);
+  alternate.set_matrix_coefficients(0);
+  GainMapMetadata metadata;
+  metadata.channels[0].base_offset = {1, 4};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  // H.273 Eq.45-47 / ST2085 Eq.76-78, then signed EOTF and ISO Formula (2).
+  const double kr = matrix == 6 ? 0.299 : matrix == 9 ? 0.2627 :
+                    matrix == 12 ? 0.2126390058715104 : 0.2126;
+  const double red = matrix == 11 ? 0.991902 * codes[0] / 65535.0 - 16000.0 / 65535 :
+                                  codes[0] / 65535.0 - 16000.0 / 65535 * (1 - kr);
+  REQUIRE(red < 0);
+  const double v = std::abs(red);
+  auto bt = [](double value) {
+    return value < 0.081242858298635 ? value / 4.5 :
+           std::pow((value + 0.099296826809442) / 1.099296826809442, 1 / 0.45);
+  };
+  const double linear = transfer == 11 ? -bt(v) : transfer == 12 ? -bt(4 * v) / 4 :
+      -(v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4));
+  REQUIRE(sample_at(**result, heif_channel_R, 0) == Catch::Approx(std::round((linear + 0.25) * 65535)).margin(1));
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("sYCC RGB transfer follows the original non-identity matrix description")
+{
+  auto profile = make_pixels(1, false, 0, 13)->get_color_profile_nclx();
+  profile.set_matrix_coefficients(6);
+  auto decoded = gain_map_decode_rgb({-0.5, 0, 0.5}, profile);
+  REQUIRE(decoded);
+  REQUIRE((*decoded)[0] == Catch::Approx(-0.21404114048223255).epsilon(1e-12));
+  auto encoded = gain_map_encode_rgb(*decoded, profile);
+  REQUIRE(encoded);
+  REQUIRE((*encoded)[0] == Catch::Approx(-0.5).epsilon(1e-12));
+  profile.set_matrix_coefficients(0);
+  decoded = gain_map_decode_rgb({-0.5, 0, 0.5}, profile);
+  REQUIRE(decoded);
+  REQUIRE((*decoded)[0] == 0);
 }
