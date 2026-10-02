@@ -29,9 +29,11 @@
 #include "common_utils.h"
 #include "libheif/heif.h"
 #include "libheif/heif_experimental.h"
+#include "libheif/heif_tiling.h"
 #include "test_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -737,9 +739,40 @@ TEST_CASE("tmap reconstructs synthetic uncompressed inputs")
   heif_context_free(context);
 }
 
+TEST_CASE("tmap exposes a single logical tile and rejects other tile coordinates")
+{
+  const bool ignore_transformations = GENERATE(false, true);
+  const auto file = build_tmap_file();
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  heif_image_tiling tiling{};
+  REQUIRE(heif_image_handle_get_image_tiling(tmap, !ignore_transformations, &tiling).code == heif_error_Ok);
+  REQUIRE(tiling.num_columns == 1);
+  REQUIRE(tiling.num_rows == 1);
+  REQUIRE(tiling.tile_width == 2);
+  REQUIRE(tiling.tile_height == 2);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->ignore_transformations = ignore_transformations;
+  for (const auto& coordinate : {std::array<uint32_t, 2>{1, 0}, {0, 1}, {UINT32_MAX, UINT32_MAX}}) {
+    heif_image* image = nullptr;
+    const auto error = heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                           heif_chroma_444, options,
+                                                           coordinate[0], coordinate[1]);
+    REQUIRE(error.code == heif_error_Usage_error);
+    REQUIRE(error.subcode == (ignore_transformations ? heif_suberror_Invalid_parameter_value :
+                                                     heif_suberror_Unspecified));
+    REQUIRE(image == nullptr);
+  }
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 TEST_CASE("Requested tmap output converts PQ samples to linear RGB")
 {
   const bool fallback = GENERATE(false, true);
+  const bool tile = GENERATE(false, true);
   GainMapMetadata metadata;
   metadata.channels[0].gain_map_min = {1, 1};
   metadata.channels[0].gain_map_max = {1, 1};
@@ -756,7 +789,9 @@ TEST_CASE("Requested tmap output converts PQ samples to linear RGB")
   requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
   requested->full_range_flag = 1;
   heif_image* image = nullptr;
-  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                               heif_chroma_444, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
@@ -788,6 +823,7 @@ TEST_CASE("Requested tmap output converts PQ samples to linear RGB")
 
 TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root output")
 {
+  const bool tile = GENERATE(false, true);
   GainMapMetadata metadata;
   metadata.channels[0].gain_map_min = {1, 1};
   metadata.channels[0].gain_map_max = {1, 1};
@@ -806,7 +842,9 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   requested->full_range_flag = 1;
   options->output_image_nclx_profile = requested;
   heif_image* image = nullptr;
-  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                               heif_chroma_444, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
@@ -833,6 +871,7 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
 TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline fallback")
 {
   const bool fallback = GENERATE(false, true);
+  const bool tile = GENERATE(false, true);
   const bool alternate_icc = GENERATE(false, true);
   const auto icc = make_custom_gamma_icc();
   GainMapMetadata metadata;
@@ -852,7 +891,9 @@ TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline 
   requested->full_range_flag = 1;
   options->output_image_nclx_profile = requested;
   heif_image* image = nullptr;
-  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                               heif_chroma_444, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
@@ -1105,13 +1146,16 @@ TEST_CASE("Unknown minimum metadata version decodes baseline without alternate c
 TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
 {
   const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  const bool tile = GENERATE(false, true);
   const auto file = build_two_tmap_file(3, transfer);
   auto* ctx = heif_context_alloc();
   REQUIRE(heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr).code == heif_error_Ok);
   heif_image_handle* handle = nullptr;
   REQUIRE(heif_context_get_image_handle(ctx, 5, &handle).code == heif_error_Ok);
   heif_image* image = nullptr;
-  const auto error = heif_decode_image(handle, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  const auto error = tile ? heif_image_handle_decode_image_tile(handle, &image, heif_colorspace_undefined,
+                                                               heif_chroma_undefined, nullptr, 0, 0) :
+                            heif_decode_image(handle, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
@@ -1165,13 +1209,16 @@ TEST_CASE("Target headroom is consumed only by the root of a nested tmap")
 
 TEST_CASE("Baseline fallback applies child transforms when root transforms are suppressed")
 {
+  const bool tile = GENERATE(false, true);
   const auto file = build_tmap_file(2, 0, 1, 2, 2, 1, true);
   heif_context* ctx = nullptr;
   auto* tmap = open_tmap(&ctx, file);
   auto* options = heif_decoding_options_alloc();
   options->ignore_transformations = true;
   heif_image* image = nullptr;
-  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, options);
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_undefined,
+                                                               heif_chroma_undefined, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, options);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   size_t stride = 0;

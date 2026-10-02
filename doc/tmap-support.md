@@ -129,8 +129,12 @@ non-conforming. Unsupported sample formats still return an explicit error.
   unsupported. They require a resolved linear RGB application space and a CMS
   strategy; supported matrix/TRC and CICP cases are handled as described above.
 - HLG is limited to the reference viewing conditions described above.
-- Unsupported YCbCr matrices and tile-only `tmap`
-  decode return explicit errors.
+- Unsupported YCbCr matrices return explicit errors.
+- The tile API exposes `tmap` as one logical tile covering the complete coded
+  image. Decoding `(0,0)` reconstructs both whole inputs, including their own
+  transformations. It does not expose the baseline or gain raster's internal
+  tiles as independently reconstructed regions. Root clean-aperture offsets
+  follow the ordinary tile API contract.
 - No Apple legacy or vendor missing-version heuristics are part of the strict parser.
 
 ## Verification

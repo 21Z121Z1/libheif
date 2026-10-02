@@ -78,7 +78,7 @@ not labelled non-conforming solely for that reason.
 | HEIF writer and alternative selection | Gain NCLX, hidden-item policy, exact alternate ICC/NCLX preservation and noncolliding ordered `altr` groups | Tested with synthetic Apple consumers |
 | Alpha and requested output colour | Encoded RGB unpremultiplication, straight-colour ISO reconstruction, restored alpha, and root EOTF/matrix/OETF output conversion | Implemented and tested, including a real `prem` container graph |
 | ICC colour pipeline | Exact RGB matrix/TRC colourants, per-channel parametric/sampled curves and D50 PCS conversion; independent Little CMS oracle in ON/OFF CI | Implemented for this profile model |
-| All permitted colour descriptions and raster paths | ICC LUT/device-link/non-RGB, other HLG viewing conditions, unsupported matrices and tile-only decode remain limited | Partial |
+| All permitted colour descriptions and raster paths | ICC LUT/device-link/non-RGB, other HLG viewing conditions and unsupported matrices remain limited | Partial |
 | External consumers | Apple public-framework pixels and producer round trip; libultrahdr metadata round trip | Tested cases only; no universal consumer claim |
 
 There is no defensible “100% adapted” claim for the whole standards. HEIF
@@ -147,3 +147,9 @@ the Bradford adaptation in double precision resolves that regression without
 loosening the 0.0001 comparison tolerance. The existing Apple ImageIO 0.025 pixel
 gate also stays unchanged; a direct Core Image `expandToHDR` load now provides
 additional hosted diagnostics.
+
+The public tile API now decodes the single logical `tmap` tile it reports. Both
+inputs are fully decoded and transformed, including unknown-version baseline
+fallback. Tile regressions cover requested colour, ICC, premultiplied alpha,
+nested PQ/HLG and transformed children; out-of-range tile coordinates retain
+the generic API error. This adds no partial-region reconstruction algorithm.

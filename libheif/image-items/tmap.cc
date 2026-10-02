@@ -391,9 +391,9 @@ ImageItem_tmap::add_new_tone_map_item(
 Result<std::shared_ptr<HeifPixelImage>>
 ImageItem_tmap::decode_compressed_image(
     const heif_decoding_options& options,
-    bool decode_tile_only,
-    uint32_t tile_x0,
-    uint32_t tile_y0,
+    bool /*decode_tile_only*/,
+    uint32_t /*tile_x0*/,
+    uint32_t /*tile_y0*/,
     DecodeTraversalState decode_state) const
 {
   if (decode_state.processed_ids.contains(get_id())) {
@@ -428,7 +428,9 @@ ImageItem_tmap::decode_compressed_image(
       auto base_options = options;
       base_options.ignore_transformations = false;
       base_options.autocorrect_broken_input = false;
-      return base->decode_image(base_options, decode_tile_only, tile_x0, tile_y0, decode_state);
+      // The tmap exposes one logical tile for the whole reconstructed image.
+      // Its children's tiling need not match, including on baseline fallback.
+      return base->decode_image(base_options, false, 0, 0, decode_state);
     }
 
     case ToneMapImageParseStatus::malformed:
@@ -442,10 +444,6 @@ ImageItem_tmap::decode_compressed_image(
     return error;
   }
 
-  if (decode_tile_only) {
-    return Error{heif_error_Unsupported_feature, heif_suberror_Unspecified,
-                 "Tone-map tile-only decoding is not supported"};
-  }
   auto ids = get_input_item_ids();
   if (!ids) {
     return ids.error();
