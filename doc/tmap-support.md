@@ -151,11 +151,16 @@ full-range samples; bit depth alone does not make a file non-conforming.
 - YCbCr raster conversion supports explicit linear matrices 0, 1, 4, 5, 6, 7
   and 9, plus matrix 12 when the raster's primaries are defined. YCgCo (8),
   YCgCo-R, -Re (16), -Ro (17), and ST 2085 (11) use their H.273 inverse
-  equations, actual RGB depth and separate luma/chroma normalization. These
+  equations, actual RGB depth and separate luma/chroma normalization.
+  Constant-luminance matrices 10/13 use their declared transfer to restore
+  R'/B', solve linear G and reapply the transfer; matrix 13 also needs defined
+  storage primaries. This uses HLG before its display OOTF and the signed sYCC
+  transfer where applicable. A gain raster with unspecified TC cannot resolve
+  such a matrix from the alternate image's colour description. These
   additional paths use nearest-neighbor chroma upsampling; a mandatory other
   algorithm is rejected. Both baseline and gain inputs reject unsupported or
-  unresolved matrices. In particular,
-  BT.2020 constant luminance is not substituted with non-constant luminance.
+  unresolved matrices. Matrices 14/15 remain unsupported. BT.2020 constant
+  luminance is not substituted with non-constant luminance.
 - The tile API exposes `tmap` as one logical tile covering the complete coded
   image. Decoding `(0,0)` reconstructs both whole inputs, including their own
   transformations. It does not expose the baseline or gain raster's internal

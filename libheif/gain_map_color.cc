@@ -695,6 +695,33 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
   }
 }
 
+Result<double> gain_map_decode_matrix_signal(double value, uint16_t transfer)
+{
+  if (!std::isfinite(value)) { return invalid_value(); }
+  if (transfer == 18) {
+    const double v = std::max(value, 0.0);
+    return v <= 0.5 ? v * v / 3.0 : (std::exp((v - hlg_c) / hlg_a) + hlg_b) / 12.0;
+  }
+  auto linear = gain_map_decode_transfer(transfer == 13 ? std::abs(value) : value, transfer);
+  if (!linear) { return linear.error(); }
+  if (transfer == 13) { return std::copysign(*linear, value); }
+  return *linear / (transfer == 16 ? pq_scale : transfer == 17 ? cinema_scale : 1);
+}
+
+Result<double> gain_map_encode_matrix_signal(double value, uint16_t transfer)
+{
+  if (!std::isfinite(value)) { return invalid_value(); }
+  if (transfer == 18) {
+    const double v = std::max(value, 0.0);
+    return v <= 1.0 / 12 ? std::sqrt(3 * v) : hlg_a * std::log(12.0 * v - hlg_b) + hlg_c;
+  }
+  auto signal = gain_map_encode_transfer(
+      transfer == 13 ? std::abs(value) : value * (transfer == 16 ? pq_scale : transfer == 17 ? cinema_scale : 1),
+      transfer);
+  if (!signal) { return signal.error(); }
+  return transfer == 13 ? std::copysign(*signal, value) : *signal;
+}
+
 namespace {
 Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile, bool decode)
 {
@@ -705,8 +732,7 @@ Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile,
     if (!std::isfinite(value[c])) { return invalid_value(); }
     if (decode) {
       const double v = std::clamp(value[c], 0.0, 1.0);
-      linear[c] = v <= 0.5 ? v * v / 3.0 :
-                            (std::exp((v - hlg_c) / hlg_a) + hlg_b) / 12.0;
+      linear[c] = *gain_map_decode_matrix_signal(v, 18);
     }
     else {
       linear[c] = std::max(value[c], 0.0) / hlg_scale;

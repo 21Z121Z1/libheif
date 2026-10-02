@@ -41,6 +41,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
 {
   auto profile = image->get_color_profile_nclx();
   const auto matrix = profile.m_matrix_coefficients;
+  const bool constant_luminance = matrix == 10 || matrix == 13;
   const int y_bits = image->get_bits_per_pixel(heif_channel_Y);
   const int c_bits = image->get_bits_per_pixel(heif_channel_Cb);
   if (y_bits < 1 || c_bits < 1 || c_bits != image->get_bits_per_pixel(heif_channel_Cr)) {
@@ -48,7 +49,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   }
   const int rgb_bits = y_bits - (matrix == 16 ? 2 : matrix == 17 ? 1 : 0);
   if (rgb_bits < 1 || (!profile.get_full_range_flag() &&
-                      (rgb_bits < 8 || (matrix == 11 && c_bits < 8))) ||
+                      (rgb_bits < 8 || ((matrix == 11 || constant_luminance) && c_bits < 8))) ||
       (matrix == 8 && c_bits != y_bits && c_bits != y_bits + 1)) {
     return unsupported("Unsupported tone-map matrix bit depths");
   }
@@ -58,6 +59,32 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
       options.color_conversion_options.preferred_chroma_upsampling_algorithm !=
           heif_chroma_upsampling_nearest_neighbor) {
     return unsupported("Tone-map matrix requires nearest-neighbor chroma upsampling");
+  }
+  // Constant-luminance chroma depends on the actual transfer, not just Kr/Kb.
+  // Use the normalized matrix transfer before any display OOTF when deriving
+  // the H.273 Eq.72-75 constants and solving its linear luminance equation.
+  std::array<double, 6> cl{}; // Kr, Kb, NB, PB, NR, PR
+  if (constant_luminance) {
+    if (matrix == 13 && !get_colour_primaries(profile.m_colour_primaries).defined) {
+      return unsupported("Constant-luminance raster has no defined primaries");
+    }
+    const auto weights = get_Kr_Kb(matrix, profile.m_colour_primaries);
+    cl[0] = matrix == 10 ? 0.2627 : weights.Kr;
+    cl[1] = matrix == 10 ? 0.0593 : weights.Kb;
+    if (cl[0] < 0 || cl[1] < 0 || cl[0] + cl[1] >= 1) {
+      return unsupported("Invalid constant-luminance primary weights");
+    }
+    auto peak = gain_map_decode_matrix_signal(1, profile.m_transfer_characteristics);
+    if (!peak) { return peak.error(); }
+    const std::array<double, 4> fractions{1 - cl[1], cl[1], 1 - cl[0], cl[0]};
+    for (size_t c = 0; c < fractions.size(); ++c) {
+      auto encoded = gain_map_encode_matrix_signal(*peak * fractions[c], profile.m_transfer_characteristics);
+      if (!encoded) { return encoded.error(); }
+      cl[c + 2] = c % 2 == 0 ? *encoded : 1 - *encoded;
+      if (!std::isfinite(cl[c + 2]) || cl[c + 2] <= 0) {
+        return unsupported("Invalid constant-luminance transfer endpoint");
+      }
+    }
   }
   const uint32_t width = image->get_width(), height = image->get_height();
   auto output = std::make_shared<HeifPixelImage>();
@@ -79,8 +106,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   const double rgb_offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (rgb_bits - 8));
   const double rgb_scale = profile.get_full_range_flag() ? rgb_max : 219.0 * (1U << (rgb_bits - 8));
   const int32_t c_mid = 1U << (c_bits - 1);
-  const double c_scale = matrix != 11 ? 1 : profile.get_full_range_flag() ? (1U << c_bits) - 1 :
-                                                                         224.0 * (1U << (c_bits - 8));
+  const double c_scale = matrix != 11 && !constant_luminance ? 1 :
+                        profile.get_full_range_flag() ? (1U << c_bits) - 1 :
+                                                        224.0 * (1U << (c_bits - 8));
   // Portable arithmetic right shift for negative, odd lifting differences.
   auto half_floor = [](int32_t value) { return value >= 0 ? value / 2 : -((1 - value) / 2); };
   for (uint32_t y = 0; y < height; ++y) {
@@ -95,11 +123,30 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
       }
       const int32_t cb = sample[1] - c_mid, cr = sample[2] - c_mid;
       GainMapRGB signal{};
-      if (matrix == 11) {
+      if (matrix == 11 || constant_luminance) {
         // H.273 (2024) Eq.30-38 and 76-78, with independent Y/C depths.
         const double ey = (sample[0] - rgb_offset) / rgb_scale;
-        signal = {2 * cr / c_scale + 0.991902 * ey, ey,
-                  (2 * cb / c_scale + ey) / 0.986566};
+        if (constant_luminance) {
+          // Eq.66-75: restore R'/B', solve linear G from luminance, then
+          // reapply the transfer. Applying an NCL matrix here is incorrect.
+          const double r = ey + 2 * cr / c_scale * cl[cr <= 0 ? 4 : 5];
+          const double b = ey + 2 * cb / c_scale * cl[cb <= 0 ? 2 : 3];
+          const auto transfer = profile.m_transfer_characteristics;
+          auto linear_y = gain_map_decode_matrix_signal(ey, transfer);
+          auto linear_r = gain_map_decode_matrix_signal(r, transfer);
+          auto linear_b = gain_map_decode_matrix_signal(b, transfer);
+          if (!linear_y) { return linear_y.error(); }
+          if (!linear_r) { return linear_r.error(); }
+          if (!linear_b) { return linear_b.error(); }
+          auto g = gain_map_encode_matrix_signal(
+              (*linear_y - cl[0] * *linear_r - cl[1] * *linear_b) / (1 - cl[0] - cl[1]), transfer);
+          if (!g) { return g.error(); }
+          signal = {r, *g, b};
+        }
+        else {
+          signal = {2 * cr / c_scale + 0.991902 * ey, ey,
+                    (2 * cb / c_scale + ey) / 0.986566};
+        }
       }
       else {
         // Eq.54-57 (YCgCo) or Eq.62-65 (YCgCo-R, -Re and -Ro).
@@ -115,6 +162,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
         }
       }
       for (size_t c = 0; c < 3; ++c) {
+        if (!std::isfinite(signal[c])) {
+          return unsupported("Tone-map matrix produced a non-finite RGB sample");
+        }
         out[c][size_t(y) * out_stride[c] + x] = static_cast<uint16_t>(
             std::round(std::clamp(signal[c], 0.0, 1.0) * 65535));
       }
@@ -192,7 +242,7 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
   }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
     const auto matrix = profile.m_matrix_coefficients;
-    if (matrix == 8 || matrix == 11 || matrix == 16 || matrix == 17) {
+    if (matrix == 8 || matrix == 10 || matrix == 11 || matrix == 13 || matrix == 16 || matrix == 17) {
       return decode_special_ycbcr(image, options, limits);
     }
     // Guard both inputs: the generic converter still substitutes NCL for CL

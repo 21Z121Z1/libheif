@@ -191,3 +191,14 @@ required by equations 64-65. Independent codewords, full/limited range, 4:4:4,
 pass native and experimental ON/OFF sanitizer checks. The focused math target
 has 3,716 assertions in 20 cases. No bitstream colour-description override or
 producer-specific inference is introduced.
+
+Constant-luminance matrices 10 and 13 now restore their transfer-dependent
+R'/B' signals and solve green in linear light using H.273 equations 66-75.
+Independent 70-digit Decimal references cover both chroma signs, full/limited
+range, SDR, PQ, ST 428 and HLG, plus negative sYCC blue that affects green.
+Matrix transfer signals are distinct from physical HDR display linearization;
+in particular, HLG matrix inversion precedes the RGB display OOTF. Unspecified
+transfer or chromaticity-derived storage primaries remain explicit errors.
+Native math passes 4,094 assertions in 23 cases. Experimental ON sanitizer
+checks pass math, colour, reader and writer; OFF passes math and colour (the
+public experimental tmap targets are not built in OFF).

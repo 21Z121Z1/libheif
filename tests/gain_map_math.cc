@@ -313,7 +313,7 @@ TEST_CASE("Tone maps interpret FCC and SMPTE240 raster matrices for both inputs"
     const double expected = colour_is_gain ? 16384 * std::exp2(normalized) : 65535 * normalized;
     REQUIRE(sample_at(**result, channels[c], 0) == Catch::Approx(std::round(expected)).margin(3));
   }
-  profile.set_matrix_coefficients(10); // CL must not silently use the NCL matrix.
+  profile.set_matrix_coefficients(2); // An unspecified matrix must not use a guessed default.
   colour->set_color_profile_nclx(profile);
   result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
   REQUIRE_FALSE(result);
@@ -509,6 +509,125 @@ TEST_CASE("Tone-map matrix bit depths and upsampling requirements are explicit")
   REQUIRE(reconstruct_tone_map(base, gain, GainMapMetadata{}, alternate, *options, nullptr));
   REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 1, 1, 4, nullptr));
   REQUIRE_FALSE(reconstruct_tone_map(base, gain, GainMapMetadata{}, alternate, *options, nullptr));
+  heif_decoding_options_free(options);
+}
+
+
+TEST_CASE("Tone maps invert constant luminance with independent high precision references")
+{
+  struct Reference {
+    uint16_t matrix, primaries, transfer;
+    bool limited;
+    std::array<uint16_t, 3> encoded, rgb;
+  };
+  // H.273 Eq.66-75, computed independently with 70-digit Decimal arithmetic.
+  // Both chroma signs, full/limited range and physical PQ/ST428 scaling are
+  // covered. The expected green differs from an NCL matrix conversion.
+  const auto reference = GENERATE(
+Reference{10, 9, 4, false, {32768, 28768, 37768}, {37321, 31407, 24987}},
+      Reference{10, 9, 4, false, {32768, 36768, 27768}, {24062, 34965, 38553}},
+      Reference{10, 9, 4, true, {32768, 28768, 37768}, {38720, 31920, 24623}},
+      Reference{10, 9, 4, true, {32768, 36768, 27768}, {23566, 35945, 40127}},
+      Reference{10, 9, 8, false, {32768, 28768, 37768}, {40141, 30569, 25242}},
+      Reference{10, 9, 8, false, {32768, 36768, 27768}, {25395, 34967, 40294}},
+      Reference{10, 9, 8, true, {32768, 28768, 37768}, {41942, 31003, 24915}},
+      Reference{10, 9, 8, true, {32768, 36768, 27768}, {25089, 36028, 42116}},
+      Reference{10, 9, 14, false, {32768, 28768, 37768}, {37737, 31255, 25007}},
+      Reference{10, 9, 14, false, {32768, 36768, 27768}, {24177, 34975, 39096}},
+      Reference{10, 9, 14, true, {32768, 28768, 37768}, {39195, 31747, 24646}},
+      Reference{10, 9, 14, true, {32768, 36768, 27768}, {23697, 35965, 40747}},
+      Reference{10, 9, 16, false, {16384, 28768, 37768}, {17813, 16104, 8435}},
+      Reference{10, 9, 16, false, {16384, 36768, 27768}, {6705, 17649, 18824}},
+      Reference{10, 9, 16, true, {16384, 28768, 37768}, {15997, 13964, 5280}},
+      Reference{10, 9, 16, true, {16384, 36768, 27768}, {3302, 15540, 17152}},
+      Reference{10, 10, 17, false, {32768, 28768, 37768}, {36788, 31579, 24954}},
+      Reference{10, 10, 17, false, {32768, 36768, 27768}, {23874, 34873, 38069}},
+      Reference{10, 10, 17, true, {32768, 28768, 37768}, {38110, 32112, 24585}},
+      Reference{10, 10, 17, true, {32768, 36768, 27768}, {23351, 35821, 39574}},
+      Reference{13, 1, 13, false, {32768, 28768, 37768}, {37783, 31780, 25027}},
+      Reference{13, 1, 13, false, {32768, 36768, 27768}, {23768, 34320, 38385}},
+      Reference{13, 1, 13, true, {32768, 28768, 37768}, {39247, 32347, 24669}},
+      Reference{13, 1, 13, true, {32768, 36768, 27768}, {23230, 35220, 39935}},
+      Reference{10, 9, 18, false, {32768, 28768, 37768}, {35285, 32285, 24858}},
+      Reference{10, 9, 18, false, {32768, 36768, 27768}, {23329, 35144, 37394}},
+      Reference{10, 9, 18, true, {32768, 28768, 37768}, {36392, 32894, 24475}},
+      Reference{10, 9, 18, true, {32768, 36768, 27768}, {22728, 36016, 38802}},
+      Reference{13, 1, 13, false, {32768, 0, 32768}, {32768, 35479, 0}});
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  for (size_t c = 0; c < channels.size(); ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 1, 1, 16, nullptr));
+    base->fill_channel(channels[c], reference.encoded[c]);
+  }
+  nclx_profile profile;
+  profile.set_colour_primaries(reference.primaries);
+  profile.set_transfer_characteristics(reference.transfer);
+  profile.set_matrix_coefficients(reference.matrix);
+  profile.set_full_range_flag(!reference.limited);
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_matrix_coefficients(0);
+  alternate.set_full_range_flag(true);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  INFO(reference.matrix << "/" << reference.transfer << "/" << reference.limited);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2),
+                                     GainMapMetadata{}, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<heif_channel, 3> rgb_channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < rgb_channels.size(); ++c) {
+    REQUIRE(sample_at(**result, rgb_channels[c], 0) == Catch::Approx(reference.rgb[c]).margin(1));
+    REQUIRE(base->get_channel_memory<uint16_t>(channels[c], nullptr)[0] == reference.encoded[c]);
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Matrix signal transfer is distinct from HDR display linearization")
+{
+  REQUIRE(*gain_map_decode_matrix_signal(0.5, 18) == Catch::Approx(1.0 / 12).epsilon(1e-12));
+  REQUIRE(*gain_map_encode_matrix_signal(1.0 / 12, 18) == Catch::Approx(0.5).epsilon(1e-12));
+  REQUIRE(*gain_map_decode_matrix_signal(0.5080784215173991, 16) == Catch::Approx(0.01).epsilon(1e-10));
+  REQUIRE(*gain_map_encode_matrix_signal(0.01, 16) == Catch::Approx(0.5080784215173991).epsilon(1e-10));
+  REQUIRE(*gain_map_decode_matrix_signal(-0.5, 13) == Catch::Approx(-0.21404114048223255).epsilon(1e-12));
+  REQUIRE(*gain_map_encode_matrix_signal(-0.21404114048223255, 13) == Catch::Approx(-0.5).epsilon(1e-12));
+  REQUIRE_FALSE(gain_map_decode_matrix_signal(0.5, 2));
+  REQUIRE_FALSE(gain_map_encode_matrix_signal(std::numeric_limits<double>::infinity(), 18));
+  REQUIRE_FALSE(gain_map_decode_matrix_signal(std::numeric_limits<double>::quiet_NaN(), 18));
+}
+
+TEST_CASE("Constant-luminance gain rasters cannot infer missing transfer or primaries")
+{
+  const uint16_t matrix = GENERATE(uint16_t{10}, uint16_t{13});
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  for (auto channel : {heif_channel_Y, heif_channel_Cb, heif_channel_Cr}) {
+    REQUIRE_FALSE(gain->add_channel(channel, 1, 1, 8, nullptr));
+    gain->fill_channel(channel, 128);
+  }
+  nclx_profile profile;
+  profile.set_colour_primaries(2);
+  profile.set_transfer_characteristics(2);
+  profile.set_matrix_coefficients(matrix);
+  profile.set_full_range_flag(true);
+  gain->set_color_profile_nclx(profile);
+  auto base = make_pixels(1, false, 16384, 8);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, base->get_color_profile_nclx(), *options, nullptr);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
+  if (matrix == 13) {
+    // An independent item colour description cannot supply missing storage
+    // primaries for a chromaticity-derived matrix.
+    profile.set_transfer_characteristics(8);
+    gain->set_color_profile_nclx(profile);
+    result = reconstruct_tone_map(gain, make_pixels(1, true, 0, 2), GainMapMetadata{},
+                                  base->get_color_profile_nclx(), *options, nullptr,
+                                  GainMapColour(base->get_color_profile_nclx()));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
+  }
   heif_decoding_options_free(options);
 }
 
