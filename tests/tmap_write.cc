@@ -407,6 +407,28 @@ TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
   heif_context_free(ctx);
 }
 
+TEST_CASE("Gain-map encoder rejects components below ISO minimum bit depth")
+{
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(4, 4, heif_colorspace_monochrome,
+                           heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 4, 4, 4).code == heif_error_Ok);
+
+  heif_image_handle* gain = nullptr;
+  const auto error = heif_context_encode_gain_map_image(
+      ctx, pixels, encoder, nullptr, nullptr, &gain);
+  REQUIRE(error.code == heif_error_Usage_error);
+  REQUIRE(error.subcode == heif_suberror_Invalid_parameter_value);
+  REQUIRE(gain == nullptr);
+  REQUIRE(heif_context_get_number_of_items(ctx) == 0);
+
+  heif_image_release(pixels);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("Gain-map encoder rejects ambiguous YCbCr and preserves primary on error")
 {
   auto* ctx = heif_context_alloc();
