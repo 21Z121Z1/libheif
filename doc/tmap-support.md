@@ -161,8 +161,9 @@ full-range samples; bit depth alone does not make a file non-conforming.
   matrices around the normalized transfer. The HLG ICtCp matrix differs from
   its PQ matrix; display linearization follows storage inversion. These
   additional paths use nearest-neighbor sampling by default and support
-  mandatory bilinear upsampling when Y/C coded depths match. Mixed-depth
-  mandatory bilinear and unknown algorithms remain explicit errors. Both
+  mandatory bilinear upsampling with separate Y/C coded depths. The sampler
+  interpolates chroma at its own depth and copies Y/alpha without normalizing
+  their codewords. Unknown algorithms remain explicit errors. Both
   baseline and gain inputs reject unsupported or
   unresolved matrices. BT.2020 constant luminance is not substituted with
   non-constant luminance. Defined matrix equations are covered subject to

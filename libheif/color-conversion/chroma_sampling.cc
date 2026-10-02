@@ -447,12 +447,12 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
     return {};
   }
 
-  // The three colour planes are read through the same 'Pixel' type, so they must be stored
-  // with sizeof(Pixel) bytes per sample, and the conversion derives its shifts and midpoints
-  // from one bit depth, so they must also share it ('unci' may declare a depth per plane).
-  // The alpha plane is copied through at its own width.
-  if (!input_state.color_channels_have_same_bpp() ||
-      !input_state.color_channels_have_bytes_per_sample(static_cast<int>(sizeof(Pixel)))) {
+  // Only chroma is interpolated through Pixel. Copy Y and alpha as raw rows
+  // at their own depths, without normalizing a reversible matrix's codewords.
+  if (input_state.bits_per_pixel_Y < 1 || input_state.bits_per_pixel_Y > 16 ||
+      input_state.bits_per_pixel_Cb != input_state.bits_per_pixel_Cr ||
+      input_state.get_bytes_per_sample(heif_channel_Cb) != static_cast<int>(sizeof(Pixel)) ||
+      input_state.get_bytes_per_sample(heif_channel_Cr) != static_cast<int>(sizeof(Pixel))) {
     return {};
   }
 
@@ -462,13 +462,12 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
 
   std::vector<ColorStateWithCost> states;
 
-  ColorState output_state;
+  ColorState output_state = input_state;
 
   // --- convert to 4:4:4
 
   output_state.colorspace = heif_colorspace_YCbCr;
   output_state.chroma = heif_chroma_444;
-  output_state.set_color_bits_per_pixel(input_state.bits_per_pixel_Y);
   output_state.bits_per_pixel_alpha = input_state.bits_per_pixel_alpha;  // we simply keep the old alpha plane
   output_state.nclx = input_state.nclx;
 
@@ -498,16 +497,14 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     bpp_a = input->get_bits_per_pixel(heif_channel_Alpha);
   }
 
-  if (bytes_per_sample_for_bit_depth(bpp_y) != static_cast<int>(sizeof(Pixel)) ||
+  if (bpp_y < 1 || bpp_y > 16 ||
       bytes_per_sample_for_bit_depth(bpp_cb) != static_cast<int>(sizeof(Pixel)) ||
       bytes_per_sample_for_bit_depth(bpp_cr) != static_cast<int>(sizeof(Pixel))) {
     return Error::InternalError;
   }
 
 
-  if (bpp_y != bpp_cb ||
-      bpp_y != bpp_cr) {
-    // TODO: test with varying bit depths when we have a test image
+  if (bpp_cb != bpp_cr) {
     return Error::InternalError;
   }
 
@@ -531,16 +528,18 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr;
+  const uint8_t* in_y;
+  const Pixel* in_cb, * in_cr;
   size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr;
+  uint8_t* out_y;
+  Pixel* out_cb, * out_cr;
   size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
-  in_y = (const Pixel*) input->get_channel_memory(heif_channel_Y, &in_y_stride);
+  in_y = input->get_channel_memory(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_channel_memory(heif_channel_Cb, &in_cb_stride);
   in_cr = (const Pixel*) input->get_channel_memory(heif_channel_Cr, &in_cr_stride);
-  out_y = (Pixel*) outimg->get_channel_memory(heif_channel_Y, &out_y_stride);
+  out_y = outimg->get_channel_memory(heif_channel_Y, &out_y_stride);
   out_cb = (Pixel*) outimg->get_channel_memory(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_channel_memory(heif_channel_Cr, &out_cr_stride);
 
@@ -557,10 +556,8 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   }
 
 
-  in_y_stride /= sizeof(Pixel);
   in_cb_stride /= sizeof(Pixel);
   in_cr_stride /= sizeof(Pixel);
-  out_y_stride /= sizeof(Pixel);
   out_cb_stride /= sizeof(Pixel);
   out_cr_stride /= sizeof(Pixel);
 
@@ -677,7 +674,7 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   // TODO: check whether we can use HeifPixelImage::transfer_channel_from_image_as() instead of copying Y and Alpha
 
   for (y = 0; y < height; y++) {
-    size_t copyWidth = static_cast<size_t>(width) * sizeof(Pixel);
+    size_t copyWidth = static_cast<size_t>(width) * bytes_per_sample_for_bit_depth(bpp_y);
 
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 
@@ -717,12 +714,12 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
     return {};
   }
 
-  // The three colour planes are read through the same 'Pixel' type, so they must be stored
-  // with sizeof(Pixel) bytes per sample, and the conversion derives its shifts and midpoints
-  // from one bit depth, so they must also share it ('unci' may declare a depth per plane).
-  // The alpha plane is copied through at its own width.
-  if (!input_state.color_channels_have_same_bpp() ||
-      !input_state.color_channels_have_bytes_per_sample(static_cast<int>(sizeof(Pixel)))) {
+  // Only chroma is interpolated through Pixel. Copy Y and alpha as raw rows
+  // at their own depths, without normalizing a reversible matrix's codewords.
+  if (input_state.bits_per_pixel_Y < 1 || input_state.bits_per_pixel_Y > 16 ||
+      input_state.bits_per_pixel_Cb != input_state.bits_per_pixel_Cr ||
+      input_state.get_bytes_per_sample(heif_channel_Cb) != static_cast<int>(sizeof(Pixel)) ||
+      input_state.get_bytes_per_sample(heif_channel_Cr) != static_cast<int>(sizeof(Pixel))) {
     return {};
   }
 
@@ -732,13 +729,12 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
 
   std::vector<ColorStateWithCost> states;
 
-  ColorState output_state;
+  ColorState output_state = input_state;
 
   // --- convert to 4:4:4
 
   output_state.colorspace = heif_colorspace_YCbCr;
   output_state.chroma = heif_chroma_444;
-  output_state.set_color_bits_per_pixel(input_state.bits_per_pixel_Y);
   output_state.bits_per_pixel_alpha = input_state.bits_per_pixel_alpha;  // we simply keep the old alpha plane
   output_state.nclx = input_state.nclx;
 
@@ -768,16 +764,14 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     bpp_a = input->get_bits_per_pixel(heif_channel_Alpha);
   }
 
-  if (bytes_per_sample_for_bit_depth(bpp_y) != static_cast<int>(sizeof(Pixel)) ||
+  if (bpp_y < 1 || bpp_y > 16 ||
       bytes_per_sample_for_bit_depth(bpp_cb) != static_cast<int>(sizeof(Pixel)) ||
       bytes_per_sample_for_bit_depth(bpp_cr) != static_cast<int>(sizeof(Pixel))) {
     return Error::InternalError;
   }
 
 
-  if (bpp_y != bpp_cb ||
-      bpp_y != bpp_cr) {
-    // TODO: test with varying bit depths when we have a test image
+  if (bpp_cb != bpp_cr) {
     return Error::InternalError;
   }
 
@@ -801,16 +795,18 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr;
+  const uint8_t* in_y;
+  const Pixel* in_cb, * in_cr;
   size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr;
+  uint8_t* out_y;
+  Pixel* out_cb, * out_cr;
   size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
-  in_y = (const Pixel*) input->get_channel_memory(heif_channel_Y, &in_y_stride);
+  in_y = input->get_channel_memory(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_channel_memory(heif_channel_Cb, &in_cb_stride);
   in_cr = (const Pixel*) input->get_channel_memory(heif_channel_Cr, &in_cr_stride);
-  out_y = (Pixel*) outimg->get_channel_memory(heif_channel_Y, &out_y_stride);
+  out_y = outimg->get_channel_memory(heif_channel_Y, &out_y_stride);
   out_cb = (Pixel*) outimg->get_channel_memory(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_channel_memory(heif_channel_Cr, &out_cr_stride);
 
@@ -827,10 +823,8 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   }
 
 
-  in_y_stride /= sizeof(Pixel);
   in_cb_stride /= sizeof(Pixel);
   in_cr_stride /= sizeof(Pixel);
-  out_y_stride /= sizeof(Pixel);
   out_cb_stride /= sizeof(Pixel);
   out_cr_stride /= sizeof(Pixel);
 
@@ -893,7 +887,7 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   // TODO: check whether we can use HeifPixelImage::transfer_channel_from_image_as() instead of copying Y and Alpha
 
   for (y = 0; y < height; y++) {
-    size_t copyWidth = static_cast<size_t>(width) * sizeof(Pixel);
+    size_t copyWidth = static_cast<size_t>(width) * bytes_per_sample_for_bit_depth(bpp_y);
 
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 

@@ -341,6 +341,7 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
   const bool limited = GENERATE(false, true);
   const bool colour_is_gain = GENERATE(false, true);
   const auto chroma = GENERATE(heif_chroma_444, heif_chroma_422, heif_chroma_420);
+  const bool bilinear = GENERATE(false, true);
   INFO(code.matrix << "/" << code.y_bits << "/" << code.c_bits);
   const int rgb_bits = code.y_bits - (code.matrix == 16 ? 2 : code.matrix == 17 ? 1 : 0);
   auto colour = std::make_shared<HeifPixelImage>();
@@ -368,6 +369,10 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
   }
   auto* options = heif_decoding_options_alloc();
   REQUIRE(options);
+  if (bilinear) {
+    options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+    options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  }
   auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
   REQUIRE(result);
   const double offset = limited ? 16.0 * (1U << (rgb_bits - 8)) : 0;
@@ -768,18 +773,28 @@ TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd
   const auto chroma = GENERATE(heif_chroma_422, heif_chroma_420);
   const uint32_t width = GENERATE(5, 6);
   const uint32_t height = GENERATE(5, 6);
+  const int y_bits = GENERATE(8, 10, 16);
+  const int c_bits = GENERATE(8, 12, 16);
   auto base = std::make_shared<HeifPixelImage>();
   base->create(width, height, heif_colorspace_YCbCr, chroma);
-  REQUIRE_FALSE(base->add_channel(heif_channel_Y, width, height, 16, nullptr));
+  REQUIRE_FALSE(base->add_channel(heif_channel_Y, width, height, y_bits, nullptr));
   const uint32_t c_height = chroma == heif_chroma_420 ? (height + 1) / 2 : height;
-  REQUIRE_FALSE(base->add_channel(heif_channel_Cb, 3, c_height, 16, nullptr));
-  REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 3, c_height, 16, nullptr));
-  base->fill_channel(heif_channel_Y, 32768);
-  base->fill_channel(heif_channel_Cr, 32768);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Cb, 3, c_height, c_bits, nullptr));
+  REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 3, c_height, c_bits, nullptr));
+  const uint16_t y_sample = 1U << (y_bits - 1);
+  const uint16_t c_mid = 1U << (c_bits - 1);
+  const uint16_t c_unit = 1U << (c_bits - 8);
+  base->fill_channel(heif_channel_Y, y_sample);
+  base->fill_channel(heif_channel_Cr, c_mid);
   size_t stride = 0;
-  auto* cb = base->get_channel_memory<uint16_t>(heif_channel_Cb, &stride);
+  auto* cb = base->get_channel_memory(heif_channel_Cb, &stride);
   for (uint32_t y = 0; y < c_height; ++y) {
-    for (uint32_t x = 0; x < 3; ++x) { cb[size_t(y) * stride / 2 + x] = 30000 + 2000 * x + 4000 * y; }
+    auto* row = cb + size_t(y) * stride;
+    for (uint32_t x = 0; x < 3; ++x) {
+      const uint16_t value = (120 + 8 * x + 16 * y) * c_unit;
+      if (c_bits <= 8) { row[x] = static_cast<uint8_t>(value); }
+      else { reinterpret_cast<uint16_t*>(row)[x] = value; }
+    }
   }
   REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, width, height, 8, nullptr));
   base->fill_channel(heif_channel_Alpha, 128);
@@ -799,15 +814,19 @@ TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd
   const auto* blue = (*result)->get_channel_memory<uint16_t>(heif_channel_B, &out_stride);
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
-      const double c = 30000 + 2000 * location[x] + 4000 * (chroma == heif_chroma_420 ? location[y] : y);
-      const double expected = std::clamp((32768 + 2 * (c - 32768)) / 0.986566, 0.0, 65535.0);
+      const double c = (120 + 8 * location[x] + 16 * (chroma == heif_chroma_420 ? location[y] : y)) * c_unit;
+      const double ey = static_cast<double>(y_sample) / ((1U << y_bits) - 1);
+      const double ec = (c - c_mid) / ((1U << c_bits) - 1);
+      const double expected = std::clamp((ey + 2 * ec) / 0.986566, 0.0, 1.0) * 65535;
       REQUIRE(blue[size_t(y) * out_stride / 2 + x] == Catch::Approx(std::round(expected)).margin(1));
     }
   }
   REQUIRE((*result)->get_bits_per_pixel(heif_channel_Alpha) == 8);
   REQUIRE((*result)->get_channel_memory(heif_channel_Alpha, nullptr)[0] == 128);
   REQUIRE(base->get_chroma_format() == chroma);
-  REQUIRE(cb[2] == 34000);
+  REQUIRE(base->get_bits_per_pixel(heif_channel_Y) == y_bits);
+  REQUIRE(base->get_bits_per_pixel(heif_channel_Cb) == c_bits);
+  REQUIRE((c_bits <= 8 ? cb[2] : reinterpret_cast<const uint16_t*>(cb)[2]) == 136 * c_unit);
   heif_decoding_options_free(options);
 }
 

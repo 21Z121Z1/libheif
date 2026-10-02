@@ -223,3 +223,12 @@ complete 103-target suite has 97 passes, six capability/external-fixture skips
 and no failures. Focused experimental ON/OFF ASan/UBSan and clang-tidy pass.
 Fresh Mac 27 Apple consumer/producer, original Apple read-only samples and
 pinned Google metadata checks retain their earlier pixel and byte results.
+
+Mandatory bilinear sampling now also supports mixed Y/C depths. The 4:2:0 and
+4:2:2 samplers interpolate only Cb/Cr through their actual storage type and copy
+Y/alpha using their own bytes per sample. Their output state retains each
+plane's depth. Tests cover Y=8/10/16 with C=8/12/16 at odd/even borders, plus
+different-depth reversible YCgCo codewords in both range modes and input roles.
+Native math passes 10,094 assertions in 27 cases; the complete suite and
+experimental ON/OFF sanitizer checks (including mixed-chroma conversion) pass.
+This removes the earlier mixed-depth mandatory-bilinear limitation.

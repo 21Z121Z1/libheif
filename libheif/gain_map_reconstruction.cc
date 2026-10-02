@@ -59,11 +59,12 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
       options.color_conversion_options.only_use_preferred_chroma_algorithm &&
       options.color_conversion_options.preferred_chroma_upsampling_algorithm !=
           heif_chroma_upsampling_nearest_neighbor) {
-    if (options.color_conversion_options.preferred_chroma_upsampling_algorithm == heif_chroma_upsampling_bilinear &&
-        y_bits == c_bits) {
+    if (options.color_conversion_options.preferred_chroma_upsampling_algorithm == heif_chroma_upsampling_bilinear) {
       // Reuse the existing raster sampler without changing the coded depth,
       // matrix or range. The recursive call sees 4:4:4 and cannot resample again.
       ColorState input_state(heif_colorspace_YCbCr, chroma, false, y_bits);
+      input_state.bits_per_pixel_Cb = c_bits;
+      input_state.bits_per_pixel_Cr = c_bits;
       input_state.nclx = profile;
       input_state.bits_per_pixel_alpha = image->get_bits_per_pixel(heif_channel_Alpha);
       auto target_state = input_state;
@@ -78,7 +79,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
       if (!expanded) { return expanded.error(); }
       return decode_special_ycbcr(*expanded, options, limits);
     }
-    return unsupported("Unsupported mandatory tone-map chroma upsampling algorithm or mixed depth");
+    return unsupported("Unsupported mandatory tone-map chroma upsampling algorithm");
   }
   // Constant-luminance chroma depends on the actual transfer, not just Kr/Kb.
   // Use the normalized matrix transfer before any display OOTF when deriving
