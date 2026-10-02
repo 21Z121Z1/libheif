@@ -49,17 +49,6 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
       return unsupported("Tone-map inputs require unsigned samples of at most 16 bits");
     }
 
-    const bool is_gain_colour_component =
-        channel == heif_channel_Y ||
-        channel == heif_channel_Cb ||
-        channel == heif_channel_Cr ||
-        channel == heif_channel_R ||
-        channel == heif_channel_G ||
-        channel == heif_channel_B;
-    if (gain_samples && is_gain_colour_component && bits < 8) {
-      return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
-                   "ISO 21496-1 gain-map components must use at least 8 bits"};
-    }
   }
   auto profile = image->get_color_profile_nclx();
   if (gain_samples && image->get_colorspace() == heif_colorspace_monochrome) {
@@ -72,6 +61,8 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
     rgb->create(w, h, heif_colorspace_RGB, heif_chroma_444);
     size_t input_stride = 0;
     const auto* input = image->get_channel_memory(heif_channel_Y, &input_stride);
+    // ISO 21496-1 recommends at least 8 bits (SHOULD), rather than requiring
+    // it. Full-range lower-depth mono samples have an unambiguous scale.
     const double offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (bits - 8));
     const double scale = profile.get_full_range_flag() ? static_cast<double>((1U << bits) - 1) :
                                                        219.0 * (1U << (bits - 8));

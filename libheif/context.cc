@@ -1812,6 +1812,15 @@ Result<std::shared_ptr<ImageItem>> HeifContext::encode_image(const std::shared_p
   }
   output_image_item->set_properties(properties);
 
+  // Newly encoded items must support the same codec-config queries and
+  // in-memory decoding as items read from a file. Merely installing the
+  // properties leaves visual-codec decoder pointers uninitialized.
+  if (Error decoder_error = output_image_item->initialize_decoder()) {
+    return decoder_error;
+  }
+  output_image_item->set_decoder_input_data();
+  output_image_item->populate_component_descriptions();
+
   //m_heif_file->set_brand(encoder->plugin->compression_format,
   //                       output_image_item->is_miaf_compatible());
 

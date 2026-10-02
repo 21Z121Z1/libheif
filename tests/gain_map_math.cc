@@ -180,7 +180,7 @@ TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Gain-map components below 8 bits are rejected")
+TEST_CASE("Full-range gain-map components below recommended 8 bits are usable")
 {
   auto base = make_pixels(1, false, 16384, 8);
   auto gain = make_pixels(1, true, 15, 2, 4);
@@ -190,8 +190,8 @@ TEST_CASE("Gain-map components below 8 bits are rejected")
 
   auto result = reconstruct_tone_map(
       base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
-  REQUIRE_FALSE(result);
-  REQUIRE(result.error().error_code == heif_error_Invalid_input);
+  REQUIRE(result);
+  REQUIRE(sample_at(**result, heif_channel_R, 0) == 16384);
 
   heif_decoding_options_free(options);
 }

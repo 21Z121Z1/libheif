@@ -270,6 +270,19 @@ TEST_CASE("tmap writer round-trips graph metadata colour and brand")
   REQUIRE(tmap_id != gain_id);
   REQUIRE(heif_image_handle_is_tone_map_derived_image(tmap) == 1);
 
+  // Exercise codec-config queries and reconstruction before serialization.
+  // Encoded AV1 items used to have a null decoder here.
+  REQUIRE(heif_image_handle_get_luma_bits_per_pixel(gain) == 8);
+  REQUIRE(heif_image_handle_get_chroma_bits_per_pixel(gain) == 8);
+  heif_image* reconstructed = nullptr;
+  error = heif_decode_image(tmap, &reconstructed,
+                           heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO((error.message ? error.message : ""));
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(reconstructed != nullptr);
+  REQUIRE(heif_image_get_bits_per_pixel_range(reconstructed, heif_channel_R) == 16);
+  heif_image_release(reconstructed);
+
   REQUIRE(heif_context_get_primary_image_ID(
               ctx, &primary_id).code == heif_error_Ok);
   REQUIRE(primary_id == base_id);
