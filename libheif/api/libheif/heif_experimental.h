@@ -107,6 +107,22 @@ heif_gain_map_metadata_status
 heif_image_handle_get_gain_map_metadata_status(
     const heif_image_handle* tmap);
 
+// Decode a root tmap with ISO 21496-1 clause 6.3 target-headroom weighting.
+// target_headroom is finite, nonnegative log2 HDR headroom (stops), as in the
+// metadata, not a linear luminance ratio. Values outside the two metadata
+// endpoints clamp the weight. Output retains the alternate colour encoding;
+// this is gain-map weighting, not general display tone mapping. Nested tmap
+// inputs reconstruct fully. Unknown minimum versions still return the baseline.
+// heif_decode_image() continues to apply the complete gain map.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    heif_colorspace colorspace,
+    heif_chroma chroma,
+    const heif_decoding_options* options,
+    double target_headroom);
+
 
 typedef struct heif_tone_map_options
 {

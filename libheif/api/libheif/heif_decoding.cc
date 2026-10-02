@@ -19,10 +19,12 @@
  */
 
 #include "heif_decoding.h"
+#include "heif_experimental.h"
 #include "api_structs.h"
 #include "plugin_registry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -238,11 +240,12 @@ const char* heif_decoder_descriptor_get_id_name(const heif_decoder_descriptor* d
 }
 
 
-heif_error heif_decode_image(const heif_image_handle* in_handle,
+static heif_error decode_image(const heif_image_handle* in_handle,
                              heif_image** out_img,
                              heif_colorspace colorspace,
                              heif_chroma chroma,
-                             const heif_decoding_options* input_options)
+                             const heif_decoding_options* input_options,
+                             std::optional<double> target_headroom)
 {
   if (out_img == nullptr || in_handle == nullptr) {
     return heif_error_null_pointer_argument;
@@ -261,7 +264,7 @@ heif_error heif_decode_image(const heif_image_handle* in_handle,
                                                                                                colorspace,
                                                                                                chroma,
                                                                                                dec_options,
-                                                                                               false, 0, 0, {});
+                                                                                               false, 0, 0, {}, target_headroom);
 
     if (!decodingResult) {
       return decodingResult.error_struct(in_handle->image.get());
@@ -275,3 +278,35 @@ heif_error heif_decode_image(const heif_image_handle* in_handle,
     return Error::Ok.error_struct(in_handle->image.get());
   });
 }
+
+
+heif_error heif_decode_image(const heif_image_handle* in_handle,
+                             heif_image** out_img,
+                             heif_colorspace colorspace,
+                             heif_chroma chroma,
+                             const heif_decoding_options* input_options)
+{
+  return decode_image(in_handle, out_img, colorspace, chroma, input_options, std::nullopt);
+}
+
+
+#if HEIF_ENABLE_EXPERIMENTAL_FEATURES
+heif_error heif_decode_tone_map_image(const heif_image_handle* tmap,
+                                     heif_image** out_img,
+                                     heif_colorspace colorspace,
+                                     heif_chroma chroma,
+                                     const heif_decoding_options* options,
+                                     double target_headroom)
+{
+  if (!out_img || !tmap) {
+    return heif_error_null_pointer_argument;
+  }
+  *out_img = nullptr;
+  if (!heif_image_handle_is_tone_map_derived_image(tmap) ||
+      !std::isfinite(target_headroom) || target_headroom < 0) {
+    return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+            "Expected a root tmap and finite nonnegative log2 target headroom"};
+  }
+  return decode_image(tmap, out_img, colorspace, chroma, options, target_headroom);
+}
+#endif

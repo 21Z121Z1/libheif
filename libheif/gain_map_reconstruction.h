@@ -34,6 +34,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const nclx_profile& alternate,
     const heif_decoding_options& options,
     const heif_security_limits* limits,
-    std::optional<nclx_profile> baseline_colour_override = std::nullopt);
+    std::optional<nclx_profile> baseline_colour_override = std::nullopt,
+    std::optional<double> target_headroom = std::nullopt);
 
 #endif

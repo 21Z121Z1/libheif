@@ -400,6 +400,9 @@ ImageItem_tmap::decode_compressed_image(
   }
   decode_state.processed_ids.insert(get_id());
 
+  const auto target_headroom = decode_state.root_tmap_target_headroom;
+  decode_state.root_tmap_target_headroom.reset();
+
   ToneMapImageParseResult payload = read_tone_map_image();
   switch (payload.status) {
     case ToneMapImageParseStatus::unsupported_tone_map_version:
@@ -471,7 +474,7 @@ ImageItem_tmap::decode_compressed_image(
                               payload.tone_map_image->gain_map_metadata,
                               *alternate_colour, options,
                               get_context()->get_security_limits(),
-                              *baseline_colour);
+                              *baseline_colour, target_headroom);
 }
 
 

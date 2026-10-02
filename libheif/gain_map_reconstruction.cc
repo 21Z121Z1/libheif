@@ -122,13 +122,20 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const nclx_profile& alternate,
     const heif_decoding_options& options,
     const heif_security_limits* limits,
-    std::optional<nclx_profile> baseline_colour_override)
+    std::optional<nclx_profile> baseline_colour_override,
+    std::optional<double> target_headroom)
 {
   if (!limits) {
     limits = &global_security_limits;
   }
   if (auto error = validate_gain_map_metadata(metadata)) {
     return error;
+  }
+  double weight = gain_map_full_weight(metadata);
+  if (target_headroom) {
+    auto target_weight = gain_map_target_weight(metadata, *target_headroom);
+    if (!target_weight) { return target_weight.error(); }
+    weight = *target_weight;
   }
   if (!base || !gain || !base->get_width() || !base->get_height() ||
       !gain->get_width() || !gain->get_height()) {
@@ -204,7 +211,6 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     out[c] = output->get_channel_memory<uint16_t>(channels[c], &strides[c]);
     strides[c] /= sizeof(uint16_t);
   }
-  const double weight = gain_map_full_weight(metadata);
   // Co-sited bilinear interpolation, with edge extension. Unnormalize each
   // of the four gain samples BEFORE interpolation; no full-resolution gain
   // buffer is allocated. All pixel buffers use HeifPixelImage accounting.

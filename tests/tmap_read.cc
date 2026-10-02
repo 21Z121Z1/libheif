@@ -31,6 +31,8 @@
 #include "test_utils.h"
 
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <vector>
 
 
@@ -55,7 +57,8 @@ std::vector<uint8_t> make_nclx(
 
 std::vector<uint8_t> make_tone_map_payload(
     uint8_t outer_version = 0,
-    uint16_t minimum_version = 0)
+    uint16_t minimum_version = 0,
+    const GainMapMetadata* override_metadata = nullptr)
 {
   GainMapMetadata metadata;
   metadata.version.minimum_version = 0;
@@ -69,6 +72,9 @@ std::vector<uint8_t> make_tone_map_payload(
   metadata.channels[0].gamma = {1, 1};
   metadata.channels[0].base_offset = {0, 1};
   metadata.channels[0].alternate_offset = {0, 1};
+  if (override_metadata) {
+    metadata = *override_metadata;
+  }
 
   auto annex_c = serialize_gain_map_metadata(metadata);
   REQUIRE(annex_c);
@@ -96,13 +102,14 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t gain_transfer = 2,
     uint16_t primary_item = 1,
     bool rotate_base = false,
-    bool duplicate_dimg_entry = false)
+    bool duplicate_dimg_entry = false,
+    const GainMapMetadata* override_metadata = nullptr)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
 
   std::vector<uint8_t> tmap_payload =
-      make_tone_map_payload(outer_version, minimum_version);
+      make_tone_map_payload(outer_version, minimum_version, override_metadata);
 
   std::vector<uint8_t> ftyp_payload;
   append_fourcc(ftyp_payload, "mif1");
@@ -642,6 +649,102 @@ TEST_CASE("tmap reconstructs synthetic uncompressed inputs")
 }
 
 
+TEST_CASE("Target headroom decode matches independent ISO and PQ values in both directions")
+{
+  const bool reverse = GENERATE(false, true);
+  GainMapMetadata metadata;
+  metadata.base_hdr_headroom = {reverse ? 2u : 0u, 1};
+  metadata.alternate_hdr_headroom = {reverse ? 0u : 2u, 1};
+  metadata.channels[0].gain_map_min = {2, 1};
+  metadata.channels[0].gain_map_max = {2, 1};
+  // Nonzero unequal offsets ensure the weighted path retains Formula (2).
+  metadata.channels[0].base_offset = {1, 64};
+  metadata.channels[0].alternate_offset = {1, 128};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  const double signal = 127.0 / 255.0;
+  const double baseline = std::pow((signal + 0.055) / 1.055, 2.4);
+  // ST 2084 constants; no production gain-map or colour helper is used.
+  const auto pq = [](double linear) {
+    const double power = std::pow(linear * 203.0 / 10000.0, 2610.0 / 16384.0);
+    return std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * power) /
+                    (1.0 + 2392.0 / 128.0 * power), 2523.0 / 32.0);
+  };
+  for (const double target : {0.0, 1.0, 2.0, 3.0}) {
+    heif_image* image = nullptr;
+    const auto error = heif_decode_tone_map_image(tmap, &image, heif_colorspace_RGB,
+                                                 heif_chroma_444, nullptr, target);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    REQUIRE(image);
+    const double weight = reverse ? (target >= 2 ? 0 : (target - 2) / 2) :
+                                   (target >= 2 ? 1 : target / 2);
+    const double linear = (baseline + 1.0 / 64) * std::exp2(weight * 2) - 1.0 / 128;
+    for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+      size_t stride = 0;
+      const auto* pixels = reinterpret_cast<const uint16_t*>(
+          heif_image_get_plane_readonly2(image, channel, &stride));
+      REQUIRE(pixels);
+      REQUIRE(pixels[0] == Catch::Approx(pq(linear) * 65535).margin(3));
+    }
+    heif_color_profile_nclx* profile = nullptr;
+    REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
+    REQUIRE(profile->transfer_characteristics == heif_transfer_characteristic_ITU_R_BT_2100_0_PQ);
+    heif_nclx_color_profile_free(profile);
+    heif_image_release(image);
+  }
+  heif_image* canonical = nullptr;
+  heif_image* endpoint = nullptr;
+  REQUIRE(heif_decode_image(tmap, &canonical, heif_colorspace_RGB, heif_chroma_444, nullptr).code == heif_error_Ok);
+  REQUIRE(heif_decode_tone_map_image(tmap, &endpoint, heif_colorspace_RGB, heif_chroma_444,
+                                    nullptr, reverse ? 0 : 2).code == heif_error_Ok);
+  size_t stride = 0;
+  REQUIRE(reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(canonical, heif_channel_R, &stride))[0] ==
+          reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(endpoint, heif_channel_R, &stride))[0]);
+  heif_image_release(canonical);
+  heif_image_release(endpoint);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Target headroom API rejects invalid arguments and preserves version fallback")
+{
+  const auto file = build_tmap_file();
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* image = nullptr;
+  for (double target : {-1.0, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+    REQUIRE(heif_decode_tone_map_image(tmap, &image, heif_colorspace_undefined,
+                                      heif_chroma_undefined, nullptr, target).code == heif_error_Usage_error);
+    REQUIRE(image == nullptr);
+  }
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(tmap, &base).code == heif_error_Ok);
+  REQUIRE(heif_decode_tone_map_image(base, &image, heif_colorspace_undefined,
+                                    heif_chroma_undefined, nullptr, 1).code == heif_error_Usage_error);
+  REQUIRE(image == nullptr);
+  REQUIRE(heif_decode_tone_map_image(nullptr, &image, heif_colorspace_undefined,
+                                    heif_chroma_undefined, nullptr, 1).code == heif_error_Usage_error);
+  REQUIRE(heif_decode_tone_map_image(tmap, nullptr, heif_colorspace_undefined,
+                                    heif_chroma_undefined, nullptr, 1).code == heif_error_Usage_error);
+  heif_image_handle_release(base);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+
+  const auto unknown = build_tmap_file(2, 0, 1);
+  tmap = open_tmap(&ctx, unknown);
+  REQUIRE(heif_decode_tone_map_image(tmap, &image, heif_colorspace_undefined,
+                                    heif_chroma_undefined, nullptr, 1).code == heif_error_Ok);
+  REQUIRE(heif_image_get_colorspace(image) == heif_colorspace_monochrome);
+  size_t stride = 0;
+  REQUIRE(heif_image_get_plane_readonly2(image, heif_channel_Y, &stride)[0] == 127);
+  heif_image_release(image);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("multiple tmap items can share the same base")
 {
   std::vector<uint8_t> file = build_two_tmap_file(1);
@@ -756,6 +859,43 @@ TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
   heif_nclx_color_profile_free(profile);
   heif_image_release(image);
   heif_image_handle_release(handle);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Target headroom is consumed only by the root of a nested tmap")
+{
+  const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  const auto file = build_two_tmap_file(3, transfer);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* inner = nullptr;
+  heif_image_handle* outer = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, 3, &inner).code == heif_error_Ok);
+  REQUIRE(heif_context_get_image_handle(ctx, 5, &outer).code == heif_error_Ok);
+  heif_image* full_inner = nullptr;
+  heif_image* weighted_outer = nullptr;
+  REQUIRE(heif_decode_image(inner, &full_inner, heif_colorspace_RGB, heif_chroma_444, nullptr).code == heif_error_Ok);
+  REQUIRE(heif_decode_tone_map_image(outer, &weighted_outer, heif_colorspace_RGB,
+                                    heif_chroma_444, nullptr, 0).code == heif_error_Ok);
+  // Outer W=0 must retain the fully reconstructed inner baseline. Passing the
+  // target recursively would instead remove the inner gain as well.
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t inner_stride = 0, outer_stride = 0;
+    const auto* a = heif_image_get_plane_readonly2(full_inner, channel, &inner_stride);
+    const auto* b = heif_image_get_plane_readonly2(weighted_outer, channel, &outer_stride);
+    REQUIRE(a);
+    REQUIRE(b);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 2; ++x) {
+        REQUIRE(reinterpret_cast<const uint16_t*>(a + y * inner_stride)[x] ==
+                Catch::Approx(reinterpret_cast<const uint16_t*>(b + y * outer_stride)[x]).margin(1));
+      }
+    }
+  }
+  heif_image_release(full_inner);
+  heif_image_release(weighted_outer);
+  heif_image_handle_release(inner);
+  heif_image_handle_release(outer);
   heif_context_free(ctx);
 }
 

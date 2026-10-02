@@ -26,6 +26,7 @@
 #include <set>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include "error.h"
 
 
@@ -82,6 +83,9 @@ static const uint32_t MAX_DERIVED_IMAGE_DECODE_FACTOR = 2;
 struct DecodeTraversalState
 {
   std::set<heif_item_id> processed_ids;
+
+  // Consumed by the root tmap only; derived inputs reconstruct fully.
+  std::optional<double> root_tmap_target_headroom;
 
   uint32_t overlay_nesting = 0;         // number of overlays on the path to here
   uint32_t max_overlay_nesting = 0;     // 0 == unlimited

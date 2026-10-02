@@ -59,3 +59,45 @@ The writer fixes are backed by controlled A/B files: changing only the colliding
 codec sampling resolved it. Explicit identity with subsampling is rejected.
 The x265 build-212 output-picture fix also restores four existing HEVC encode
 regressions that failed on this Mac before the correction.
+
+## Conformance assessment and next bounded goal
+
+Assessment baseline for this continuation: `c54744f5079b57eba041d58c4cada27a7b86a896`.
+This includes subsequent upstream fixes and the corrected clause 4.4 requirement
+of at least eight bits per gain component. Writer rejection of lower-depth input
+and tolerant reader behaviour are distinct policies.
+
+| Standard surface | Implementation and evidence | Assessment |
+| --- | --- | --- |
+| ISO 21496-1 Annex C syntax and semantics | Exact rational metadata, mono/RGB, semantic rejection and version handling; independent pinned libultrahdr byte comparison | Covered by current tests |
+| ISO 21496-1 clauses 6.1-6.3 | Linearization, application primaries, inverse gamma, unnormalization, co-sited resampling and offset equation | Covered for supported colour subset |
+| Clause 6.3 target-headroom weighting | New experimental root-only decode API; independent PQ pixel expectations in both directions, endpoint equality, invalid targets and nested PQ/HLG tests | Implemented in this continuation |
+| HEIF Amd.1 clause 6.6.2.4 | Ordered two-input `dimg`, image geometry, required colour roles and ordinary derived-item traversal | Covered by structural and decode tests |
+| HEIF writer and alternative selection | Gain NCLX, hidden-item policy, exact alternate ICC/NCLX preservation and noncolliding ordered `altr` groups | Tested with synthetic Apple consumers |
+| All permitted colour descriptions and raster paths | Arbitrary ICC, other HLG viewing conditions, premultiplied baseline alpha, unsupported matrices and tile-only decode remain limited | Partial |
+| External consumers | Apple public-framework pixels and producer round trip; libultrahdr metadata round trip | Tested cases only; no universal consumer claim |
+
+There is no defensible “100% adapted” claim for the whole standards. HEIF
+ISO/IEC 23008-12 contains much more than the `tmap` amendment, and passing the
+current cases cannot establish all permitted ICC transforms or every producer.
+The scope above identifies which operations are implemented and which remain
+explicitly unsupported instead of assigning a misleading conformance percentage.
+
+The bounded goal is to expose the already implemented Formula (3) through actual
+root decoding while preserving canonical nested semantics and the stable API.
+English ISO 21496-1 page 7 (PDF page 13), clause 6.3, was checked directly.
+The existing scalar formula was correct; no change to its arithmetic is needed.
+No new CMS, legacy-format heuristics or producer-specific matrix guesses are part
+of this change. Hosted Linux sanitizer and macOS framework jobs exercise the
+new tests through the existing workflow.
+
+Local acceptance after this change: all 103 CTest targets completed with 97
+passes and six capability/external-fixture skips. ASan/UBSan passed gain-map
+math, all 15 tmap-read cases (301 assertions) and the newly merged uncompressed
+sequence regression. That regression's diagnostic streamed a null success
+message on macOS; its two log statements now guard the optional message.
+All 108 C-header compilations, 469 stable symbols in both experimental modes
+and changed-source cpplint pass. The new symbol is exported only in ON builds.
+Apple's synthetic mono/RGB consumer and producer round trip pass again with
+the existing pixel tolerances. Hosted CI status must be checked for the actual
+published commit rather than inferred from these local results.

@@ -54,9 +54,10 @@ jobs:
             -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
             -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
             -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF
-          cmake --build build-apple --target tmap_write tmap_interop --parallel 3
+          cmake --build build-apple --target tmap_read tmap_write tmap_interop --parallel 3
       - name: Verify independent Apple HDR pixels and producer round trip
         run: |
+          ctest --test-dir build-apple -R '^tmap_read$' --output-on-failure
           LIBHEIF_TMAP_WRITE_DIR=build-apple/synthetic \
             build-apple/tests/tmap_write 'Generate synthetic*'
           swift scripts/check-tmap-apple.swift build-apple/synthetic

@@ -15,6 +15,15 @@ decode budget. Unknown minimum metadata versions return baseline pixels and
 retain the baseline colour description. Unknown outer ToneMapImage versions
 remain unsupported.
 
+Experimental `heif_decode_tone_map_image()` applies the root gain map with the
+target-headroom weight of ISO 21496-1 clause 6.3, Formula (3). The target is
+finite, nonnegative **log2 headroom in stops**, matching the metadata: a 4:1
+HDR-to-reference-white luminance ratio is two stops. The weight clamps between
+the baseline and alternate endpoints in either direction. Only the root consumes
+the target; nested `tmap` inputs reconstruct fully. Output retains the alternate
+colour encoding, even at zero weight, and Formula (2)'s offsets still apply.
+This API does not perform a general HDR display tone curve or colour conversion.
+
 Supported primaries are BT.709, P3-D65 and BT.2020. Supported transfer curves
 are linear, sRGB, BT.709/BT.601, PQ and HLG. PQ uses the BT.2408 reference-white
 convention of 203 cd/m2. This is an explicit implementation convention, not an
@@ -95,7 +104,6 @@ explicit error.
 - HLG is limited to the reference viewing conditions described above.
 - Unsupported YCbCr matrices, premultiplied baseline alpha and tile-only `tmap`
   decode return explicit errors.
-- No root-specific display-headroom API is exposed yet.
 - No Apple legacy or vendor missing-version heuristics are part of the strict parser.
 
 ## Verification
