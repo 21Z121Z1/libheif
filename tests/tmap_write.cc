@@ -437,7 +437,7 @@ TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB inp
     REQUIRE(plane);
     for (int y = 0; y < 16; ++y) {
       for (uint32_t x = 0; x < 16; ++x) {
-        const uint32_t value = x % (channel_maximum + 1);
+        const uint32_t value = x == 15 ? channel_maximum : x % (channel_maximum + 1);
         if (channel_depth <= 8) { plane[y * stride + x] = static_cast<uint8_t>(value); }
         else { reinterpret_cast<uint16_t*>(plane + y * stride)[x] = static_cast<uint16_t>(value); }
       }
@@ -460,9 +460,12 @@ TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB inp
     int stride = 0;
     const auto* plane = heif_image_get_plane_readonly(pixels, channel, &stride);
     REQUIRE(plane);
-    for (uint32_t x = 0; x < 16; ++x) {
-      const uint32_t value = channel_depth <= 8 ? plane[x] : reinterpret_cast<const uint16_t*>(plane)[x];
-      REQUIRE(value == x % (channel_maximum + 1));
+    for (int y : {0, 7, 15}) {
+      const auto* row = plane + y * stride;
+      for (uint32_t x = 0; x < 16; ++x) {
+        const uint32_t value = channel_depth <= 8 ? row[x] : reinterpret_cast<const uint16_t*>(row)[x];
+        REQUIRE(value == (x == 15 ? channel_maximum : x % (channel_maximum + 1)));
+      }
     }
   }
   auto bytes = write_context(ctx);
@@ -481,11 +484,15 @@ TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB inp
     int stride = 0;
     const auto* plane = heif_image_get_plane_readonly(decoded, channel, &stride);
     REQUIRE(plane);
-    for (uint32_t x = 0; x < 16; ++x) {
-      const uint32_t channel_maximum = rgb && channel == heif_channel_B ? encoded_maximum : maximum;
-      const double expected = std::round((x % (channel_maximum + 1)) * double(encoded_maximum) / channel_maximum);
-      const uint32_t value = encoded_depth <= 8 ? plane[x] : reinterpret_cast<const uint16_t*>(plane)[x];
-      REQUIRE(value == Catch::Approx(expected).margin(0));
+    for (int y : {0, 7, 15}) {
+      const auto* row = plane + y * stride;
+      for (uint32_t x = 0; x < 16; ++x) {
+        const uint32_t channel_maximum = rgb && channel == heif_channel_B ? encoded_maximum : maximum;
+        const uint32_t input_value = x == 15 ? channel_maximum : x % (channel_maximum + 1);
+        const double expected = std::round(input_value * double(encoded_maximum) / channel_maximum);
+        const uint32_t value = encoded_depth <= 8 ? row[x] : reinterpret_cast<const uint16_t*>(row)[x];
+        REQUIRE(value == Catch::Approx(expected).margin(0));
+      }
     }
   }
 
