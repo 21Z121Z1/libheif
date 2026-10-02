@@ -133,10 +133,14 @@ its history from upstream PR #1893, commit
 consistency checks and C-boundary exception guards.
 
 ISO 21496-1 4.4 recommends at least eight bits per gain component ("should",
-not "shall"). The gain-map writer currently supports that recommended subset
-and rejects lower-depth inputs as a writer policy. Reconstruction supports
-lower-depth full-range samples; their bit depth alone does not make a file
-non-conforming. Unsupported sample formats still return an explicit error.
+not "shall"). Full-range monochrome and planar RGB inputs below eight bits
+are now expanded by their normalized values to a common unsigned depth of at
+least eight bits before codec encoding. Each level rounds to the nearest
+representable value; the caller's raster remains unchanged. Mixed planar
+depths use the largest depth, with a minimum of eight. Low-depth YCbCr,
+interleaved or limited-range inputs are still explicitly rejected rather than
+guessing their zero point or layout. Reconstruction supports lower-depth
+full-range samples; bit depth alone does not make a file non-conforming.
 
 ## Remaining limitations
 

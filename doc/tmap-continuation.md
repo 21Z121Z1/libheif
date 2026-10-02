@@ -171,3 +171,11 @@ FCC and SMPTE 240 raster matrices now work for baseline and gain inputs, with
 independent full/limited-range RGB and gain expectations. The matrix guard is
 shared by both inputs; a baseline constant-luminance or unspecified matrix
 cannot silently take the generic converter's non-constant/default path.
+
+The writer now accepts lower-depth full-range monochrome and planar RGB gain
+inputs, expanding normalized levels to the nearest value in a common depth of
+at least eight bits. AV1 lossless tests serialize and reread 1-7-bit mono and
+mixed-depth RGB data; source pixels and primary selection remain unchanged.
+Low-depth limited-range/other-layout input stays explicit, and out-of-range
+sample values fail before adding an encoded item. This closes the former blanket
+minimum-depth writer policy without inventing lower-depth YCbCr normalization.

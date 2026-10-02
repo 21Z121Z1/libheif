@@ -28,6 +28,7 @@
 #include "libheif/heif_entity_groups.h"
 #include "libheif/heif_items.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -373,14 +374,12 @@ heif_error heif_context_encode_gain_map_image(
     if (Error error = source->check_plane_layout()) {
       return error.error_struct(ctx->context.get());
     }
-    // This writer supports the recommended >=8-bit component depth from
-    // ISO 21496-1:2025 4.4 ("should", not "shall"). The reader also handles
-    // lower-depth data; this restriction is a writer policy.
+    bool promote_depth = false;
+    uint16_t encoded_depth = 8;
     for (auto channel : source->get_channel_set()) {
-      if (source->get_bits_per_pixel(channel) < 8) {
-        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
-                "Gain-map writer supports component depths of at least 8 bits"};
-      }
+      const auto depth = source->get_bits_per_pixel(channel);
+      promote_depth |= depth < 8;
+      encoded_depth = std::max(encoded_depth, depth);
     }
     const auto space = source->get_colorspace();
     if ((space != heif_colorspace_monochrome && space != heif_colorspace_RGB &&
@@ -424,14 +423,62 @@ heif_error heif_context_encode_gain_map_image(
       return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
               "Identity-matrix gain encoding requires a codec configured for 4:4:4"};
     }
+    if (promote_depth) {
+      // Preserve normalized gain values rather than reinterpreting small
+      // integers as 8-bit data. Limited-range and YCbCr components have a
+      // different normalization/zero point, so do not infer their expansion.
+      if (!signalling.full_range_flag ||
+          (space != heif_colorspace_monochrome &&
+           (space != heif_colorspace_RGB || source->get_chroma_format() != heif_chroma_444))) {
+        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                "Lower-depth gain encoding requires full-range monochrome or planar RGB"};
+      }
+      for (auto channel : source->get_channel_set()) {
+        const auto depth = source->get_bits_per_pixel(channel);
+        if (depth < 1 || depth > 16 || source->get_datatype(channel) != heif_component_datatype_unsigned_integer) {
+          return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                  "Lower-depth gain encoding requires unsigned components of at most 16 bits"};
+        }
+      }
+    }
     // Copy pixels with existing memory accounting. Never change a caller's
     // colour metadata or subject logical gain samples to a transfer curve.
     auto pixels = std::make_shared<HeifPixelImage>();
     pixels->create(source->get_width(), source->get_height(), space, source->get_chroma_format());
     for (auto channel : source->get_channel_set()) {
-      if (Error error = pixels->copy_new_channel_from(source, channel, channel,
-                                                     ctx->context->get_security_limits())) {
-        return error.error_struct(ctx->context.get());
+      if (!promote_depth) {
+        if (Error error = pixels->copy_new_channel_from(source, channel, channel,
+                                                       ctx->context->get_security_limits())) {
+          return error.error_struct(ctx->context.get());
+        }
+      }
+      else {
+        const auto width = source->get_width(channel), height = source->get_height(channel);
+        if (Error error = pixels->add_channel(channel, width, height, encoded_depth,
+                                               ctx->context->get_security_limits())) {
+          return error.error_struct(ctx->context.get());
+        }
+        const auto depth = source->get_bits_per_pixel(channel);
+        const uint32_t input_maximum = (1U << depth) - 1;
+        const uint32_t output_maximum = (1U << encoded_depth) - 1;
+        size_t input_stride = 0, output_stride = 0;
+        const auto* input = source->get_channel_memory(channel, &input_stride);
+        auto* output = pixels->get_channel_memory(channel, &output_stride);
+        for (uint32_t y = 0; y < height; ++y) {
+          const auto* input_row = input + size_t(y) * input_stride;
+          auto* output_row = output + size_t(y) * output_stride;
+          for (uint32_t x = 0; x < width; ++x) {
+            const uint32_t value = depth <= 8 ? input_row[x] : reinterpret_cast<const uint16_t*>(input_row)[x];
+            if (value > input_maximum) {
+              return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                      "Gain-map sample exceeds its declared component depth"};
+            }
+            const auto normalized = static_cast<uint16_t>(
+                (uint64_t(value) * output_maximum + input_maximum / 2) / input_maximum);
+            if (encoded_depth <= 8) { output_row[x] = static_cast<uint8_t>(normalized); }
+            else { reinterpret_cast<uint16_t*>(output_row)[x] = normalized; }
+          }
+        }
       }
     }
     nclx_profile nclx;

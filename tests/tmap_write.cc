@@ -407,23 +407,124 @@ TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
   heif_context_free(ctx);
 }
 
-TEST_CASE("Gain-map encoder rejects components below its supported bit depth")
+TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB input")
 {
+  const int depth = GENERATE(1, 2, 3, 4, 5, 6, 7);
+  const bool rgb = GENERATE(false, true);
+  const int blue_depth = GENERATE(8, 12);
+  if (!rgb && blue_depth != 8) { return; }
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
+  if (rgb) { REQUIRE(heif_encoder_set_parameter_string(encoder, "chroma", "444").code == heif_error_Ok); }
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_601_6, true);
+  auto* base = encode_image_with_profile(ctx, encoder, baseline);
+  const auto base_id = heif_image_handle_get_item_id(base);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(16, 16, rgb ? heif_colorspace_RGB : heif_colorspace_monochrome,
+                           rgb ? heif_chroma_444 : heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  const std::vector<heif_channel> channels = rgb ?
+      std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B} :
+      std::vector<heif_channel>{heif_channel_Y};
+  const uint32_t maximum = (1U << depth) - 1;
+  for (auto channel : channels) {
+    const int channel_depth = rgb && channel == heif_channel_B ? blue_depth : depth;
+    const uint32_t channel_maximum = (1U << channel_depth) - 1;
+    REQUIRE(heif_image_add_plane(pixels, channel, 16, 16, channel_depth).code == heif_error_Ok);
+    int stride = 0;
+    auto* plane = heif_image_get_plane(pixels, channel, &stride);
+    REQUIRE(plane);
+    for (int y = 0; y < 16; ++y) {
+      for (uint32_t x = 0; x < 16; ++x) {
+        const uint32_t value = x % (channel_maximum + 1);
+        if (channel_depth <= 8) { plane[y * stride + x] = static_cast<uint8_t>(value); }
+        else { reinterpret_cast<uint16_t*>(plane + y * stride)[x] = static_cast<uint16_t>(value); }
+      }
+    }
+  }
+
+  heif_image_handle* gain = nullptr;
+  const auto error = heif_context_encode_gain_map_image(
+      ctx, pixels, encoder, nullptr, nullptr, &gain);
+  INFO((error.message ? error.message : ""));
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(gain);
+  heif_item_id primary = 0;
+  REQUIRE(heif_context_get_primary_image_ID(ctx, &primary).code == heif_error_Ok);
+  REQUIRE(primary == base_id);
+  for (auto channel : channels) {
+    const int channel_depth = rgb && channel == heif_channel_B ? blue_depth : depth;
+    const uint32_t channel_maximum = (1U << channel_depth) - 1;
+    REQUIRE(heif_image_get_bits_per_pixel_range(pixels, channel) == channel_depth);
+    int stride = 0;
+    const auto* plane = heif_image_get_plane_readonly(pixels, channel, &stride);
+    REQUIRE(plane);
+    for (uint32_t x = 0; x < 16; ++x) {
+      const uint32_t value = channel_depth <= 8 ? plane[x] : reinterpret_cast<const uint16_t*>(plane)[x];
+      REQUIRE(value == x % (channel_maximum + 1));
+    }
+  }
+  auto bytes = write_context(ctx);
+  auto* reader = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(reader, bytes.data(), bytes.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* read_gain = nullptr;
+  REQUIRE(heif_context_get_image_handle(reader, heif_image_handle_get_item_id(gain), &read_gain).code == heif_error_Ok);
+  heif_image* decoded = nullptr;
+  REQUIRE(heif_decode_image(read_gain, &decoded, rgb ? heif_colorspace_RGB : heif_colorspace_monochrome,
+                            rgb ? heif_chroma_444 : heif_chroma_monochrome, nullptr).code == heif_error_Ok);
+  REQUIRE(decoded);
+  const int encoded_depth = rgb ? blue_depth : 8;
+  const uint32_t encoded_maximum = (1U << encoded_depth) - 1;
+  for (auto channel : channels) {
+    REQUIRE(heif_image_get_bits_per_pixel_range(decoded, channel) == encoded_depth);
+    int stride = 0;
+    const auto* plane = heif_image_get_plane_readonly(decoded, channel, &stride);
+    REQUIRE(plane);
+    for (uint32_t x = 0; x < 16; ++x) {
+      const uint32_t channel_maximum = rgb && channel == heif_channel_B ? encoded_maximum : maximum;
+      const double expected = std::round((x % (channel_maximum + 1)) * double(encoded_maximum) / channel_maximum);
+      const uint32_t value = encoded_depth <= 8 ? plane[x] : reinterpret_cast<const uint16_t*>(plane)[x];
+      REQUIRE(value == Catch::Approx(expected).margin(0));
+    }
+  }
+
+  heif_image_release(decoded);
+  heif_image_handle_release(read_gain);
+  heif_context_free(reader);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_image_release(pixels);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Lower-depth gain writer rejects unresolved range and invalid samples before encoding")
+{
+  const bool limited = GENERATE(false, true);
   auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   heif_image* pixels = nullptr;
   REQUIRE(heif_image_create(4, 4, heif_colorspace_monochrome,
                            heif_chroma_monochrome, &pixels).code == heif_error_Ok);
   REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 4, 4, 4).code == heif_error_Ok);
-
+  int stride = 0;
+  auto* plane = heif_image_get_plane(pixels, heif_channel_Y, &stride);
+  REQUIRE(plane);
+  for (int y = 0; y < 4; ++y) { std::memset(plane + y * stride, limited ? 15 : 16, 4); }
+  const auto signalling = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified, heif_matrix_coefficients_unspecified, !limited);
+  auto* options = heif_gain_map_image_options_alloc();
+  REQUIRE(options);
+  options->nclx = &signalling;
   heif_image_handle* gain = nullptr;
-  const auto error = heif_context_encode_gain_map_image(
-      ctx, pixels, encoder, nullptr, nullptr, &gain);
+  const auto error = heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, options, &gain);
   REQUIRE(error.code == heif_error_Usage_error);
   REQUIRE(error.subcode == heif_suberror_Invalid_parameter_value);
   REQUIRE(gain == nullptr);
   REQUIRE(heif_context_get_number_of_items(ctx) == 0);
-
+  REQUIRE(plane[0] == (limited ? 15 : 16));
+  heif_gain_map_image_options_free(options);
   heif_image_release(pixels);
   heif_encoder_release(encoder);
   heif_context_free(ctx);
