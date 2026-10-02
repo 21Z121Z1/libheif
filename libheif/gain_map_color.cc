@@ -66,6 +66,9 @@ constexpr double hlg_gamma = 1.2;
 constexpr double hlg_a = 0.17883277;
 constexpr double bt_alpha = 1.0992968268094429403;
 constexpr double bt_beta = 0.0180539685108078073;
+constexpr double smpte240_alpha = 1.1115721959217312197;
+constexpr double smpte240_beta = 0.0228215855294450222;
+constexpr double cinema_scale = 52.37 / 203.0;
 const double hlg_b = 1.0 - 4.0 * hlg_a;
 const double hlg_c = 0.5 - hlg_a * std::log(4.0 * hlg_a);
 
@@ -617,9 +620,20 @@ Result<nclx_profile> nclx_from_matrix_trc(const IccView& view)
 
 bool gain_map_supports_transfer(uint16_t transfer)
 {
-  return transfer == 1 || transfer == 6 || transfer == 8 || transfer == 13 ||
-         transfer == 14 || transfer == 15 || transfer == 16 || transfer == 18;
+  return transfer == 1 || (transfer >= 4 && transfer <= 18);
 }
+
+namespace {
+double decode_bt(double signal)
+{
+  return signal < 4.5 * bt_beta ? signal / 4.5 : std::pow((signal + bt_alpha - 1) / bt_alpha, 1.0 / 0.45);
+}
+
+double encode_bt(double linear)
+{
+  return linear < bt_beta ? 4.5 * linear : bt_alpha * std::pow(linear, 0.45) - (bt_alpha - 1);
+}
+}  // namespace
 
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
 {
@@ -628,16 +642,25 @@ Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
   }
   const double v = std::max(value, 0.0);
   switch (transfer) {
+    case 4: return std::pow(v, 2.2);
+    case 5: return std::pow(v, 2.8);
+    case 7: return v < 4 * smpte240_beta ? v / 4 :
+                    std::pow((v + smpte240_alpha - 1) / smpte240_alpha, 1.0 / 0.45);
     case 8: return v;
+    case 9: return v == 0 ? 0.0 : std::pow(10.0, 2 * (v - 1));
+    case 10: return v == 0 ? 0.0 : std::pow(10.0, 2.5 * (v - 1));
+    case 11: return std::copysign(decode_bt(std::abs(value)), value);
+    case 12: return value < 0 ? -decode_bt(-4 * value) / 4 : decode_bt(v);
     case 13: return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
     case 1:
     case 6:
     case 14:
-    case 15: return v < 4.5 * bt_beta ? v / 4.5 : std::pow((v + bt_alpha - 1) / bt_alpha, 1.0 / 0.45);
+    case 15: return decode_bt(v);
     case 16: {
       const double p = std::pow(std::min(v, 1.0), 1.0 / pq_m2);
       return pq_scale * std::pow(std::max(p - pq_c1, 0.0) / (pq_c2 - pq_c3 * p), 1.0 / pq_m1);
     }
+    case 17: return cinema_scale * std::pow(v, 2.6);
     default: return unsupported_colour();
   }
 }
@@ -649,16 +672,25 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
   }
   const double v = std::max(value, 0.0);
   switch (transfer) {
+    case 4: return std::pow(v, 1.0 / 2.2);
+    case 5: return std::pow(v, 1.0 / 2.8);
+    case 7: return v < smpte240_beta ? 4 * v :
+                    smpte240_alpha * std::pow(v, 0.45) - (smpte240_alpha - 1);
     case 8: return v;
+    case 9: return v < 0.01 ? 0.0 : 1 + std::log10(v) / 2;
+    case 10: return v < std::sqrt(10.0) / 1000 ? 0.0 : 1 + std::log10(v) / 2.5;
+    case 11: return std::copysign(encode_bt(std::abs(value)), value);
+    case 12: return value < 0 ? -encode_bt(-4 * value) / 4 : encode_bt(v);
     case 13: return v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
     case 1:
     case 6:
     case 14:
-    case 15: return v < bt_beta ? 4.5 * v : bt_alpha * std::pow(v, 0.45) - (bt_alpha - 1);
+    case 15: return encode_bt(v);
     case 16: {
       const double p = std::pow(std::min(v / pq_scale, 1.0), pq_m1);
       return std::pow((pq_c1 + pq_c2 * p) / (1 + pq_c3 * p), pq_m2);
     }
+    case 17: return std::pow(v / cinema_scale, 1.0 / 2.6);
     default: return unsupported_colour();
   }
 }

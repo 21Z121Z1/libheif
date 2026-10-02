@@ -29,11 +29,21 @@ Supported CICP primaries are all the defined H.273 Table 2 code points:
 1, 4-12 and 22. Native-white RGB-to-XYZ matrices use their declared
 chromaticities; conversions between different whites use Bradford adaptation.
 Code point 10 uses the XYZ identity basis and equal-energy centre white.
-Supported transfer curves are linear, sRGB, BT.709/BT.601/BT.2020 SDR, PQ and HLG.
+All defined H.273 transfer codes are supported (1 and 4-18): linear,
+display gamma 2.2/2.8, sRGB, BT.709/BT.601/BT.2020 SDR, SMPTE 240,
+logarithmic 100:1 and 100√10:1, IEC 61966-2-4, BT.1361 extended gamut,
+SMPTE ST 428, PQ and HLG. Signed extended-gamut branches are evaluated
+before the unsigned output raster clips to its representable range.
+For a logarithmic zero signal, the non-invertible low interval is decoded as
+black; levels below its cutoff cannot be recovered from that signal.
 The four equivalent SDR code points (1, 6, 14, 15) use H.273's continuous
 alpha/beta constants. PQ uses the BT.2408 reference-white
 convention of 203 cd/m2. This is an explicit implementation convention, not an
 additional ISO 21496 metadata field.
+
+SMPTE ST 428's display-referred intensity uses the same physical 203 cd/m2
+reference normalization: a unit encoded signal decodes to 52.37/203 and the
+nominal 48 cd/m2 white decodes to 48/203, following H.273 Table 3.
 
 HLG uses the BT.2100 reference display (1000 cd/m2, zero black, system gamma
 1.2), including its RGB-luminance-dependent OOTF, with the same 203 cd/m2

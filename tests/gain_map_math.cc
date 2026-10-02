@@ -116,6 +116,44 @@ TEST_CASE("BT2020 SDR code points use continuous H273 transfer curves")
   REQUIRE(*gain_map_encode_transfer(beta, transfer) == Catch::Approx(4.5 * beta).margin(1e-14));
 }
 
+TEST_CASE("Remaining H273 transfer curves match independent reference values")
+{
+  for (uint16_t transfer : std::array<uint16_t, 9>{4, 5, 7, 9, 10, 11, 12, 13, 17}) {
+    REQUIRE(gain_map_supports_transfer(transfer));
+  }
+  REQUIRE(*gain_map_decode_transfer(0.5, 4) == Catch::Approx(0.21763764082403103).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.5, 5) == Catch::Approx(0.14358729437462938).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.5, 7) == Catch::Approx(0.26506701270008923).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.5, 9) == Catch::Approx(0.1).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.6, 10) == Catch::Approx(0.1).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(-0.5, 11) == Catch::Approx(-0.25971943710117881).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(-0.2, 12) == Catch::Approx(-0.16000581150475236).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.96704267531793354, 17) == Catch::Approx(48.0 / 203).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(1, 17) == Catch::Approx(52.37 / 203).margin(1e-14));
+  REQUIRE(*gain_map_encode_transfer(0.1, 9) == Catch::Approx(0.5).margin(1e-14));
+  REQUIRE(*gain_map_encode_transfer(0.1, 10) == Catch::Approx(0.6).margin(1e-14));
+  // The logarithmic zero signal represents a flat interval; choose black.
+  REQUIRE(*gain_map_decode_transfer(0, 9) == 0);
+  REQUIRE(*gain_map_decode_transfer(0, 10) == 0);
+  REQUIRE(*gain_map_encode_transfer(0.001, 9) == 0);
+  REQUIRE(*gain_map_encode_transfer(0.001, 10) == 0);
+  for (uint16_t transfer : std::array<uint16_t, 7>{4, 5, 7, 11, 12, 13, 17}) {
+    for (double signal : {0.0, 0.01, 0.08, 0.5, 0.9, 1.0}) {
+      auto linear = gain_map_decode_transfer(signal, transfer);
+      REQUIRE(linear);
+      auto encoded = gain_map_encode_transfer(*linear, transfer);
+      REQUIRE(encoded);
+      REQUIRE(*encoded == Catch::Approx(signal).margin(1e-13));
+    }
+  }
+  for (uint16_t transfer : std::array<uint16_t, 2>{11, 12}) {
+    for (double signal : {-0.001, -0.02, -0.2}) {
+      REQUIRE(*gain_map_encode_transfer(*gain_map_decode_transfer(signal, transfer), transfer) ==
+              Catch::Approx(signal).margin(1e-13));
+    }
+  }
+}
+
 TEST_CASE("CICP primaries conversions preserve adapted white and match reference red")
 {
   auto matrix = gain_map_primaries_matrix(1, 9);

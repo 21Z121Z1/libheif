@@ -160,5 +160,9 @@ Bradford adaptation between the declared whites. All primary pairs preserve
 adapted white; the RGB cases and cross-white ICC conversions also have an
 independent Little CMS oracle. BT.2020 SDR transfer codes 14/15 are supported
 alongside their equivalent 1/6 codes, using H.273's continuous alpha/beta
-constants rather than rounded thresholds. Other transfer curves remain explicit
-limitations until implemented and independently checked.
+constants rather than rounded thresholds. The remaining defined transfer codes
+now have their actual gamma, SMPTE 240, logarithmic, signed extended-gamut and
+ST 428 equations, with independent high-precision reference values. Logarithmic
+zero signals decode as black because their lower interval cannot be inverted
+uniquely; ST 428 retains its physical 48 cd/m2 white in the shared 203 cd/m2
+normalization. Unsupported raster matrices and profile models remain explicit.

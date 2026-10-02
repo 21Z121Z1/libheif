@@ -811,9 +811,14 @@ TEST_CASE("Requested tmap output converts PQ samples to linear RGB")
 
   requested->transfer_characteristics = heif_transfer_characteristic_ITU_R_BT_470_6_System_M;
   image = nullptr;
-  REQUIRE(heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options).code ==
-          heif_error_Unsupported_feature);
-  REQUIRE(image == nullptr);
+  REQUIRE(heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options).code == heif_error_Ok);
+  REQUIRE(image);
+  size_t gamma_stride = 0;
+  const auto* gamma = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_R,
+                                                                                     &gamma_stride));
+  REQUIRE(gamma);
+  REQUIRE(gamma[0] == Catch::Approx(std::pow(linear, 1 / 2.2) * 65535).margin(5));
+  heif_image_release(image);
   heif_nclx_color_profile_free(requested);
   options->output_image_nclx_profile = nullptr;
   heif_decoding_options_free(options);
