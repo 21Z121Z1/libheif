@@ -25,8 +25,13 @@ colour encoding, even at zero weight, and Formula (2)'s offsets still apply.
 This API does not perform a general HDR display tone curve. Explicit requested
 output NCLX conversion happens after the root reconstruction, as described below.
 
-Supported primaries are BT.709, P3-D65 and BT.2020. Supported transfer curves
-are linear, sRGB, BT.709/BT.601, PQ and HLG. PQ uses the BT.2408 reference-white
+Supported CICP primaries are all the defined H.273 Table 2 code points:
+1, 4-12 and 22. Native-white RGB-to-XYZ matrices use their declared
+chromaticities; conversions between different whites use Bradford adaptation.
+Code point 10 uses the XYZ identity basis and equal-energy centre white.
+Supported transfer curves are linear, sRGB, BT.709/BT.601/BT.2020 SDR, PQ and HLG.
+The four equivalent SDR code points (1, 6, 14, 15) use H.273's continuous
+alpha/beta constants. PQ uses the BT.2408 reference-white
 convention of 203 cd/m2. This is an explicit implementation convention, not an
 additional ISO 21496 metadata field.
 
@@ -40,7 +45,7 @@ matrix/TRC profiles use their stored D50 PCS colourants and each channel's
 monotone `curveType` or `parametricCurveType` (types 0-4), without matching them
 to a CICP approximation. Sampled curves use linear interpolation; inverse
 plateaus follow ICC.1:2022 Annex F.1. Cross-profile conversions use relative
-colourimetry through the D50 PCS, with a double-precision Bradford D65 adaptation
+colourimetry through the D50 PCS, with a double-precision Bradford white adaptation
 for the supported NCLX spaces. No runtime CMS dependency is added.
 
 When ICC and NCLX are both associated, HEIF 6.5.5's CP=2/TC=2 storage NCLX

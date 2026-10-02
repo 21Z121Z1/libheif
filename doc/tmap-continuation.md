@@ -153,3 +153,12 @@ inputs are fully decoded and transformed, including unknown-version baseline
 fallback. Tile regressions cover requested colour, ICC, premultiplied alpha,
 nested PQ/HLG and transformed children; out-of-range tile coordinates retain
 the generic API error. This adds no partial-region reconstruction algorithm.
+
+CICP decoding now covers all defined H.273 primary code points, including
+Illuminant C, DCI white and the XYZ basis. Relative colour conversion uses
+Bradford adaptation between the declared whites. All primary pairs preserve
+adapted white; the RGB cases and cross-white ICC conversions also have an
+independent Little CMS oracle. BT.2020 SDR transfer codes 14/15 are supported
+alongside their equivalent 1/6 codes, using H.273's continuous alpha/beta
+constants rather than rounded thresholds. Other transfer curves remain explicit
+limitations until implemented and independently checked.

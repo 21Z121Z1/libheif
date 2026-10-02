@@ -102,7 +102,21 @@ TEST_CASE("sRGB and PQ use independent reference values")
   REQUIRE_FALSE(gain_map_decode_transfer(0.5, 2));
 }
 
-TEST_CASE("D65 primaries conversions preserve white and match reference red")
+TEST_CASE("BT2020 SDR code points use continuous H273 transfer curves")
+{
+  const uint16_t transfer = GENERATE(uint16_t{1}, uint16_t{6}, uint16_t{14}, uint16_t{15});
+  REQUIRE(gain_map_supports_transfer(transfer));
+  // H.273 8.2 continuity constants, independently evaluated with Decimal.
+  REQUIRE(*gain_map_decode_transfer(0.5, transfer) == Catch::Approx(0.25971943710117881).margin(1e-14));
+  REQUIRE(*gain_map_decode_transfer(0.081, transfer) == Catch::Approx(0.018).margin(1e-14));
+  REQUIRE(*gain_map_encode_transfer(0.018, transfer) == Catch::Approx(0.081).margin(1e-14));
+  REQUIRE(*gain_map_encode_transfer(0.25971943710117881, transfer) == Catch::Approx(0.5).margin(1e-14));
+  constexpr double beta = 0.018053968510807807;
+  REQUIRE(*gain_map_decode_transfer(4.5 * beta, transfer) == Catch::Approx(beta).margin(1e-14));
+  REQUIRE(*gain_map_encode_transfer(beta, transfer) == Catch::Approx(4.5 * beta).margin(1e-14));
+}
+
+TEST_CASE("CICP primaries conversions preserve adapted white and match reference red")
 {
   auto matrix = gain_map_primaries_matrix(1, 9);
   REQUIRE(matrix);
@@ -110,8 +124,9 @@ TEST_CASE("D65 primaries conversions preserve white and match reference red")
   REQUIRE(red[0] == Catch::Approx(0.627403896).margin(1e-8));
   REQUIRE(red[1] == Catch::Approx(0.069097289).margin(1e-8));
   REQUIRE(red[2] == Catch::Approx(0.016391439).margin(1e-8));
-  for (uint16_t source : {1, 9, 12}) {
-    for (uint16_t target : {1, 9, 12}) {
+  constexpr std::array<uint16_t, 11> primaries{1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 22};
+  for (uint16_t source : primaries) {
+    for (uint16_t target : primaries) {
       auto transform = gain_map_primaries_matrix(source, target);
       REQUIRE(transform);
       const auto white = gain_map_transform(*transform, {1, 1, 1});

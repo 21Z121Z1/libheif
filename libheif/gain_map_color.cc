@@ -64,6 +64,8 @@ constexpr double pq_scale = 10000.0 / 203.0;
 constexpr double hlg_scale = 1000.0 / 203.0;
 constexpr double hlg_gamma = 1.2;
 constexpr double hlg_a = 0.17883277;
+constexpr double bt_alpha = 1.0992968268094429403;
+constexpr double bt_beta = 0.0180539685108078073;
 const double hlg_b = 1.0 - 4.0 * hlg_a;
 const double hlg_c = 0.5 - hlg_a * std::log(4.0 * hlg_a);
 
@@ -189,9 +191,42 @@ Result<IccView> parse_icc(const color_profile_raw& profile)
   return view;
 }
 
+GainMapMatrix inverse(const GainMapMatrix& m);
+GainMapMatrix multiply(const GainMapMatrix& a, const GainMapMatrix& b);
+
+GainMapRGB adopted_white(uint16_t primaries)
+{
+  double x = 0.3127, y = 0.3290; // D65
+  switch (primaries) {
+    case 4:
+    case 8: x = 0.310; y = 0.316; break; // Illuminant C
+    case 10: return {1, 1, 1}; // Equal-energy XYZ centre white
+    case 11: x = 0.314; y = 0.351; break; // DCI white
+    default: break;
+  }
+  return {x / y, 1, (1 - x - y) / y};
+}
+
+GainMapMatrix adapt_white(const GainMapRGB& source_white, const GainMapRGB& target_white)
+{
+  if (source_white == target_white) {
+    return GainMapMatrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  }
+  const GainMapMatrix bradford{{{0.8951, 0.2664, -0.1614},
+                               {-0.7502, 1.7135, 0.0367},
+                               {0.0389, -0.0685, 1.0296}}};
+  const auto source = gain_map_transform(bradford, source_white);
+  const auto target = gain_map_transform(bradford, target_white);
+  GainMapMatrix scale{};
+  for (size_t c = 0; c < 3; ++c) { scale[c][c] = target[c] / source[c]; }
+  return multiply(inverse(bradford), multiply(scale, bradford));
+}
+
 Result<GainMapMatrix> to_xyz(uint16_t primaries)
 {
-  // D65 matrices derived from the CICP chromaticities. No chromatic adaptation.
+  // Native-white matrices from H.273 Table 2. Keep the established D65
+  // matrices at double precision; other code points use the same derivation.
+  std::array<std::array<double, 2>, 3> xy{};
   switch (primaries) {
     case 1:
       return GainMapMatrix{{{0.4123907993, 0.3575843394, 0.1804807884},
@@ -205,9 +240,28 @@ Result<GainMapMatrix> to_xyz(uint16_t primaries)
       return GainMapMatrix{{{0.4865709486, 0.2656676932, 0.1982172852},
                             {0.2289745641, 0.6917385218, 0.0792869141},
                             {0.0, 0.0451133819, 1.0439443689}}};
+    case 4: xy = {{{0.67, 0.33}, {0.21, 0.71}, {0.14, 0.08}}}; break;
+    case 5: xy = {{{0.64, 0.33}, {0.29, 0.60}, {0.15, 0.06}}}; break;
+    case 6:
+    case 7: xy = {{{0.630, 0.340}, {0.310, 0.595}, {0.155, 0.070}}}; break;
+    case 8: xy = {{{0.681, 0.319}, {0.243, 0.692}, {0.145, 0.049}}}; break;
+    case 10: return GainMapMatrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+    case 11: xy = {{{0.680, 0.320}, {0.265, 0.690}, {0.150, 0.060}}}; break;
+    case 22: xy = {{{0.630, 0.340}, {0.295, 0.605}, {0.155, 0.077}}}; break;
     default:
       return unsupported_colour();
   }
+  GainMapMatrix matrix{};
+  for (size_t c = 0; c < 3; ++c) {
+    matrix[0][c] = xy[c][0] / xy[c][1];
+    matrix[1][c] = 1;
+    matrix[2][c] = (1 - xy[c][0] - xy[c][1]) / xy[c][1];
+  }
+  const auto scale = gain_map_transform(inverse(matrix), adopted_white(primaries));
+  for (size_t row = 0; row < 3; ++row) {
+    for (size_t c = 0; c < 3; ++c) { matrix[row][c] *= scale[c]; }
+  }
+  return matrix;
 }
 
 double determinant(const GainMapMatrix& m)
@@ -564,7 +618,7 @@ Result<nclx_profile> nclx_from_matrix_trc(const IccView& view)
 bool gain_map_supports_transfer(uint16_t transfer)
 {
   return transfer == 1 || transfer == 6 || transfer == 8 || transfer == 13 ||
-         transfer == 16 || transfer == 18;
+         transfer == 14 || transfer == 15 || transfer == 16 || transfer == 18;
 }
 
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
@@ -577,7 +631,9 @@ Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
     case 8: return v;
     case 13: return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
     case 1:
-    case 6: return v < 0.081 ? v / 4.5 : std::pow((v + 0.099) / 1.099, 1.0 / 0.45);
+    case 6:
+    case 14:
+    case 15: return v < 4.5 * bt_beta ? v / 4.5 : std::pow((v + bt_alpha - 1) / bt_alpha, 1.0 / 0.45);
     case 16: {
       const double p = std::pow(std::min(v, 1.0), 1.0 / pq_m2);
       return pq_scale * std::pow(std::max(p - pq_c1, 0.0) / (pq_c2 - pq_c3 * p), 1.0 / pq_m1);
@@ -596,7 +652,9 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
     case 8: return v;
     case 13: return v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
     case 1:
-    case 6: return v < 0.018 ? 4.5 * v : 1.099 * std::pow(v, 0.45) - 0.099;
+    case 6:
+    case 14:
+    case 15: return v < bt_beta ? 4.5 * v : bt_alpha * std::pow(v, 0.45) - (bt_alpha - 1);
     case 16: {
       const double p = std::pow(std::min(v / pq_scale, 1.0), pq_m1);
       return std::pow((pq_c1 + pq_c2 * p) / (1 + pq_c3 * p), pq_m2);
@@ -691,16 +749,7 @@ Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target
   if (source == target) {
     return GainMapMatrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
   }
-  const GainMapMatrix inv = inverse(*dst);
-  GainMapMatrix result{};
-  for (size_t y = 0; y < 3; ++y) {
-    for (size_t x = 0; x < 3; ++x) {
-      for (size_t k = 0; k < 3; ++k) {
-        result[y][x] += inv[y][k] * (*src)[k][x];
-      }
-    }
-  }
-  return result;
+  return multiply(inverse(*dst), multiply(adapt_white(adopted_white(source), adopted_white(target)), *src));
 }
 
 Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile)
@@ -843,20 +892,10 @@ Result<GainMapMatrix> nclx_to_pcs(const nclx_profile& profile)
 {
   auto xyz = to_xyz(profile.m_colour_primaries);
   if (!xyz) { return xyz.error(); }
-  // Bradford adaptation from the declared D65 white to ICC's D50 PCS white.
+  // Bradford adaptation from the declared white to ICC's D50 PCS white.
   // Compute in double precision instead of reusing an s15Fixed16 'chad' tag:
   // its rounding is amplified by inverse TRCs near dark channel values.
-  static const GainMapMatrix adaptation = [] {
-    const GainMapMatrix bradford{{{0.8951, 0.2664, -0.1614},
-                                 {-0.7502, 1.7135, 0.0367},
-                                 {0.0389, -0.0685, 1.0296}}};
-    const auto source = gain_map_transform(bradford, {0.3127 / 0.3290, 1,
-                                                      (1 - 0.3127 - 0.3290) / 0.3290});
-    const auto target = gain_map_transform(bradford, {0.9642, 1, 0.8249});
-    GainMapMatrix scale{};
-    for (size_t c = 0; c < 3; ++c) { scale[c][c] = target[c] / source[c]; }
-    return multiply(inverse(bradford), multiply(scale, bradford));
-  }();
+  const GainMapMatrix adaptation = adapt_white(adopted_white(profile.m_colour_primaries), {0.9642, 1, 0.8249});
   return multiply(adaptation, *xyz);
 }
 }  // namespace

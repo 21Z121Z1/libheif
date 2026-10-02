@@ -357,15 +357,73 @@ TEST_CASE("Sampled ICC curves use interpolation and normative plateau inverses")
 }
 
 #if LIBHEIF_TEST_LCMS
+TEST_CASE("Defined CICP RGB primaries match independent Little CMS with their native white")
+{
+  struct ColourDefinition {
+    uint16_t primaries;
+    cmsCIExyY white;
+    cmsCIExyYTRIPLE rgb;
+  };
+  const auto definition = GENERATE(
+      ColourDefinition{1, {0.3127, 0.3290, 1}, {{0.640, 0.330, 1}, {0.300, 0.600, 1}, {0.150, 0.060, 1}}},
+      ColourDefinition{4, {0.310, 0.316, 1}, {{0.670, 0.330, 1}, {0.210, 0.710, 1}, {0.140, 0.080, 1}}},
+      ColourDefinition{5, {0.3127, 0.3290, 1}, {{0.640, 0.330, 1}, {0.290, 0.600, 1}, {0.150, 0.060, 1}}},
+      ColourDefinition{6, {0.3127, 0.3290, 1}, {{0.630, 0.340, 1}, {0.310, 0.595, 1}, {0.155, 0.070, 1}}},
+      ColourDefinition{7, {0.3127, 0.3290, 1}, {{0.630, 0.340, 1}, {0.310, 0.595, 1}, {0.155, 0.070, 1}}},
+      ColourDefinition{8, {0.310, 0.316, 1}, {{0.681, 0.319, 1}, {0.243, 0.692, 1}, {0.145, 0.049, 1}}},
+      ColourDefinition{9, {0.3127, 0.3290, 1}, {{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}}},
+      ColourDefinition{11, {0.314, 0.351, 1}, {{0.680, 0.320, 1}, {0.265, 0.690, 1}, {0.150, 0.060, 1}}},
+      ColourDefinition{12, {0.3127, 0.3290, 1}, {{0.680, 0.320, 1}, {0.265, 0.690, 1}, {0.150, 0.060, 1}}},
+      ColourDefinition{22, {0.3127, 0.3290, 1}, {{0.630, 0.340, 1}, {0.295, 0.605, 1}, {0.155, 0.077, 1}}});
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(identity);
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  const cmsCIExyY target_white{0.3127, 0.3290, 1};
+  const cmsCIExyYTRIPLE target_rgb{{0.640, 0.330, 1}, {0.300, 0.600, 1}, {0.150, 0.060, 1}};
+  Profile source(cmsCreateRGBProfile(&definition.white, &definition.rgb, curves), cmsCloseProfile);
+  Profile target(cmsCreateRGBProfile(&target_white, &target_rgb, curves), cmsCloseProfile);
+  REQUIRE(source);
+  REQUIRE(target);
+  Transform cmm(cmsCreateTransform(source.get(), TYPE_RGB_DBL, target.get(), TYPE_RGB_DBL,
+                                   INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE),
+                  cmsDeleteTransform);
+  REQUIRE(cmm);
+  auto matrix = gain_map_primaries_matrix(definition.primaries, 1);
+  REQUIRE(matrix);
+  for (const GainMapRGB signal : {GainMapRGB{0, 0, 0}, GainMapRGB{1, 1, 1},
+                                  GainMapRGB{0.2, 0.6, 0.8}, GainMapRGB{0.9, 0.7, 0.1},
+                                  GainMapRGB{1, 0, 0}, GainMapRGB{0.5, 0.5, 0.5}}) {
+    GainMapRGB reference{};
+    cmsDoTransform(cmm.get(), signal.data(), reference.data(), 1);
+    const auto actual = gain_map_transform(*matrix, signal);
+    for (size_t c = 0; c < 3; ++c) {
+      REQUIRE(actual[c] == Catch::Approx(reference[c]).margin(0.0001));
+    }
+  }
+}
+
 TEST_CASE("Exact ICC matrix TRC conversions match independent Little CMS in both directions")
 {
   const bool srgb = GENERATE(false, true);
+  const uint16_t target_code = GENERATE(uint16_t{9}, uint16_t{4}, uint16_t{11});
   using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
   using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
   using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
   const cmsCIExyY white{0.3127, 0.3290, 1};
   const cmsCIExyYTRIPLE source_primaries{{0.64, 0.33, 1}, {0.21, 0.71, 1}, {0.15, 0.06, 1}};
-  const cmsCIExyYTRIPLE target_primaries{{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+  cmsCIExyY target_white = white;
+  cmsCIExyYTRIPLE target_primaries{{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+  if (target_code == 4) {
+    target_white = {0.310, 0.316, 1};
+    target_primaries = {{0.67, 0.33, 1}, {0.21, 0.71, 1}, {0.14, 0.08, 1}};
+  }
+  else if (target_code == 11) {
+    target_white = {0.314, 0.351, 1};
+    target_primaries = {{0.680, 0.320, 1}, {0.265, 0.690, 1}, {0.150, 0.060, 1}};
+  }
   Curve red(cmsBuildGamma(nullptr, 1.8), cmsFreeToneCurve);
   Curve green(cmsBuildGamma(nullptr, 2.0), cmsFreeToneCurve);
   Curve blue(cmsBuildGamma(nullptr, 2.4), cmsFreeToneCurve);
@@ -386,7 +444,7 @@ TEST_CASE("Exact ICC matrix TRC conversions match independent Little CMS in both
   Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
   REQUIRE(identity);
   cmsToneCurve* target_curves[3] = {identity.get(), identity.get(), identity.get()};
-  Profile target(cmsCreateRGBProfile(&white, &target_primaries, target_curves), cmsCloseProfile);
+  Profile target(cmsCreateRGBProfile(&target_white, &target_primaries, target_curves), cmsCloseProfile);
   REQUIRE(target);
   Transform forward(cmsCreateTransform(source.get(), TYPE_RGB_DBL, target.get(), TYPE_RGB_DBL,
                                        INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE), cmsDeleteTransform);
@@ -397,7 +455,7 @@ TEST_CASE("Exact ICC matrix TRC conversions match independent Little CMS in both
   auto colour = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
   REQUIRE(colour);
   nclx_profile target_nclx;
-  target_nclx.set_colour_primaries(9);
+  target_nclx.set_colour_primaries(target_code);
   target_nclx.set_transfer_characteristics(8);
   const GainMapColour target_colour(target_nclx);
   auto to_target = colour->matrix_to(target_colour);
