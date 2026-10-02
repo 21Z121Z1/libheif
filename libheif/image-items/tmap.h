@@ -52,7 +52,7 @@ public:
       const std::shared_ptr<ImageItem>& base,
       const std::shared_ptr<ImageItem>& gain,
       const ToneMapImage& tone_map_image,
-      const nclx_profile& alternate_nclx,
+      const std::shared_ptr<const color_profile>& alternate_colour,
       const heif_content_light_level* clli,
       const std::vector<uint8_t>& pixi_bits);
 

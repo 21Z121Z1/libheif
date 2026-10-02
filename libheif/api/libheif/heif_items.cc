@@ -85,7 +85,9 @@ heif_error heif_item_set_item_hidden(heif_context* ctx,
     return heif_error_null_pointer_argument;
   }
 
-  return ctx->context->set_item_hidden(item_id, hidden != 0).error_struct(ctx->context.get());
+  return exception_guard([&]() -> heif_error {
+    return ctx->context->set_item_hidden(item_id, hidden != 0).error_struct(ctx->context.get());
+  });
 }
 
 

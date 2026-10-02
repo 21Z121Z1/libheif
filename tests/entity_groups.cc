@@ -181,7 +181,12 @@ TEST_CASE("entity_groups: item visibility and ordered groups survive a round tri
   const heif_item_id alternatives[] = {tmap_id, base_id};
   heif_entity_group_id group_id = 0;
   REQUIRE(heif_context_add_alternative_entity_group(
+      write_ctx, alternatives, 2, &group_id).code == heif_error_Usage_error);
+  REQUIRE(group_id == 0);
+  REQUIRE(heif_item_set_item_hidden(write_ctx, base_id, 0).code == heif_error_Ok);
+  REQUIRE(heif_context_add_alternative_entity_group(
       write_ctx, alternatives, 2, &group_id).code == heif_error_Ok);
+  REQUIRE(heif_item_set_item_hidden(write_ctx, base_id, 1).code == heif_error_Usage_error);
   REQUIRE(group_id != 0);
   REQUIRE(group_id != tmap_id);
   REQUIRE(group_id != base_id);
@@ -200,7 +205,7 @@ TEST_CASE("entity_groups: item visibility and ordered groups survive a round tri
   UNSCOPED_INFO(read_err.message);
   REQUIRE(read_err.code == heif_error_Ok);
   REQUIRE(heif_item_is_item_hidden(read_ctx, tmap_id) == 0);
-  REQUIRE(heif_item_is_item_hidden(read_ctx, base_id) == 1);
+  REQUIRE(heif_item_is_item_hidden(read_ctx, base_id) == 0);
 
   int num_groups = 0;
   heif_entity_group* groups = heif_context_get_entity_groups(

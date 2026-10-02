@@ -124,6 +124,19 @@ ToneMapImageParseResult ImageItem_tmap::read_tone_map_image() const
 namespace
 {
 
+Error require_colour_property(const ImageItem& item, bool nclx_only, const char* message)
+{
+  auto properties = item.get_properties();
+  if (!properties) { return properties.error(); }
+  for (const auto& property : *properties) {
+    auto colr = std::dynamic_pointer_cast<Box_colr>(property);
+    if (colr && (!nclx_only || colr->get_color_profile_type() == fourcc("nclx"))) {
+      return Error::Ok;
+    }
+  }
+  return {heif_error_Invalid_input, heif_suberror_Unspecified, message};
+}
+
 Error validate_tone_map_inputs(
     const ImageItem& base,
     const ImageItem& gain)
@@ -143,36 +156,17 @@ Error validate_tone_map_inputs(
     return error;
   }
 
-  if (!base.has_nclx_color_profile() &&
-      !base.has_icc_color_profile()) {
-    return Error{
-        heif_error_Invalid_input,
-        heif_suberror_Unspecified,
-        "Tone-map base image must have an associated 'colr' property"
-    };
+  if (Error error = require_colour_property(base, false,
+          "Tone-map base image must have an associated 'colr' property")) {
+    return error;
   }
 
   // An explicitly associated NCLX (2,2,2,full) is valid for a mono
   // gain map even though ImageDescription treats that tuple as undefined.
   // Presence must be checked on the associated property, not the values.
-  bool gain_has_nclx = false;
-  auto properties = gain.get_properties();
-  if (!properties) {
-    return properties.error();
-  }
-  for (const auto& property : *properties) {
-    auto colr = std::dynamic_pointer_cast<Box_colr>(property);
-    if (colr && colr->get_color_profile_type() == fourcc("nclx")) {
-      gain_has_nclx = true;
-      break;
-    }
-  }
-  if (!gain_has_nclx) {
-    return Error{
-        heif_error_Invalid_input,
-        heif_suberror_Unspecified,
-        "Tone-map gain image must have an NCLX 'colr' property"
-    };
+  if (Error error = require_colour_property(gain, true,
+          "Tone-map gain image must have an NCLX 'colr' property")) {
+    return error;
   }
 
   const nclx_profile gain_nclx =
@@ -234,16 +228,8 @@ Error ImageItem_tmap::validate_tone_map_structure() const
     return error;
   }
 
-  if (!has_nclx_color_profile() &&
-      !has_icc_color_profile()) {
-    return Error{
-        heif_error_Invalid_input,
-        heif_suberror_Unspecified,
-        "Tone-map derived image must have an associated 'colr' property"
-    };
-  }
-
-  return Error::Ok;
+  return require_colour_property(*this, false,
+      "Tone-map derived image must have an associated 'colr' property");
 }
 
 
@@ -253,11 +239,11 @@ ImageItem_tmap::add_new_tone_map_item(
     const std::shared_ptr<ImageItem>& base,
     const std::shared_ptr<ImageItem>& gain,
     const ToneMapImage& tone_map_image,
-    const nclx_profile& alternate_nclx,
+    const std::shared_ptr<const color_profile>& alternate_colour,
     const heif_content_light_level* clli,
     const std::vector<uint8_t>& pixi_bits)
 {
-  if (!ctx || !base || !gain) {
+  if (!ctx || !base || !gain || !alternate_colour) {
     return Error{
         heif_error_Usage_error,
         heif_suberror_Null_pointer_argument,
@@ -353,13 +339,15 @@ ImageItem_tmap::add_new_tone_map_item(
     };
   }
 
-  tmap->set_color_profile_nclx(alternate_nclx);
-  if (!tmap->has_nclx_color_profile()) {
-    return Error{
-        heif_error_Encoding_error,
-        heif_suberror_Unspecified,
-        "Could not add tone-map alternate colour profile"
-    };
+  if (auto icc = std::dynamic_pointer_cast<const color_profile_raw>(alternate_colour)) {
+    tmap->set_color_profile_icc(icc);
+  }
+  else if (auto nclx = std::dynamic_pointer_cast<const color_profile_nclx>(alternate_colour)) {
+    tmap->set_color_profile_nclx(nclx->get_nclx_color_profile());
+  }
+  if (Error error = require_colour_property(*tmap, false,
+          "Could not add tone-map alternate colour profile")) {
+    return error;
   }
 
   if (clli) {

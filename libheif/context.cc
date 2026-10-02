@@ -356,7 +356,7 @@ bool HeifContext::is_image(heif_item_id ID) const
 }
 
 
-Error HeifContext::set_item_hidden(heif_item_id id, bool hidden)
+Error HeifContext::validate_item_visibility(heif_item_id id, bool hidden) const
 {
   auto infe = m_heif_file->get_infe_box(id);
   if (!infe) {
@@ -369,6 +369,28 @@ Error HeifContext::set_item_hidden(heif_item_id id, bool hidden)
             "The primary image cannot be hidden"};
   }
 
+  if (auto groups = m_heif_file->get_grpl_box()) {
+    for (const auto& box : groups->get_all_child_boxes()) {
+      auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box);
+      if (!group || group->get_short_type() != fourcc("altr")) { continue; }
+      const auto& ids = group->get_item_ids();
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) { continue; }
+      for (auto member : ids) {
+        auto member_infe = m_heif_file->get_infe_box(member);
+        if (member != id && member_infe && member_infe->is_hidden_item() != hidden) {
+          return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                  "An altr group cannot mix hidden and visible items"};
+        }
+      }
+    }
+  }
+  return Error::Ok;
+}
+
+Error HeifContext::set_item_hidden(heif_item_id id, bool hidden)
+{
+  if (Error error = validate_item_visibility(id, hidden)) { return error; }
+  auto infe = m_heif_file->get_infe_box(id);
   infe->set_hidden_item(hidden);
 
   auto image = get_image(id, true);

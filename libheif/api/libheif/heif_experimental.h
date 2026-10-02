@@ -112,7 +112,8 @@ typedef struct heif_tone_map_options
 {
   uint32_t version;
 
-  // Required in version 1. Describes the fully-applied alternate image.
+  // Required in version 1. In version 2, choose NCLX or ICC, but not both.
+  // Describes the fully-applied alternate image.
   const heif_color_profile_nclx* alternate_nclx;
 
   // Optional version-1 properties.
@@ -122,7 +123,53 @@ typedef struct heif_tone_map_options
   // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI.
   uint8_t pixi_num_channels;
   uint8_t pixi_bits_per_channel[4];
+
+  // Version 2. ICC bytes are copied; the caller retains ownership.
+  heif_color_profile_type alternate_icc_type; // prof or rICC
+  const void* alternate_icc;
+  size_t alternate_icc_size;
+
+  // Compatibility policy, independent of normative tmap reconstruction.
+  // The allocator defaults to hiding the gain map and creating {tmap,base}.
+  // Primary selection is always preserved. Disable group creation when
+  // assembling several alternatives, then use the generic altr writer.
+  int hide_gain_map;
+  int create_altr_group;
 } heif_tone_map_options;
+
+LIBHEIF_API
+heif_tone_map_options* heif_tone_map_options_alloc(void);
+
+LIBHEIF_API
+void heif_tone_map_options_free(heif_tone_map_options* options);
+
+typedef struct heif_gain_map_image_options
+{
+  uint32_t version;
+  // Describes the sample-domain matrix/range, with CP=2 and TC=2.
+  // NULL defaults to full-range identity for RGB and unspecified for mono.
+  // YCbCr input requires explicit sample-domain signalling.
+  const heif_color_profile_nclx* nclx;
+  int hidden;
+} heif_gain_map_image_options;
+
+LIBHEIF_API
+heif_gain_map_image_options* heif_gain_map_image_options_alloc(void);
+
+LIBHEIF_API
+void heif_gain_map_image_options_free(heif_gain_map_image_options* options);
+
+// Input samples are normalized gain data, not an SDR/HDR colour image.
+// Does not modify the input image or select a primary image. NULL gain_options
+// uses defaults (including hidden=true). The encoded gain may be shared.
+LIBHEIF_API
+heif_error heif_context_encode_gain_map_image(
+    heif_context* ctx,
+    const heif_image* gain_pixels,
+    heif_encoder* encoder,
+    const heif_encoding_options* encoding_options,
+    const heif_gain_map_image_options* gain_options,
+    heif_image_handle** out_gain);
 
 LIBHEIF_API
 heif_error heif_context_add_tone_map_derived_image(

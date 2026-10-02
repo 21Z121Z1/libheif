@@ -1,7 +1,7 @@
 # ISO 21496-1 / HEIF tone-map support (experimental)
 
 This branch implements final-2025 Annex C metadata parsing/writing, first-class
-`tmap` inspection, construction from existing base/gain items, and canonical
+`tmap` inspection, gain-raster encoding, construction from existing base/gain items, and canonical
 reconstruction for a conservative colour subset. NCLX is handled directly, and
 selected ICC profiles are mapped to equivalent CICP descriptions for the ISO
 gain-map operation. It is not a complete implementation of every colour profile
@@ -41,6 +41,40 @@ silently tagging PQ pixels as sRGB. Explicit requested-output transfer/primaries
 changes currently return unsupported. General HDR-to-SDR display tone mapping
 is not part of this implementation.
 
+## Writer
+
+`heif_context_encode_gain_map_image()` copies a logical gain raster with the
+existing pixel memory accounting, encodes it through the ordinary codec path,
+and associates mandatory CP=2/TC=2 NCLX signalling. It defaults to a hidden
+gain item and never selects a primary. RGB/mono input defaults to full range;
+YCbCr input requires explicit matrix/range signalling. The source image and its
+colour properties are unchanged. Encoder compatibility switches cannot suppress
+the required gain NCLX property.
+
+`heif_tone_map_options_alloc()` returns version-2 options. The caller supplies
+either alternate NCLX or exact `prof`/`rICC` bytes. Defaults hide the existing gain
+and create an ordered `{tmap, base}` alternative group through the generic writer.
+Primary selection is preserved, and attempting to hide a primary gain is an
+error. Version-1 options retain their original behaviour and read no version-2
+fields. ICC preservation is independent of whether reconstruction supports the
+profile's colour transform.
+
+For several tmap nodes sharing a base, disable automatic group creation while
+constructing the nodes and create one ordered group with
+`heif_context_add_alternative_entity_group()`. An item cannot belong to multiple
+alternative groups. The generic writer and visibility setter reject mixed
+hidden/visible alternative membership (HEIF 6.4.2). Other ordinary files do not
+receive the `tmap` brand.
+
+The generic visibility and entity-group writer prerequisite is imported with
+its history from upstream PR #1893, commit
+`a30c8fbc0be21f2807260a8da5d3e779f8555363`. The integration adds visibility
+consistency checks and C-boundary exception guards.
+
+ISO 21496-1 4.4 recommends, rather than requires, at least eight bits per gain
+component. Full-range lower-depth mono data is supported; unsupported sample
+formats still return an explicit error.
+
 ## Remaining limitations
 
 - General ICC reconstruction still requires a real CMS, including a defined HDR
@@ -50,8 +84,6 @@ is not part of this implementation.
 - Unsupported YCbCr matrices, premultiplied baseline alpha and tile-only `tmap`
   decode return explicit errors.
 - No root-specific display-headroom API is exposed yet.
-- Generic hidden-item and `altr` writer infrastructure is still separate work;
-  the existing writer core does not silently enforce those compatibility policies.
 - No Apple legacy or vendor missing-version heuristics are part of the strict parser.
 
 ## Verification
@@ -62,7 +94,9 @@ checks canonical decode, nested reconstruction, baseline fallback and existing
 container error isolation. Existing `tmap_write` checks writer round trips.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
-ASan/UBSan, leak detection, public C-header and stable API-symbol checks.
+ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
+installs AOM and includes writer and generic entity-group tests, so codec-backed
+writer regressions cannot pass merely because the encoder is unavailable.
 
 External sample checking avoids redistributing the user's images:
 

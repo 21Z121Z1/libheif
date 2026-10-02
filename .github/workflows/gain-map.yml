@@ -22,23 +22,26 @@ jobs:
           persist-credentials: false
       - name: Build with ASan and UBSan
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libaom-dev
           cmake --preset testing -S . -B build-gain-map \
             -DENABLE_EXPERIMENTAL_FEATURES=${{ matrix.experimental }} \
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
             -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
-            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
+            -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
           if [ "${{ matrix.experimental }}" = "ON" ]; then
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write entity_groups --parallel 2
           else
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color entity_groups --parallel 2
           fi
       - name: Run metadata, reconstruction and graph regressions
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read' --output-on-failure
+        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|entity_groups' --output-on-failure
       - name: Check stable public headers and exported symbols
         run: |
           ./scripts/check-c-headers.sh
@@ -76,4 +79,3 @@ jobs:
           path: |
             build-interop/tests/tmap_interop
             build-interop/libheif/libheif.so*
-

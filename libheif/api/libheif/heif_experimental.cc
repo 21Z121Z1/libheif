@@ -24,6 +24,9 @@
 #include "image-items/unc_image.h"
 #include "image-items/tiled.h"
 #include "image-items/tmap.h"
+#include "file.h"
+#include "libheif/heif_entity_groups.h"
+#include "libheif/heif_items.h"
 
 #include <array>
 #include <cstring>
@@ -322,6 +325,121 @@ heif_error heif_image_handle_get_gain_map_metadata(
 
 
 
+heif_tone_map_options* heif_tone_map_options_alloc()
+{
+  auto* options = new heif_tone_map_options{};
+  options->version = 2;
+  options->hide_gain_map = 1;
+  options->create_altr_group = 1;
+  return options;
+}
+
+void heif_tone_map_options_free(heif_tone_map_options* options)
+{
+  delete options;
+}
+
+heif_gain_map_image_options* heif_gain_map_image_options_alloc()
+{
+  auto* options = new heif_gain_map_image_options{};
+  options->version = 1;
+  options->hidden = 1;
+  return options;
+}
+
+void heif_gain_map_image_options_free(heif_gain_map_image_options* options)
+{
+  delete options;
+}
+
+heif_error heif_context_encode_gain_map_image(
+    heif_context* ctx,
+    const heif_image* gain_pixels,
+    heif_encoder* encoder,
+    const heif_encoding_options* encoding_options,
+    const heif_gain_map_image_options* gain_options,
+    heif_image_handle** out_gain)
+{
+  return exception_guard([&]() -> heif_error {
+    if (out_gain) { *out_gain = nullptr; }
+    if (!ctx || !gain_pixels || !gain_pixels->image || !encoder) {
+      return heif_error_null_pointer_argument;
+    }
+    if (gain_options && gain_options->version != 1) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "Unsupported gain-map image options version"};
+    }
+    const auto& source = gain_pixels->image;
+    if (Error error = source->check_plane_layout()) {
+      return error.error_struct(ctx->context.get());
+    }
+    const auto space = source->get_colorspace();
+    if ((space != heif_colorspace_monochrome && space != heif_colorspace_RGB &&
+         space != heif_colorspace_YCbCr) || source->has_alpha()) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "Gain-map raster requires one or three colour components without alpha"};
+    }
+
+    heif_color_profile_nclx signalling{};
+    signalling.version = 1;
+    signalling.color_primaries = heif_color_primaries_unspecified;
+    signalling.transfer_characteristics = heif_transfer_characteristic_unspecified;
+    signalling.matrix_coefficients = space == heif_colorspace_monochrome ?
+        heif_matrix_coefficients_unspecified : heif_matrix_coefficients_RGB_GBR;
+    signalling.full_range_flag = 1;
+    if (gain_options && gain_options->nclx) {
+      signalling = *gain_options->nclx;
+    }
+    else if (space == heif_colorspace_YCbCr) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "YCbCr gain input requires explicit matrix and range signalling"};
+    }
+    if (signalling.color_primaries != heif_color_primaries_unspecified ||
+        signalling.transfer_characteristics != heif_transfer_characteristic_unspecified ||
+        signalling.full_range_flag > 1 || signalling.version != 1) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "Gain-map NCLX requires CP=2, TC=2 and a valid range flag"};
+    }
+    // Copy pixels with existing memory accounting. Never change a caller's
+    // colour metadata or subject logical gain samples to a transfer curve.
+    auto pixels = std::make_shared<HeifPixelImage>();
+    pixels->create(source->get_width(), source->get_height(), space, source->get_chroma_format());
+    for (auto channel : source->get_channel_set()) {
+      if (Error error = pixels->copy_new_channel_from(source, channel, channel,
+                                                     ctx->context->get_security_limits())) {
+        return error.error_struct(ctx->context.get());
+      }
+    }
+    nclx_profile nclx;
+    nclx.set_from_heif_color_profile_nclx(&signalling);
+    pixels->set_color_profile_nclx(nclx);
+
+    std::unique_ptr<heif_encoding_options, decltype(&heif_encoding_options_free)> options(
+        heif_encoding_options_alloc(), heif_encoding_options_free);
+    heif_encoding_options_copy(options.get(), encoding_options);
+    // The mandatory gain profile takes precedence over compatibility switches
+    // that suppress NCLX or over ordinary-image output colourimetry.
+    options->output_nclx_profile = &signalling;
+    options->macOS_compatibility_workaround_no_nclx_profile = false;
+    options->save_alpha_channel = false;
+    auto result = ctx->context->encode_image(pixels, encoder, *options,
+                                             heif_image_input_class_normal);
+    if (!result) { return result.error_struct(ctx->context.get()); }
+    if (!gain_options || gain_options->hidden) {
+      if (Error error = ctx->context->set_item_hidden((*result)->get_id(), true)) {
+        return error.error_struct(ctx->context.get());
+      }
+    }
+    if (out_gain) {
+      auto handle = std::make_unique<heif_image_handle>();
+      handle->image = *result;
+      handle->context = ctx->context;
+      *out_gain = handle.release();
+    }
+    return heif_error_success;
+  });
+}
+
 heif_error heif_context_add_tone_map_derived_image(
     heif_context* ctx,
     const heif_image_handle* base,
@@ -349,7 +467,7 @@ heif_error heif_context_add_tone_map_derived_image(
       };
     }
 
-    if (options->version != 1) {
+    if (options->version != 1 && options->version != 2) {
       return {
           heif_error_Usage_error,
           heif_suberror_Invalid_parameter_value,
@@ -357,11 +475,12 @@ heif_error heif_context_add_tone_map_derived_image(
       };
     }
 
-    if (!options->alternate_nclx) {
+    const bool has_icc = options->version >= 2 && options->alternate_icc;
+    if ((!options->alternate_nclx && !has_icc) || (options->alternate_nclx && has_icc)) {
       return {
           heif_error_Usage_error,
-          heif_suberror_Null_pointer_argument,
-          "Tone-map writer currently requires an alternate NCLX profile"
+          heif_suberror_Invalid_parameter_value,
+          "Tone-map writer requires exactly one alternate NCLX or ICC profile"
       };
     }
 
@@ -384,9 +503,62 @@ heif_error heif_context_add_tone_map_derived_image(
     tone_map_image.gain_map_metadata =
         *internal_metadata;
 
-    nclx_profile alternate_nclx;
-    alternate_nclx.set_from_heif_color_profile_nclx(
-        options->alternate_nclx);
+    std::shared_ptr<const color_profile> alternate_colour;
+    if (has_icc) {
+      const auto* limits = ctx->context->get_security_limits();
+      if (options->alternate_icc_type != heif_color_profile_type_prof &&
+          options->alternate_icc_type != heif_color_profile_type_rICC) {
+        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                "Alternate ICC profile must use prof or rICC"};
+      }
+      if (options->alternate_icc_size == 0 ||
+          (limits->max_color_profile_size &&
+           options->alternate_icc_size > limits->max_color_profile_size)) {
+        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                "Alternate ICC profile is empty or exceeds the security limit"};
+      }
+      const auto* bytes = static_cast<const uint8_t*>(options->alternate_icc);
+      alternate_colour = std::make_shared<color_profile_raw>(options->alternate_icc_type,
+          std::vector<uint8_t>(bytes, bytes + options->alternate_icc_size));
+    }
+    else {
+      auto profile = std::make_shared<color_profile_nclx>();
+      profile->set_from_heif_color_profile_nclx(options->alternate_nclx);
+      alternate_colour = profile;
+    }
+
+    const bool hide_gain = options->version >= 2 && options->hide_gain_map;
+    const bool create_altr = options->version >= 2 && options->create_altr_group;
+    auto file = ctx->context->get_heif_file();
+    if (hide_gain && gain->image->is_primary()) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "Cannot hide a primary gain image; primary selection is preserved"};
+    }
+    if (hide_gain) {
+      if (Error error = ctx->context->validate_item_visibility(gain->image->get_id(), true)) {
+        return error.error_struct(ctx->context.get());
+      }
+    }
+    if (create_altr) {
+      const auto* limits = ctx->context->get_security_limits();
+      if ((limits->max_size_entity_group && limits->max_size_entity_group < 2) ||
+          file->get_infe_box(base->image->get_id())->is_hidden_item()) {
+        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                "Tone-map alternative group requires a visible base and space for two entities"};
+      }
+      if (auto groups = file->get_grpl_box()) {
+        for (const auto& box : groups->get_all_child_boxes()) {
+          auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box);
+          if (!group || group->get_short_type() != fourcc("altr")) { continue; }
+          for (auto id : group->get_item_ids()) {
+            if (id == base->image->get_id()) {
+              return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                      "Base already belongs to an altr group; construct shared alternatives with the generic writer"};
+            }
+          }
+        }
+      }
+    }
 
     std::vector<uint8_t> pixi_bits;
     pixi_bits.reserve(options->pixi_num_channels);
@@ -404,17 +576,34 @@ heif_error heif_context_add_tone_map_derived_image(
         base->image,
         gain->image,
         tone_map_image,
-        alternate_nclx,
+        alternate_colour,
         clli,
         pixi_bits);
     if (!result) {
       return result.error_struct(ctx->context.get());
     }
 
+    // A visible derived output is discoverable in the writer context too.
+    if (Error error = ctx->context->set_item_hidden((*result)->get_id(), false)) {
+      return error.error_struct(ctx->context.get());
+    }
+
+    if (hide_gain) {
+      if (Error error = ctx->context->set_item_hidden(gain->image->get_id(), true)) {
+        return error.error_struct(ctx->context.get());
+      }
+    }
+    if (create_altr) {
+      const heif_item_id ids[] = {(*result)->get_id(), base->image->get_id()};
+      auto error = heif_context_add_alternative_entity_group(ctx, ids, 2, nullptr);
+      if (error.code != heif_error_Ok) { return error; }
+    }
+
     if (out_tmap) {
-      *out_tmap = new heif_image_handle;
-      (*out_tmap)->image = *result;
-      (*out_tmap)->context = ctx->context;
+      auto handle = std::make_unique<heif_image_handle>();
+      handle->image = *result;
+      handle->context = ctx->context;
+      *out_tmap = handle.release();
     }
 
     return heif_error_success;

@@ -29,9 +29,11 @@
 #include "libheif/heif_experimental.h"
 #include "libheif/heif_items.h"
 #include "libheif/heif_properties.h"
+#include "libheif/heif_entity_groups.h"
 #include "test_utils.h"
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 
@@ -205,6 +207,186 @@ bool item_has_property(
 }
 
 }  // namespace
+
+TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
+{
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* options = heif_gain_map_image_options_alloc();
+  REQUIRE(options);
+  REQUIRE(options->hidden == 1);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(4, 4, heif_colorspace_monochrome,
+                           heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  fill_new_plane(pixels, heif_channel_Y, 4, 4);
+  const auto original_profile = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_unspecified, true);
+  REQUIRE(heif_image_set_nclx_color_profile(pixels, &original_profile).code == heif_error_Ok);
+
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr,
+                                            options, &gain).code == heif_error_Ok);
+  const auto gain_id = heif_image_handle_get_item_id(gain);
+  REQUIRE(heif_item_is_item_hidden(ctx, gain_id));
+  REQUIRE(heif_context_get_number_of_top_level_images(ctx) == 0);
+  REQUIRE(item_has_property(ctx, gain_id, heif_fourcc('c','o','l','r')));
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(pixels, &profile).code == heif_error_Ok);
+  REQUIRE(profile->color_primaries == original_profile.color_primaries);
+  REQUIRE(profile->transfer_characteristics == original_profile.transfer_characteristics);
+  heif_nclx_color_profile_free(profile);
+
+  auto base_profile = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, base_profile);
+  auto alternate = base_profile;
+  alternate.transfer_characteristics = heif_transfer_characteristic_ITU_R_BT_2100_0_PQ;
+  auto metadata = make_metadata();
+  auto* tmap_options = heif_tone_map_options_alloc();
+  REQUIRE(tmap_options);
+  tmap_options->alternate_nclx = &alternate;
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                tmap_options, &tmap).code == heif_error_Ok);
+  const auto tmap_id = heif_image_handle_get_item_id(tmap);
+  heif_item_id primary = 0;
+  REQUIRE(heif_context_get_primary_image_ID(ctx, &primary).code == heif_error_Ok);
+  REQUIRE(primary == heif_image_handle_get_item_id(base));
+  REQUIRE(heif_context_is_top_level_image_ID(ctx, tmap_id));
+  const auto items_before = heif_context_get_number_of_items(ctx);
+  heif_image_handle* duplicate = nullptr;
+  const auto duplicate_error = heif_context_add_tone_map_derived_image(
+      ctx, base, gain, &metadata, tmap_options, &duplicate);
+  REQUIRE(duplicate_error.code == heif_error_Usage_error);
+  REQUIRE(duplicate == nullptr);
+  REQUIRE(heif_context_get_number_of_items(ctx) == items_before);
+  REQUIRE(heif_item_set_item_hidden(ctx, tmap_id, 1).code == heif_error_Usage_error);
+  REQUIRE_FALSE(heif_item_is_item_hidden(ctx, tmap_id));
+  const auto encoded = write_context(ctx);
+  auto* read_ctx = reopen(encoded);
+  REQUIRE(heif_item_is_item_hidden(read_ctx, gain_id));
+  int group_count = 0;
+  auto* groups = heif_context_get_entity_groups(read_ctx, heif_entity_group_altr, 0, &group_count);
+  REQUIRE(group_count == 1);
+  REQUIRE(groups[0].num_entities == 2);
+  REQUIRE(groups[0].entities[0] == tmap_id);
+  REQUIRE(groups[0].entities[1] == primary);
+  heif_entity_groups_release(groups, group_count);
+  heif_image_handle* read_tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(read_ctx, tmap_id, &read_tmap).code == heif_error_Ok);
+  heif_image* decoded = nullptr;
+  auto error = heif_decode_image(read_tmap, &decoded, heif_colorspace_undefined,
+                                 heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(decoded);
+  heif_image_release(decoded);
+  heif_image_handle_release(read_tmap);
+  heif_context_free(read_ctx);
+  heif_tone_map_options_free(tmap_options);
+  heif_gain_map_image_options_free(options);
+  heif_image_release(pixels);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Gain-map encoder rejects ambiguous YCbCr and preserves primary on error")
+{
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  const auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, colour);
+  auto* pixels = make_ycbcr_image(colour);
+  heif_image_handle* gain = nullptr;
+  auto error = heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain);
+  REQUIRE(error.code == heif_error_Usage_error);
+  REQUIRE(gain == nullptr);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified, heif_matrix_coefficients_ITU_R_BT_709_5, false);
+  heif_gain_map_image_options gain_options{1, &gain_colour, 0};
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr,
+                                            &gain_options, &gain).code == heif_error_Ok);
+  REQUIRE_FALSE(heif_item_is_item_hidden(ctx, heif_image_handle_get_item_id(gain)));
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_handle_get_nclx_color_profile(gain, &profile).code == heif_error_Ok);
+  REQUIRE(profile->color_primaries == heif_color_primaries_unspecified);
+  REQUIRE(profile->transfer_characteristics == heif_transfer_characteristic_unspecified);
+  REQUIRE(profile->matrix_coefficients == gain_colour.matrix_coefficients);
+  REQUIRE(profile->full_range_flag == 0);
+  heif_nclx_color_profile_free(profile);
+  heif_item_id primary = 0;
+  REQUIRE(heif_context_get_primary_image_ID(ctx, &primary).code == heif_error_Ok);
+  REQUIRE(primary == heif_image_handle_get_item_id(base));
+  auto encoded = write_context(ctx);
+  REQUIRE_FALSE(heif_has_compatible_brand(encoded.data(), static_cast<int>(encoded.size()), "tmap"));
+  heif_image_release(pixels);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reconstruction")
+{
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, colour);
+  auto gain_colour = colour;
+  gain_colour.color_primaries = heif_color_primaries_unspecified;
+  gain_colour.transfer_characteristics = heif_transfer_characteristic_unspecified;
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
+  auto metadata = make_metadata();
+  // Synthetic ICC header plus a CICP tag. No external profile is redistributed.
+  std::vector<uint8_t> icc(156, 0);
+  icc[3] = 156;
+  std::memcpy(icc.data() + 12, "mntrRGB XYZ ", 12);
+  std::memcpy(icc.data() + 36, "acsp", 4);
+  icc[131] = 1;
+  std::memcpy(icc.data() + 132, "cicp", 4);
+  icc[139] = 144;
+  icc[143] = 12;
+  std::memcpy(icc.data() + 144, "cicp", 4);
+  icc[152] = 9; icc[153] = 16; icc[154] = 0; icc[155] = 1;
+  auto* options = heif_tone_map_options_alloc();
+  options->alternate_icc_type = heif_color_profile_type_prof;
+  options->alternate_icc = icc.data();
+  options->alternate_icc_size = icc.size();
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &tmap).code == heif_error_Ok);
+  const auto tmap_id = heif_image_handle_get_item_id(tmap);
+  const auto encoded = write_context(ctx);
+  auto* read_ctx = reopen(encoded);
+  heif_image_handle* read_tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(read_ctx, tmap_id, &read_tmap).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_color_profile_type(read_tmap) == heif_color_profile_type_prof);
+  REQUIRE(heif_image_handle_get_raw_color_profile_size(read_tmap) == icc.size());
+  std::vector<uint8_t> read_icc(icc.size());
+  REQUIRE(heif_image_handle_get_raw_color_profile(read_tmap, read_icc.data()).code == heif_error_Ok);
+  REQUIRE(read_icc == icc);
+  heif_image* decoded = nullptr;
+  const auto error = heif_decode_image(read_tmap, &decoded, heif_colorspace_undefined,
+                                       heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(heif_image_get_color_profile_type(decoded) == heif_color_profile_type_prof);
+  REQUIRE(heif_image_get_bits_per_pixel_range(decoded, heif_channel_R) == 16);
+  heif_image_release(decoded);
+  heif_image_handle_release(read_tmap);
+  heif_context_free(read_ctx);
+  heif_tone_map_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
 
 
 TEST_CASE("tmap writer round-trips graph metadata colour and brand")
@@ -506,5 +688,65 @@ TEST_CASE("tmap writer rejects invalid roles without changing primary")
 
   heif_image_handle_release(gain);
   heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
+{
+  auto* ctx = heif_context_alloc();
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
+  auto base_colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, base_colour);
+  auto metadata = make_metadata();
+  auto* options = heif_tone_map_options_alloc();
+  options->alternate_nclx = &base_colour;
+  const auto before = heif_context_get_number_of_items(ctx);
+  heif_image_handle* output = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &output).code == heif_error_Usage_error);
+  REQUIRE(output == nullptr);
+  REQUIRE(heif_context_get_number_of_items(ctx) == before);
+  REQUIRE_FALSE(heif_item_is_item_hidden(ctx, heif_image_handle_get_item_id(gain)));
+  // Avoiding hiding permits a primary gain, without silently selecting base.
+  options->hide_gain_map = 0;
+  REQUIRE(heif_item_set_item_hidden(ctx, heif_image_handle_get_item_id(base), 1).code == heif_error_Ok);
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &output).code == heif_error_Usage_error);
+  REQUIRE(heif_context_get_number_of_items(ctx) == before);
+  REQUIRE(heif_item_set_item_hidden(ctx, heif_image_handle_get_item_id(base), 0).code == heif_error_Ok);
+  options->create_altr_group = 0;
+  options->alternate_nclx = nullptr;
+  const uint8_t opaque_icc[] = {1, 2, 3};
+  options->alternate_icc = opaque_icc;
+  options->alternate_icc_size = sizeof(opaque_icc);
+  options->alternate_icc_type = heif_color_profile_type_nclx;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &output).code == heif_error_Usage_error);
+  REQUIRE(heif_context_get_number_of_items(ctx) == before);
+  options->alternate_icc_type = heif_color_profile_type_rICC;
+  heif_context_get_security_limits(ctx)->max_color_profile_size = 2;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &output).code == heif_error_Usage_error);
+  REQUIRE(heif_context_get_number_of_items(ctx) == before);
+  heif_context_get_security_limits(ctx)->max_color_profile_size = 0;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                options, &output).code == heif_error_Ok);
+  heif_item_id primary = 0;
+  REQUIRE(heif_context_get_primary_image_ID(ctx, &primary).code == heif_error_Ok);
+  REQUIRE(primary == heif_image_handle_get_item_id(gain));
+  // Opaque ICC preservation does not imply unsupported colour transforms work.
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_decode_image(output, &pixels, heif_colorspace_undefined,
+                           heif_chroma_undefined, nullptr).code != heif_error_Ok);
+  REQUIRE(pixels == nullptr);
+  heif_image_handle_release(output);
+  heif_tone_map_options_free(options);
+  heif_image_handle_release(base);
+  heif_image_handle_release(gain);
+  heif_encoder_release(encoder);
   heif_context_free(ctx);
 }

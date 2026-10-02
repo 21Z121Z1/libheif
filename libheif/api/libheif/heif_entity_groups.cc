@@ -57,6 +57,12 @@ heif_error add_entity_group(heif_context* ctx,
       return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
               "Stereo entity groups must contain image items"};
     }
+    if (group->get_short_type() == fourcc("altr") && item != item_ids.begin() &&
+        file->get_infe_box(id)->is_hidden_item() !=
+            file->get_infe_box(item_ids.front())->is_hidden_item()) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "An altr group cannot mix hidden and visible items"};
+    }
   }
 
   if (enforce_unique_alternative_membership) {
@@ -193,11 +199,13 @@ heif_error heif_context_add_alternative_entity_group(heif_context* ctx,
             "Entity group exceeds the configured security limit"};
   }
 
-  auto group = std::make_shared<Box_EntityToGroup>();
-  group->set_short_type(fourcc("altr"));
-  return add_entity_group(ctx, group, std::vector<heif_item_id>(item_ids, item_ids + num_items),
-                          false, true,
-                          out_group_id);
+  return exception_guard([&]() -> heif_error {
+    auto group = std::make_shared<Box_EntityToGroup>();
+    group->set_short_type(fourcc("altr"));
+    return add_entity_group(ctx, group, std::vector<heif_item_id>(item_ids, item_ids + num_items),
+                            false, true,
+                            out_group_id);
+  });
 }
 
 
@@ -213,7 +221,9 @@ heif_error heif_context_add_stereo_pair_entity_group(heif_context* ctx,
     return heif_error_null_pointer_argument;
   }
 
-  auto group = std::make_shared<Box_ster>();
-  return add_entity_group(ctx, group, {left_image_id, right_image_id}, true, false,
-                          out_group_id);
+  return exception_guard([&]() -> heif_error {
+    auto group = std::make_shared<Box_ster>();
+    return add_entity_group(ctx, group, {left_image_id, right_image_id}, true, false,
+                            out_group_id);
+  });
 }
