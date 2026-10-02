@@ -1000,3 +1000,237 @@ TEST_CASE("Requested output converts primaries on straight colours")
   REQUIRE((*converted)->get_color_profile_nclx().m_transfer_characteristics == 13);
   heif_decoding_options_free(options);
 }
+
+
+TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
+{
+  const bool mono = GENERATE(false, true);
+  const int bits = GENERATE(32, 64);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(3, 2, mono ? heif_colorspace_monochrome : heif_colorspace_RGB,
+               mono ? heif_chroma_monochrome : heif_chroma_444);
+  const auto channels = mono ? std::vector<heif_channel>{heif_channel_Y} :
+                              std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (auto channel : channels) {
+    REQUIRE_FALSE(base->add_channel(channel, 3, 2, bits, nullptr, heif_component_datatype_floating_point));
+    size_t stride = 0;
+    auto* plane = base->get_channel_memory(channel, &stride);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 3; ++x) {
+        const double value = 1.5 + x * 0.5 + y * 0.25;
+        if (bits == 32) { reinterpret_cast<float*>(plane + y * stride)[x] = static_cast<float>(value); }
+        else { reinterpret_cast<double*>(plane + y * stride)[x] = value; }
+      }
+    }
+  }
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  base->set_color_profile_nclx(profile);
+  auto gain = make_pixels(1, true, 65535, 2);
+  GainMapMetadata metadata;
+  metadata.base_hdr_headroom = {2, 1};
+  metadata.alternate_hdr_headroom = {0, 1};
+  metadata.channels[0].gain_map_max = {2, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, profile, *options, nullptr);
+  REQUIRE(result);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t stride = 0;
+    const auto* plane = (*result)->get_channel_memory<uint16_t>(channel, &stride);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 3; ++x) {
+        REQUIRE(plane[y * (stride / 2) + x] == std::round((1.5 + x * 0.5 + y * 0.25) / 4 * 65535));
+      }
+    }
+  }
+  REQUIRE(base->get_datatype(channels[0]) == heif_component_datatype_floating_point);
+  REQUIRE(base->get_bits_per_pixel(channels[0]) == bits);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Wide unsigned RGB is normalized without a 16-bit intermediate")
+{
+  const int bits = GENERATE(17, 24, 32, 48, 64);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  // A very small baseline amplified by 2^16 must survive until gain application.
+  const uint64_t code = uint64_t{1} << (bits - 17);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(base->add_channel(channel, 1, 1, bits, nullptr));
+    if (bits <= 32) { base->get_channel_memory<uint32_t>(channel, nullptr)[0] = static_cast<uint32_t>(code); }
+    else { base->get_channel_memory<uint64_t>(channel, nullptr)[0] = code; }
+  }
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  base->set_color_profile_nclx(profile);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {16, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 65535, 2), metadata, profile, *options, nullptr);
+  REQUIRE(result);
+  const long double maximum = std::ldexp(1.0L, bits) - 1;
+  const auto expected = std::round(static_cast<long double>(code) / maximum * 65536 * 65535);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE(sample_at(**result, channel, 0) == expected);
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Floating gain samples are unnormalized before interpolation")
+{
+  const int bits = GENERATE(32, 64);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(2, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 2, 1, bits, nullptr, heif_component_datatype_floating_point));
+  const double g0 = bits == 32 ? static_cast<double>(float{1.0f / 3}) : 1.0 / 3;
+  if (bits == 32) {
+    auto* plane = gain->get_channel_memory<float>(heif_channel_Y, nullptr);
+    plane[0] = static_cast<float>(g0); plane[1] = 0.75f;
+  }
+  else {
+    auto* plane = gain->get_channel_memory<double>(heif_channel_Y, nullptr);
+    plane[0] = g0; plane[1] = 0.75;
+  }
+  auto profile = make_pixels(1, true, 0, 2)->get_color_profile_nclx();
+  gain->set_color_profile_nclx(profile);
+  auto base = make_pixels(4, false, 8192, 8);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {2, 1};
+  metadata.channels[0].gamma = {2, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
+  REQUIRE(result);
+  // x=1 is halfway between independently inverse-gamma processed gain samples.
+  const double log_gain = std::sqrt(g0) + std::sqrt(0.75);
+  REQUIRE(sample_at(**result, heif_channel_R, 1) == std::round(8192 * std::exp2(log_gain)));
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Floating alpha is used before final quantization and rejects invalid opacity")
+{
+  const bool premultiplied = GENERATE(false, true);
+  const int bits = GENERATE(32, 64);
+  auto base = make_pixels(3, false, 13107, 8);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 3, 1, bits, nullptr, heif_component_datatype_floating_point));
+  auto set_alpha = [&](size_t x, double value) {
+    if (bits == 32) { base->get_channel_memory<float>(heif_channel_Alpha, nullptr)[x] = static_cast<float>(value); }
+    else { base->get_channel_memory<double>(heif_channel_Alpha, nullptr)[x] = value; }
+  };
+  set_alpha(0, 0); set_alpha(1, 0.25); set_alpha(2, 1);
+  base->set_premultiplied_alpha(premultiplied);
+  auto gain = make_pixels(1, true, 65535, 2);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
+  REQUIRE(result);
+  const auto* alpha = (*result)->get_channel_memory<uint16_t>(heif_channel_Alpha, nullptr);
+  REQUIRE(alpha[0] == 0); REQUIRE(alpha[1] == 16384); REQUIRE(alpha[2] == 65535);
+  REQUIRE(sample_at(**result, heif_channel_R, 1) ==
+          std::round(std::min((0.2 / (premultiplied ? 0.25 : 1) + 0.125) * 2 - 0.0625, 1.0) *
+                     (premultiplied ? 0.25 : 1) * 65535));
+  // Zero opacity yields zero premultiplied output even with nonzero offsets.
+  if (premultiplied) { REQUIRE(sample_at(**result, heif_channel_R, 0) == 0); }
+  for (double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    set_alpha(1, invalid);
+    result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Invalid_input);
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Typed tone-map samples reject nonfinite and unresolved numeric formats")
+{
+  const bool colour_is_gain = GENERATE(false, true);
+  auto typed = std::make_shared<HeifPixelImage>();
+  typed->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(typed->add_channel(channel, 1, 1, 64, nullptr, heif_component_datatype_floating_point));
+    typed->get_channel_memory<double>(channel, nullptr)[0] = 0.25;
+  }
+  auto colour = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  typed->set_color_profile_nclx(colour);
+  auto base = colour_is_gain ? make_pixels(1, false, 16384, 8) : typed;
+  auto gain = colour_is_gain ? typed : make_pixels(1, true, 0, 2);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  for (double invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    typed->get_channel_memory<double>(heif_channel_G, nullptr)[0] = invalid;
+    auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, colour, *options, nullptr);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Invalid_input);
+  }
+  typed->get_channel_memory<double>(heif_channel_G, nullptr)[0] = 0.25;
+  colour.set_full_range_flag(false);
+  typed->set_color_profile_nclx(colour);
+  auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, colour, *options, nullptr);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Mixed RGB sample types preserve signed extended transfer values")
+{
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  REQUIRE_FALSE(base->add_channel(heif_channel_R, 1, 1, 32, nullptr, heif_component_datatype_floating_point));
+  REQUIRE_FALSE(base->add_channel(heif_channel_G, 1, 1, 24, nullptr));
+  REQUIRE_FALSE(base->add_channel(heif_channel_B, 1, 1, 64, nullptr, heif_component_datatype_floating_point));
+  base->get_channel_memory<float>(heif_channel_R, nullptr)[0] = -0.2f;
+  base->get_channel_memory<uint32_t>(heif_channel_G, nullptr)[0] = 1;
+  base->get_channel_memory<double>(heif_channel_B, nullptr)[0] = -0.05;
+  auto profile = make_pixels(1, false, 0, 11)->get_color_profile_nclx();
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_transfer_characteristics(8);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 4};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 65535, 2), metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<double, 3> signal{static_cast<double>(-0.2f), 1.0 / 16777215, -0.05};
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  // IEC 61966-2-4/H.273 signed BT.709 EOTF, followed by ISO Formula (2).
+  for (size_t c = 0; c < 3; ++c) {
+    const double v = std::abs(signal[c]);
+    const double linear = std::copysign(v < 0.081242858298635 ? v / 4.5 :
+        std::pow((v + 0.099296826809442) / 1.099296826809442, 1 / 0.45), signal[c]);
+    REQUIRE(sample_at(**result, channels[c], 0) == std::round((linear + 0.25) * 2 * 65535));
+  }
+  REQUIRE(base->get_channel_memory<double>(heif_channel_B, nullptr)[0] == -0.05);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Wide limited-range mono normalization uses its own code depth")
+{
+  const int bits = GENERATE(24, 32, 64);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(3, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Y, 3, 1, bits, nullptr));
+  const uint64_t shift = uint64_t{1} << (bits - 8);
+  const std::array<uint64_t, 3> codes{16 * shift, 125 * shift, 235 * shift};
+  for (size_t x = 0; x < 3; ++x) {
+    if (bits <= 32) { base->get_channel_memory<uint32_t>(heif_channel_Y, nullptr)[x] = static_cast<uint32_t>(codes[x]); }
+    else { base->get_channel_memory<uint64_t>(heif_channel_Y, nullptr)[x] = codes[x]; }
+  }
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  profile.set_full_range_flag(false);
+  base->set_color_profile_nclx(profile);
+  auto alternate = profile;
+  alternate.set_full_range_flag(true);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), GainMapMetadata{}, alternate, *options, nullptr);
+  REQUIRE(result);
+  REQUIRE(sample_at(**result, heif_channel_R, 0) == 0);
+  REQUIRE(sample_at(**result, heif_channel_R, 1) == std::round(109.0 / 219 * 65535));
+  REQUIRE(sample_at(**result, heif_channel_R, 2) == 65535);
+  heif_decoding_options_free(options);
+}

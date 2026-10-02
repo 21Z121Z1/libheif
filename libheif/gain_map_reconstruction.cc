@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <memory>
 
 namespace {
@@ -207,64 +208,36 @@ Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
   return output;
 }
 
-Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
+bool is_direct_rgb(const HeifPixelImage& image)
+{
+  return (image.get_colorspace() == heif_colorspace_RGB && image.get_chroma_format() == heif_chroma_444) ||
+         (image.get_colorspace() == heif_colorspace_monochrome && image.get_chroma_format() == heif_chroma_monochrome);
+}
+
+Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
     const std::shared_ptr<HeifPixelImage>& image,
     const heif_decoding_options& options, const heif_security_limits* limits)
 {
-  if (auto error = image->check_plane_layout()) {
-    return error;
-  }
+  if (auto error = image->check_plane_layout()) { return error; }
+  auto profile = image->get_color_profile_nclx();
+  const bool direct = is_direct_rgb(*image);
   for (auto channel : image->get_channel_set()) {
     const uint16_t bits = image->get_bits_per_pixel(channel);
-    if (image->get_datatype(channel) != heif_component_datatype_unsigned_integer ||
-        bits > 16) {
-      return unsupported("Tone-map inputs require unsigned samples of at most 16 bits");
+    const auto type = image->get_datatype(channel);
+    const bool integer = type == heif_component_datatype_unsigned_integer && bits >= 1 && bits <= (direct ? 64 : 16);
+    const bool floating = direct && type == heif_component_datatype_floating_point && (bits == 32 || bits == 64);
+    if (!integer && !floating) {
+      return unsupported("Unsupported tone-map sample datatype or depth");
     }
-
+    if (direct && channel != heif_channel_Alpha && !profile.get_full_range_flag() &&
+        (floating || bits < 8)) {
+      return unsupported("Unsupported tone-map RGB or monochrome limited-range samples");
+    }
   }
-  auto profile = image->get_color_profile_nclx();
-  if (image->get_colorspace() == heif_colorspace_monochrome) {
-    const uint32_t w = image->get_width(), h = image->get_height();
-    const int bits = image->get_bits_per_pixel(heif_channel_Y);
-    if (bits < 1 || bits > 16 || (!profile.get_full_range_flag() && bits < 8)) {
-      return unsupported("Unsupported monochrome tone-map bit depth");
-    }
-    auto rgb = std::make_shared<HeifPixelImage>();
-    rgb->create(w, h, heif_colorspace_RGB, heif_chroma_444);
-    size_t input_stride = 0;
-    const auto* input = image->get_channel_memory(heif_channel_Y, &input_stride);
-    // ISO 21496-1 recommends at least 8 bits per gain-map component.
-    // Lower-depth full-range samples also have unambiguous normalization.
-    const double offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (bits - 8));
-    const double scale = profile.get_full_range_flag() ? static_cast<double>((1U << bits) - 1) :
-                                                       219.0 * (1U << (bits - 8));
-    for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
-      if (auto error = rgb->add_channel(channel, w, h, 16, limits)) {
-        return error;
-      }
-      size_t stride = 0;
-      auto* output = rgb->get_channel_memory<uint16_t>(channel, &stride);
-      stride /= sizeof(uint16_t);
-      for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-          const auto* row = input + size_t(y) * input_stride;
-          const double sample = bits <= 8 ? row[x] : reinterpret_cast<const uint16_t*>(row)[x];
-          output[size_t(y) * stride + x] = static_cast<uint16_t>(
-              std::round(std::clamp((sample - offset) / scale, 0.0, 1.0) * 65535));
-        }
-      }
-    }
-    if (image->has_channel(heif_channel_Alpha)) {
-      if (auto error = rgb->copy_new_channel_from(image, heif_channel_Alpha, heif_channel_Alpha, limits)) {
-        return error;
-      }
-    }
-    rgb->set_premultiplied_alpha(image->is_premultiplied_alpha());
-    profile.set_matrix_coefficients(0);
-    profile.set_full_range_flag(true);
-    rgb->set_color_profile_nclx(profile);
-    return rgb;
-  }
+  // ISO 21496-1 Formula (2) operates on the decoded baseline, which may
+  // exceed reference white. Read planar RGB/mono directly, avoiding both
+  // premature clipping and a 16-bit quantization before inverse gamma/gain.
+  if (direct) { return image; }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
     const auto matrix = profile.m_matrix_coefficients;
     if (matrix == 8 || (matrix >= 10 && matrix <= 17 && matrix != 12)) {
@@ -286,46 +259,96 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
                              nullptr, limits);
 }
 
-struct RGBPlanes {
-  std::array<const uint16_t*, 3> data{};
-  std::array<size_t, 3> stride{};
-
-  explicit RGBPlanes(const HeifPixelImage& image)
-  {
-    const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
-    for (size_t c = 0; c < 3; ++c) {
-      data[c] = image.get_channel_memory<uint16_t>(channels[c], &stride[c]);
-      stride[c] /= sizeof(uint16_t);
-    }
-  }
-
-  double sample(size_t c, uint32_t x, uint32_t y) const
-  {
-    return data[c][size_t(y) * stride[c] + x] / 65535.0;
-  }
-};
-
-struct AlphaPlane {
+struct SamplePlane {
   const uint8_t* data = nullptr;
   size_t stride = 0;
   int bits = 0;
+  heif_component_datatype type = heif_component_datatype_undefined;
+  double offset = 0;
+  double scale = 1;
 
-  explicit AlphaPlane(const HeifPixelImage& image)
+  SamplePlane() = default;
+
+  SamplePlane(const HeifPixelImage& image, heif_channel channel, bool full_range)
   {
-    if (image.has_channel(heif_channel_Alpha)) {
-      data = image.get_channel_memory(heif_channel_Alpha, &stride);
-      bits = image.get_bits_per_pixel(heif_channel_Alpha);
+    if (!image.has_channel(channel)) { return; }
+    data = image.get_channel_memory(channel, &stride);
+    bits = image.get_bits_per_pixel(channel);
+    type = image.get_datatype(channel);
+    if (type == heif_component_datatype_unsigned_integer) {
+      offset = full_range ? 0 : std::ldexp(16.0, bits - 8);
+      scale = full_range ? std::ldexp(1.0, bits) - 1 : std::ldexp(219.0, bits - 8);
     }
+  }
+
+  template<class T> double read(uint32_t x, uint32_t y) const
+  {
+    T value;
+    std::memcpy(&value, data + size_t(y) * stride + size_t(x) * sizeof(T), sizeof(T));
+    return static_cast<double>(value);
   }
 
   double sample(uint32_t x, uint32_t y) const
   {
-    if (!data) { return 1.0; }
-    const auto* row = data + size_t(y) * stride;
-    const double value = bits <= 8 ? row[x] : reinterpret_cast<const uint16_t*>(row)[x];
-    return value / ((1U << bits) - 1);
+    if (!data) { return 1; }
+    if (type == heif_component_datatype_floating_point) {
+      return bits == 32 ? read<float>(x, y) : read<double>(x, y);
+    }
+    const double value = bits <= 8 ? read<uint8_t>(x, y) :
+                         bits <= 16 ? read<uint16_t>(x, y) :
+                         bits <= 32 ? read<uint32_t>(x, y) : read<uint64_t>(x, y);
+    return (value - offset) / scale;
   }
 };
+
+struct RGBPlanes {
+  std::array<SamplePlane, 3> planes;
+
+  explicit RGBPlanes(const HeifPixelImage& image)
+  {
+    const bool mono = image.get_colorspace() == heif_colorspace_monochrome;
+    const bool full_range = image.get_color_profile_nclx().get_full_range_flag();
+    const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+    for (size_t c = 0; c < 3; ++c) {
+      planes[c] = SamplePlane(image, mono ? heif_channel_Y : channels[c], full_range);
+    }
+  }
+
+  double sample(size_t c, uint32_t x, uint32_t y) const { return planes[c].sample(x, y); }
+};
+
+Error copy_alpha(const std::shared_ptr<HeifPixelImage>& output,
+                 const std::shared_ptr<HeifPixelImage>& input, const heif_security_limits* limits,
+                 bool normalize_depth)
+{
+  if (!input->has_channel(heif_channel_Alpha)) { return Error::Ok; }
+  if (input->get_datatype(heif_channel_Alpha) == heif_component_datatype_unsigned_integer &&
+      (input->get_bits_per_pixel(heif_channel_Alpha) == 16 ||
+       (input->get_bits_per_pixel(heif_channel_Alpha) < 16 && !normalize_depth))) {
+    return output->copy_new_channel_from(input, heif_channel_Alpha, heif_channel_Alpha, limits);
+  }
+  // Canonical output is unsigned RGB16. Quantize typed opacity only here,
+  // after its original value has been used for unpremultiplication and gain.
+  const uint32_t width = input->get_width(), height = input->get_height();
+  if (auto error = output->add_channel(heif_channel_Alpha, width, height, 16, limits)) { return error; }
+  const SamplePlane alpha(*input, heif_channel_Alpha, true);
+  size_t stride = 0;
+  auto* plane = output->get_channel_memory<uint16_t>(heif_channel_Alpha, &stride);
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      plane[size_t(y) * (stride / sizeof(uint16_t)) + x] = static_cast<uint16_t>(std::round(alpha.sample(x, y) * 65535));
+    }
+  }
+  return Error::Ok;
+}
+
+Error validate_alpha(double alpha)
+{
+  if (!std::isfinite(alpha) || alpha < 0 || alpha > 1) {
+    return {heif_error_Invalid_input, heif_suberror_Unspecified, "Tone-map alpha must be finite and between zero and one"};
+  }
+  return Error::Ok;
+}
 }  // namespace
 
 Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
@@ -374,19 +397,13 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   if (!before) { return before.error(); }
   if (!after) { return after.error(); }
 
-  auto base_rgb = to_rgb16(base, options, limits);
-  auto gain_rgb = to_rgb16(gain, options, limits);
+  auto base_rgb = prepare_rgb(base, options, limits);
+  auto gain_rgb = prepare_rgb(gain, options, limits);
   if (!base_rgb) { return base_rgb.error(); }
   if (!gain_rgb) { return gain_rgb.error(); }
-  if ((*base_rgb)->get_colorspace() != heif_colorspace_RGB ||
-      (*gain_rgb)->get_colorspace() != heif_colorspace_RGB ||
-      (*base_rgb)->get_chroma_format() != heif_chroma_444 ||
-      (*gain_rgb)->get_chroma_format() != heif_chroma_444) {
-    return unsupported("Tone-map RGB conversion did not produce planar RGB");
-  }
   const RGBPlanes base_planes(**base_rgb);
   const RGBPlanes gain_planes(**gain_rgb);
-  const AlphaPlane alpha_plane(**base_rgb);
+  const SamplePlane alpha_plane(**base_rgb, heif_channel_Alpha, true);
   const bool premultiplied = base->is_premultiplied_alpha();
   const uint32_t width = base->get_width(), height = base->get_height();
   const uint32_t gain_width = gain->get_width(), gain_height = gain->get_height();
@@ -418,7 +435,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       const uint32_t x0 = std::min(static_cast<uint32_t>(gx), gain_width - 1);
       const uint32_t x1 = std::min(x0 + 1, gain_width - 1);
       const double fx = gx - x0;
-      const double alpha = premultiplied ? alpha_plane.sample(x, y) : 1.0;
+      const double opacity = alpha_plane.sample(x, y);
+      if (auto error = validate_alpha(opacity)) { return error; }
+      const double alpha = premultiplied ? opacity : 1.0;
       GainMapRGB signal{base_planes.sample(0, x, y), base_planes.sample(1, x, y),
                         base_planes.sample(2, x, y)};
       if (premultiplied) {
@@ -455,11 +474,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       }
     }
   }
-  if ((*base_rgb)->has_channel(heif_channel_Alpha)) {
-    if (auto error = output->copy_new_channel_from(*base_rgb, heif_channel_Alpha, heif_channel_Alpha, limits)) {
-      return error;
-    }
-  }
+  if (auto error = copy_alpha(output, *base_rgb, limits, base->get_colorspace() == heif_colorspace_RGB)) { return error; }
   output->set_premultiplied_alpha(premultiplied);
   output->set_color_profile_nclx(alternate_colour.raster_profile());
   output->set_color_profile_icc(alternate_colour.icc_profile());
@@ -502,10 +517,10 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map output has no alpha channel"};
   }
-  auto rgb = to_rgb16(image, options, limits);
+  auto rgb = prepare_rgb(image, options, limits);
   if (!rgb) { return rgb.error(); }
   const RGBPlanes input(**rgb);
-  const AlphaPlane alpha_plane(**rgb);
+  const SamplePlane alpha_plane(**rgb, heif_channel_Alpha, true);
   const bool premultiplied = image->is_premultiplied_alpha();
   const uint32_t width = image->get_width(), height = image->get_height();
   auto output = std::make_shared<HeifPixelImage>();
@@ -524,7 +539,9 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   }
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
-      const double alpha = premultiplied ? alpha_plane.sample(x, y) : 1.0;
+      const double opacity = alpha_plane.sample(x, y);
+      if (auto error = validate_alpha(opacity)) { return error; }
+      const double alpha = premultiplied ? opacity : 1.0;
       GainMapRGB signal{input.sample(0, x, y), input.sample(1, x, y), input.sample(2, x, y)};
       if (premultiplied) {
         for (auto& value : signal) { value = alpha > 0 ? value / alpha : 0; }
@@ -539,11 +556,7 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
       }
     }
   }
-  if ((*rgb)->has_channel(heif_channel_Alpha)) {
-    if (auto error = output->copy_new_channel_from(*rgb, heif_channel_Alpha, heif_channel_Alpha, limits)) {
-      return error;
-    }
-  }
+  if (auto error = copy_alpha(output, *rgb, limits, image->get_colorspace() == heif_colorspace_RGB)) { return error; }
   target.set_matrix_coefficients(0);
   target.set_full_range_flag(true);
   output->set_color_profile_nclx(target);

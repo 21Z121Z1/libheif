@@ -232,3 +232,21 @@ different-depth reversible YCgCo codewords in both range modes and input roles.
 Native math passes 10,094 assertions in 27 cases; the complete suite and
 experimental ON/OFF sanitizer checks (including mixed-chroma conversion) pass.
 This removes the earlier mixed-depth mandatory-bilinear limitation.
+
+Planar RGB and monochrome reconstruction now reads unsigned 1-64-bit and
+full-range float32/float64 samples directly. This retains tiny values until
+large gains are applied, above-white HDR baselines for reverse gain, and
+negative extended-transfer values until offsets/colour conversion. It also
+avoids an intermediate RGB allocation. Per-component typed normalization
+supports mixed RGB formats and wide limited-range integers; floating
+limited-range and signed/complex formats remain explicit errors. Original
+opacity is used before final RGB16/alpha quantization, with finite/range checks.
+Independent native math passes 10,433 assertions in 34 cases. Public uncompressed
+writer tests serialize, reopen and decode typed baseline and float gain planes,
+checking persisted component types and final pixels (212 additional assertions).
+The complete suite remains 97 passes/six skips with no failures. Experimental
+ON/OFF ASan/UBSan pass on Mac; its sanitizer runtime does not support leak
+checking, which remains enabled in the Linux Actions jobs. Fresh Mac 27 Apple
+consumer/producer and pinned Google Annex C checks pass without wider tolerances.
+The preceding mixed-depth commit's four Linux gain-map jobs also passed;
+hosted Mac 15 acceptance remains unresolved.

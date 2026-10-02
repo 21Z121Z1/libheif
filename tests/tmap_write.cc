@@ -26,6 +26,7 @@
 
 #include "catch_amalgamated.hpp"
 #include "libheif/heif.h"
+#include "libheif/heif_components.h"
 #include "libheif/heif_experimental.h"
 #include "libheif/heif_items.h"
 #include "libheif/heif_properties.h"
@@ -33,6 +34,7 @@
 #include "test_utils.h"
 #include "gain_map_color.h"
 
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
@@ -1043,6 +1045,118 @@ TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
   heif_tone_map_options_free(options);
   heif_image_handle_release(base);
   heif_image_handle_release(gain);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonical public decode")
+{
+  const bool floating = GENERATE(false, true);
+  const int bits = GENERATE(32, 64);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(3, 2, heif_colorspace_RGB, heif_chroma_444, &pixels).code == heif_error_Ok);
+  for (auto type : {heif_cmpd_component_type_red, heif_cmpd_component_type_green, heif_cmpd_component_type_blue}) {
+    uint32_t id = 0;
+    REQUIRE(heif_image_add_component(pixels, 3, 2, type,
+        floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer,
+        bits, &id).code == heif_error_Ok);
+    size_t stride = 0;
+    auto* plane = heif_image_get_component(pixels, id, &stride);
+    REQUIRE(plane);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 3; ++x) {
+        if (floating && bits == 32) { reinterpret_cast<float*>(plane + y * stride)[x] = 1.5f; }
+        else if (floating) { reinterpret_cast<double*>(plane + y * stride)[x] = 1.5; }
+        else if (bits == 32) { reinterpret_cast<uint32_t*>(plane + y * stride)[x] = uint32_t{1} << 15; }
+        else { reinterpret_cast<uint64_t*>(plane + y * stride)[x] = uint64_t{1} << 47; }
+      }
+    }
+  }
+  REQUIRE(heif_image_set_nclx_color_profile(pixels, &baseline).code == heif_error_Ok);
+  heif_image_handle* base = nullptr;
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+  auto error = heif_context_encode_image(ctx, pixels, encoder, encoding, &base);
+  heif_encoding_options_free(encoding);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  heif_image_release(pixels);
+
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  uint32_t gain_id = 0;
+  REQUIRE(heif_image_add_component(pixels, 1, 1, heif_cmpd_component_type_monochrome,
+      heif_component_datatype_floating_point, bits, &gain_id).code == heif_error_Ok);
+  size_t stride = 0;
+  auto* plane = heif_image_get_component(pixels, gain_id, &stride);
+  const double normalized_gain = floating ? (bits == 32 ? static_cast<double>(1.0f / 3) : 1.0 / 3) : 1;
+  if (bits == 32) { reinterpret_cast<float*>(plane)[0] = static_cast<float>(normalized_gain); }
+  else { reinterpret_cast<double*>(plane)[0] = normalized_gain; }
+  heif_image_handle* gain = nullptr;
+  error = heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  heif_image_release(pixels);
+  auto metadata = make_metadata();
+  metadata.base_hdr_headroom = {floating ? 2U : 0U, 1};
+  metadata.alternate_hdr_headroom = {floating ? 0U : 16U, 1};
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {floating ? 2 : 16, 1};
+  metadata.channels[0].gamma = {floating ? 2U : 1U, 1};
+  auto options = make_options(&baseline);
+  heif_image_handle* tmap = nullptr;
+  error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const auto item = heif_image_handle_get_item_id(tmap);
+  const auto bytes = write_context(ctx);
+  auto* read = reopen(bytes);
+  heif_image_handle* typed_base = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(base), &typed_base).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_number_of_components(typed_base) == 3);
+  std::array<uint32_t, 3> ids{};
+  heif_image_handle_get_used_component_ids(typed_base, ids.data());
+  for (auto id : ids) {
+    REQUIRE(heif_image_handle_get_component_bits_per_pixel(typed_base, id) == bits);
+    REQUIRE(heif_image_handle_get_component_datatype(typed_base, id) ==
+            (floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer));
+  }
+  heif_image_handle_release(typed_base);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, item, &handle).code == heif_error_Ok);
+  auto* decoding = heif_decoding_options_alloc();
+  REQUIRE(decoding);
+  decoding->output_image_nclx_profile_passthrough = true;
+  heif_image* output = nullptr;
+  error = heif_decode_image(handle, &output, heif_colorspace_RGB, heif_chroma_444, decoding);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const long double maximum = std::ldexp(1.0L, bits) - 1;
+  const double expected = floating ? std::round(1.5 * std::exp2(-2 * std::sqrt(normalized_gain)) * 65535) :
+      static_cast<double>(std::round(std::ldexp(1.0L, bits - 17) / maximum * 65536 * 65535));
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int row_bytes = 0;
+    const auto* data = heif_image_get_plane_readonly(output, channel, &row_bytes);
+    REQUIRE(data);
+    REQUIRE(heif_image_get_bits_per_pixel_range(output, channel) == 16);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 3; ++x) {
+        REQUIRE(reinterpret_cast<const uint16_t*>(data + y * row_bytes)[x] == expected);
+      }
+    }
+  }
+  heif_image_release(output);
+  heif_decoding_options_free(decoding);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
   heif_encoder_release(encoder);
   heif_context_free(ctx);
 }
