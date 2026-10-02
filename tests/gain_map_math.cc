@@ -274,3 +274,116 @@ TEST_CASE("Mono limited-range gain endpoints are normalized then clipped")
   REQUIRE(sample_at(**result, heif_channel_R, 0) == 32768);
   heif_decoding_options_free(options);
 }
+
+TEST_CASE("Premultiplied baseline reconstructs straight colours before restoring alpha")
+{
+  auto base = make_pixels(3, false, 39321, 13); // Straight sRGB signal 0.6.
+  const uint8_t alpha_bits = GENERATE(uint8_t{8}, uint8_t{16});
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 3, 1, alpha_bits, nullptr));
+  if (alpha_bits == 8) {
+    auto* alpha = base->get_channel_memory(heif_channel_Alpha, nullptr);
+    alpha[0] = 0;
+    alpha[1] = 85;
+    alpha[2] = 255;
+  }
+  else {
+    auto* alpha = base->get_channel_memory<uint16_t>(heif_channel_Alpha, nullptr);
+    alpha[0] = 0;
+    alpha[1] = 21845;
+    alpha[2] = 65535;
+  }
+  // Exactly one third alpha; premultiplied signal is 0.2.
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    base->get_channel_memory<uint16_t>(channel, nullptr)[1] = 13107;
+  }
+  base->set_premultiplied_alpha(true);
+  auto gain = make_pixels(1, true, 65535, 2);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  auto alternate = base->get_color_profile_nclx();
+  alternate.set_transfer_characteristics(16);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  REQUIRE((*result)->is_premultiplied_alpha());
+  // Independent sRGB EOTF, ISO Formula (2), then ST 2084 encoding.
+  const double linear = (std::pow((0.6 + 0.055) / 1.055, 2.4) + 0.125) * 2 - 0.0625;
+  const double p = std::pow(linear * 203 / 10000, 2610.0 / 16384);
+  const double encoded = std::pow((3424.0 / 4096 + 2413.0 / 128 * p) /
+                                  (1 + 2392.0 / 128 * p), 2523.0 / 32);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE(sample_at(**result, channel, 0) == 0);
+    REQUIRE(sample_at(**result, channel, 1) == Catch::Approx(std::round(encoded / 3 * 65535)).margin(1));
+    REQUIRE(sample_at(**result, channel, 2) == Catch::Approx(std::round(encoded * 65535)).margin(1));
+    REQUIRE(sample_at(*base, channel, 1) == 13107);
+  }
+  REQUIRE((*result)->get_bits_per_pixel(heif_channel_Alpha) == 16);
+  const auto* output_alpha = (*result)->get_channel_memory<uint16_t>(heif_channel_Alpha, nullptr);
+  REQUIRE(output_alpha[0] == 0);
+  REQUIRE(output_alpha[1] == 21845);
+  REQUIRE(output_alpha[2] == 65535);
+
+  SECTION("Clip the straight alternate before premultiplication") {
+    alternate.set_transfer_characteristics(8);
+    metadata.channels[0].gain_map_max = {3, 1};
+    result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
+    REQUIRE(result);
+    REQUIRE(sample_at(**result, heif_channel_R, 1) == 21845);
+    REQUIRE(sample_at(**result, heif_channel_R, 2) == 65535);
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Premultiplied tone-map input requires an alpha channel")
+{
+  auto base = make_pixels(1, false, 16384, 8);
+  base->set_premultiplied_alpha(true);
+  auto gain = make_pixels(1, true, 65535, 2);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, base->get_color_profile_nclx(), *options, nullptr);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().error_code == heif_error_Invalid_input);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Requested output converts primaries on straight colours and drops the old ICC")
+{
+  auto image = make_pixels(2, false, 39321, 8);
+  image->fill_channel(heif_channel_G, 0);
+  image->fill_channel(heif_channel_B, 0);
+  REQUIRE_FALSE(image->add_channel(heif_channel_Alpha, 2, 1, 8, nullptr));
+  auto* alpha = image->get_channel_memory(heif_channel_Alpha, nullptr);
+  alpha[0] = 0;
+  alpha[1] = 85;
+  image->get_channel_memory<uint16_t>(heif_channel_R, nullptr)[1] = 13107;
+  image->set_premultiplied_alpha(true);
+  image->set_color_profile_icc(std::make_shared<color_profile_raw>(fourcc("prof"), std::vector<uint8_t>{0}));
+  heif_color_profile_nclx requested{};
+  requested.color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
+  requested.transfer_characteristics = heif_transfer_characteristic_IEC_61966_2_1;
+  requested.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested.full_range_flag = 1;
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto converted = convert_tone_map_colour(image, requested, *options, nullptr);
+  REQUIRE(converted);
+  REQUIRE((*converted)->is_premultiplied_alpha());
+  REQUIRE_FALSE((*converted)->get_color_profile_icc());
+  REQUIRE(image->get_color_profile_icc());
+  const std::array<double, 3> red{0.627403896, 0.069097289, 0.016391439};
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < 3; ++c) {
+    const double linear = 0.6 * red[c];
+    const double encoded = linear <= 0.0031308 ? 12.92 * linear :
+                           1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
+    REQUIRE(sample_at(**converted, channels[c], 0) == 0);
+    REQUIRE(sample_at(**converted, channels[c], 1) == Catch::Approx(std::round(encoded / 3 * 65535)).margin(1));
+  }
+  REQUIRE(sample_at(*image, heif_channel_R, 1) == 13107);
+  REQUIRE((*converted)->get_color_profile_nclx().m_transfer_characteristics == 13);
+  heif_decoding_options_free(options);
+}

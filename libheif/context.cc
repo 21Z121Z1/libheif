@@ -50,6 +50,7 @@
 #include "security_limits.h"
 #include "compression.h"
 #include "color-conversion/colorconversion.h"
+#include "gain_map_reconstruction.h"
 #include "plugin_registry.h"
 #include "image-items/hevc.h"
 #include "image-items/vvc.h"
@@ -1618,12 +1619,11 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
   if (imgitem->get_infe_type() == fourcc("tmap")) {
     // Canonical tmap decoding describes the alternate, or the baseline for an
     // unknown minimum metadata version. Do not silently re-tag it as sRGB.
-    const auto profile = img->get_color_profile_nclx();
-    if (options.output_image_nclx_profile &&
-        (options.output_image_nclx_profile->color_primaries != profile.m_colour_primaries ||
-         options.output_image_nclx_profile->transfer_characteristics != profile.m_transfer_characteristics)) {
-      return Error{heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
-                   "Tone-map requested-output primaries/transfer conversion is not supported"};
+    if (options.output_image_nclx_profile) {
+      auto converted = convert_tone_map_colour(img, *options.output_image_nclx_profile,
+                                              options, get_security_limits());
+      if (!converted) { return converted.error(); }
+      img = *converted;
     }
     if (!options.output_image_nclx_profile) {
       output_options.output_image_nclx_profile_passthrough = true;

@@ -76,7 +76,8 @@ not labelled non-conforming solely for that reason.
 | Clause 6.3 target-headroom weighting | New experimental root-only decode API; independent PQ pixel expectations in both directions, endpoint equality, invalid targets and nested PQ/HLG tests | Implemented in this continuation |
 | HEIF Amd.1 clause 6.6.2.4 | Ordered two-input `dimg`, image geometry, required colour roles and ordinary derived-item traversal | Covered by structural and decode tests |
 | HEIF writer and alternative selection | Gain NCLX, hidden-item policy, exact alternate ICC/NCLX preservation and noncolliding ordered `altr` groups | Tested with synthetic Apple consumers |
-| All permitted colour descriptions and raster paths | Arbitrary ICC, other HLG viewing conditions, premultiplied baseline alpha, unsupported matrices and tile-only decode remain limited | Partial |
+| Alpha and requested output colour | Encoded RGB unpremultiplication, straight-colour ISO reconstruction, restored alpha, and root EOTF/matrix/OETF output conversion | Implemented and tested, including a real `prem` container graph |
+| All permitted colour descriptions and raster paths | Arbitrary ICC, other HLG viewing conditions, unsupported matrices and tile-only decode remain limited | Partial |
 | External consumers | Apple public-framework pixels and producer round trip; libultrahdr metadata round trip | Tested cases only; no universal consumer claim |
 
 There is no defensible “100% adapted” claim for the whole standards. HEIF
@@ -117,3 +118,20 @@ The harness now explicitly allows floating-point decode and disables generated
 image-specific display scaling while checking the full alternate. It logs
 range, error, bit depth and colour space before asserting, and retains producer
 fixtures on consumer pixel failures. The 0.025 HDR error gate is unchanged.
+
+## Continued implementation while Actions run
+
+Premultiplied baseline alpha and explicit output NCLX conversion now have
+independent sRGB/PQ and coloured BT.709-to-BT.2020 expectations. Container tests
+exercise an actual alpha `auxl`/`prem` graph, unknown-version fallback, and
+requested linear output from nested PQ/HLG nodes with a root target weight.
+The alpha graph exposed a monochrome-to-YCbCr conversion detour that changed
+neutral RGB values; direct monochrome expansion removes that bias. Neither
+change alters the original raster or adds an external colour-management library.
+
+The macOS 15 run at `d543ed21` still failed the strict framework pixel gate with
+SDR-range values (maximum about 0.394), whereas its C++ tmap read tests passed.
+Its own Apple-produced fixture has baseline NCLX CP=2/TC=2/MC=6 and no ICC
+description, so strict libheif reconstruction cannot infer its baseline EOTF.
+That missing colour description is a separate observed limitation from the
+ImageIO consumer result; neither is counted as a compatibility pass.

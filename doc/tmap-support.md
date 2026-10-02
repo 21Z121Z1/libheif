@@ -22,7 +22,8 @@ HDR-to-reference-white luminance ratio is two stops. The weight clamps between
 the baseline and alternate endpoints in either direction. Only the root consumes
 the target; nested `tmap` inputs reconstruct fully. Output retains the alternate
 colour encoding, even at zero weight, and Formula (2)'s offsets still apply.
-This API does not perform a general HDR display tone curve or colour conversion.
+This API does not perform a general HDR display tone curve. Explicit requested
+output NCLX conversion happens after the root reconstruction, as described below.
 
 Supported primaries are BT.709, P3-D65 and BT.2020. Supported transfer curves
 are linear, sRGB, BT.709/BT.601, PQ and HLG. PQ uses the BT.2408 reference-white
@@ -50,9 +51,23 @@ encoding. This decoded pixel depth is independent of the writer's caller-supplie
 no full-resolution floating-point gain raster is allocated.
 
 The default root `tmap` output preserves its alternate encoding instead of
-silently tagging PQ pixels as sRGB. Explicit requested-output transfer/primaries
-changes currently return unsupported. General HDR-to-SDR display tone mapping
-is not part of this implementation.
+silently tagging PQ pixels as sRGB. Explicit requested-output NCLX uses the
+supported EOTF, linear primaries matrix and requested OETF before the ordinary
+chroma/range conversion. Unspecified primaries or transfer inherit the input.
+This conversion also applies to an unknown-version baseline fallback, and never
+changes a nested `tmap` operation. A changed encoding drops the original ICC
+property, which would describe different samples. General HDR-to-SDR display
+tone mapping is not part of this implementation; integer output clips excursions
+outside its representable range.
+
+For a premultiplied baseline, reconstruction divides the decoded RGB sample
+values by normalized alpha before linearization, applies the gain and offsets
+to straight colours, and premultiplies the alternate encoded output again.
+Alpha values are retained (with depth expansion if needed), zero-alpha output
+is black, and the source pixels are unchanged. Requested output conversion
+likewise operates on straight colours before restoring premultiplication.
+Monochrome baseline samples expand directly to neutral RGB, including when
+alpha is present, without introducing a rounded YCbCr neutral-chroma bias.
 
 ## Writer
 
@@ -102,7 +117,7 @@ non-conforming. Unsupported sample formats still return an explicit error.
   reference-white interpretation. Only the explicitly recognized ICC-to-CICP
   subset described above is reconstructed without a CMS.
 - HLG is limited to the reference viewing conditions described above.
-- Unsupported YCbCr matrices, premultiplied baseline alpha and tile-only `tmap`
+- Unsupported YCbCr matrices and tile-only `tmap`
   decode return explicit errors.
 - No Apple legacy or vendor missing-version heuristics are part of the strict parser.
 

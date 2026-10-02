@@ -37,4 +37,11 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     std::optional<nclx_profile> baseline_colour_override = std::nullopt,
     std::optional<double> target_headroom = std::nullopt);
 
+// Root output conversion, after all nested ISO gain-map operations complete.
+Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
+    const std::shared_ptr<HeifPixelImage>& image,
+    const heif_color_profile_nclx& requested,
+    const heif_decoding_options& options,
+    const heif_security_limits* limits);
+
 #endif

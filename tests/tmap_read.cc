@@ -30,6 +30,7 @@
 #include "libheif/heif_experimental.h"
 #include "test_utils.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -103,7 +104,8 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t primary_item = 1,
     bool rotate_base = false,
     bool duplicate_dimg_entry = false,
-    const GainMapMetadata* override_metadata = nullptr)
+    const GainMapMetadata* override_metadata = nullptr,
+    bool premultiplied_base = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -132,15 +134,16 @@ std::vector<uint8_t> build_tmap_file(
   auto pitm = make_box("pitm", pitm_payload, true);
 
   std::vector<uint8_t> iinf_payload;
-  put_u16_be(iinf_payload, 3);
-  for (uint16_t id = 1; id <= 3; ++id) {
+  const uint16_t item_count = premultiplied_base ? 4 : 3;
+  put_u16_be(iinf_payload, item_count);
+  for (uint16_t id = 1; id <= item_count; ++id) {
     std::vector<uint8_t> infe;
     put_u16_be(infe, id);
     put_u16_be(infe, 0);
     append_fourcc(infe, id == 3 ? "tmap" : "mski");
     infe.push_back(0);
     append(iinf_payload,
-           make_box("infe", infe, true, 2, id == 2 ? 1 : 0));
+           make_box("infe", infe, true, 2, id == 2 || id == 4 ? 1 : 0));
   }
   auto iinf = make_box("iinf", iinf_payload, true);
 
@@ -164,10 +167,15 @@ std::vector<uint8_t> build_tmap_file(
   if (rotate_base) {
     append(ipco_payload, make_box("irot", std::vector<uint8_t>{1}));
   }
+  if (premultiplied_base) {
+    const char auxiliary_type[] = "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha";
+    const std::vector<uint8_t> auxiliary_payload(auxiliary_type, auxiliary_type + sizeof(auxiliary_type));
+    append(ipco_payload, make_box("auxC", auxiliary_payload, true));
+  }
   auto ipco = make_box("ipco", ipco_payload);
 
   std::vector<uint8_t> ipma_payload;
-  put_u32_be(ipma_payload, 3);
+  put_u32_be(ipma_payload, item_count);
 
   put_u16_be(ipma_payload, 1);
   ipma_payload.push_back(rotate_base ? 4 : 3);
@@ -188,6 +196,13 @@ std::vector<uint8_t> build_tmap_file(
   ipma_payload.push_back(2);
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(5);
+  if (premultiplied_base) {
+    put_u16_be(ipma_payload, 4);
+    ipma_payload.push_back(3);
+    ipma_payload.push_back(0x80 | 1);
+    ipma_payload.push_back(0x80 | 2);
+    ipma_payload.push_back(0x80 | (rotate_base ? 7 : 6));
+  }
 
   auto ipma = make_box("ipma", ipma_payload, true);
 
@@ -205,20 +220,25 @@ std::vector<uint8_t> build_tmap_file(
   }
   idat_payload.insert(
       idat_payload.end(), tmap_payload.begin(), tmap_payload.end());
+  if (premultiplied_base) {
+    std::fill_n(idat_payload.begin(), width * height, uint8_t{51});
+    append(idat_payload, std::vector<uint8_t>{0, 85, 85, 255});
+  }
   auto idat = make_box("idat", idat_payload);
 
   std::vector<uint8_t> iloc_payload;
   iloc_payload.push_back((4 << 4) | 4);
   iloc_payload.push_back(0);
-  put_u16_be(iloc_payload, 3);
+  put_u16_be(iloc_payload, item_count);
 
-  const uint32_t item_lengths[3] = {
+  const uint32_t item_lengths[4] = {
       width * height,
       width * height,
-      static_cast<uint32_t>(tmap_payload.size())
+      static_cast<uint32_t>(tmap_payload.size()),
+      width * height
   };
   uint32_t offset = 0;
-  for (uint16_t id = 1; id <= 3; ++id) {
+  for (uint16_t id = 1; id <= item_count; ++id) {
     put_u16_be(iloc_payload, id);
     put_u16_be(iloc_payload, 0x0001);
     put_u16_be(iloc_payload, 0);
@@ -249,6 +269,18 @@ std::vector<uint8_t> build_tmap_file(
     put_u16_be(duplicate_payload, 1);
     put_u16_be(duplicate_payload, 1);
     append(iref_payload, make_box("dimg", duplicate_payload));
+  }
+  if (premultiplied_base) {
+    std::vector<uint8_t> auxl;
+    put_u16_be(auxl, 4);
+    put_u16_be(auxl, 1);
+    put_u16_be(auxl, 1);
+    append(iref_payload, make_box("auxl", auxl));
+    std::vector<uint8_t> prem;
+    put_u16_be(prem, 1);
+    put_u16_be(prem, 1);
+    put_u16_be(prem, 4);
+    append(iref_payload, make_box("prem", prem));
   }
   auto iref = make_box("iref", iref_payload, true);
 
@@ -648,6 +680,99 @@ TEST_CASE("tmap reconstructs synthetic uncompressed inputs")
   heif_context_free(context);
 }
 
+TEST_CASE("Requested tmap output converts PQ samples to linear RGB")
+{
+  const bool fallback = GENERATE(false, true);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  const auto file = build_tmap_file(2, 0, fallback ? 1 : 0, 2, 2, 1, false, false, &metadata);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->output_image_nclx_profile = heif_nclx_color_profile_alloc();
+  REQUIRE(options->output_image_nclx_profile);
+  auto* requested = options->output_image_nclx_profile;
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  const double linear = std::pow((127.0 / 255 + 0.055) / 1.055, 2.4) * (fallback ? 1 : 2);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t stride = 0;
+    const auto* pixels = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, channel, &stride));
+    REQUIRE(pixels);
+    REQUIRE(pixels[0] == Catch::Approx(std::round(linear * 65535)).margin(4));
+  }
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
+  REQUIRE(profile->color_primaries == requested->color_primaries);
+  REQUIRE(profile->transfer_characteristics == requested->transfer_characteristics);
+  heif_nclx_color_profile_free(profile);
+  heif_image_release(image);
+
+  requested->transfer_characteristics = heif_transfer_characteristic_ITU_R_BT_470_6_System_M;
+  image = nullptr;
+  REQUIRE(heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options).code ==
+          heif_error_Unsupported_feature);
+  REQUIRE(image == nullptr);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root output")
+{
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata, true);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  REQUIRE(heif_image_is_premultiplied_alpha(image));
+  size_t stride = 0;
+  const auto* colour = heif_image_get_plane_readonly2(image, heif_channel_R, &stride);
+  REQUIRE(colour);
+  REQUIRE(reinterpret_cast<const uint16_t*>(colour)[0] == 0);
+  const double linear = (std::pow((0.6 + 0.055) / 1.055, 2.4) + 0.125) * 2 - 0.0625;
+  REQUIRE(reinterpret_cast<const uint16_t*>(colour)[1] == Catch::Approx(linear / 3 * 65535).margin(5));
+  size_t alpha_stride = 0;
+  const auto* alpha = heif_image_get_plane_readonly2(image, heif_channel_Alpha, &alpha_stride);
+  REQUIRE(alpha);
+  REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[0] == 0);
+  REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[1] == 21845);
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 
 TEST_CASE("Target headroom decode matches independent ISO and PQ values in both directions")
 {
@@ -743,6 +868,46 @@ TEST_CASE("Target headroom API rejects invalid arguments and preserves version f
   heif_image_release(image);
   heif_image_handle_release(tmap);
   heif_context_free(ctx);
+}
+
+TEST_CASE("Requested root output leaves nested PQ and HLG tmap colour operations canonical")
+{
+  const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  const auto file = build_two_tmap_file(3, transfer);
+  auto* context = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(context, file.data(), file.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* outer = nullptr;
+  REQUIRE(heif_context_get_image_handle(context, 5, &outer).code == heif_error_Ok);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  const double baseline = std::pow((127.0 / 255 + 0.055) / 1.055, 2.4);
+  const double log_gain = -1 + 2 * 127.0 / 255;
+  for (double target : {1.0, 2.0}) {
+    heif_image* image = nullptr;
+    const auto error = heif_decode_tone_map_image(outer, &image, heif_colorspace_RGB,
+                                                  heif_chroma_444, options, target);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    size_t stride = 0;
+    const auto* pixels = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_R, &stride));
+    REQUIRE(pixels);
+    // Inner always applies fully; only the root gets the target weight.
+    const double expected = baseline * std::exp2((1 + target / 2) * log_gain);
+    REQUIRE(pixels[0] == Catch::Approx(std::round(expected * 65535)).margin(5));
+    heif_image_release(image);
+  }
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(outer);
+  heif_context_free(context);
 }
 
 TEST_CASE("multiple tmap items can share the same base")
