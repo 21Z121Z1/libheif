@@ -147,7 +147,9 @@ typedef struct heif_gain_map_image_options
 {
   uint32_t version;
   // Describes the sample-domain matrix/range, with CP=2 and TC=2.
-  // NULL defaults to full-range identity for RGB and unspecified for mono.
+  // NULL defaults to full-range identity for RGB, or BT.601 when the codec
+  // requires subsampled YCbCr, and unspecified for mono. Explicit identity
+  // requires a codec configured for 4:4:4.
   // YCbCr input requires explicit sample-domain signalling.
   const heif_color_profile_nclx* nclx;
   int hidden;

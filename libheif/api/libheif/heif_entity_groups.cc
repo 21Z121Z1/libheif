@@ -88,7 +88,9 @@ heif_error add_entity_group(heif_context* ctx,
     }
   }
 
-  auto group_id = file->get_id_creator().get_new_id(IDCreator::Namespace::entity_group);
+  // ImageIO does not discover altr tone maps when the group ID aliases an item
+  // ID. Reserve it in every namespace, including for subsequently added items.
+  auto group_id = file->get_id_creator().get_new_id_noncolliding();
   if (!group_id) {
     return group_id.error_struct(ctx->context.get());
   }

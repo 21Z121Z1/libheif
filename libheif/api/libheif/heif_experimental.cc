@@ -380,12 +380,23 @@ heif_error heif_context_encode_gain_map_image(
               "Gain-map raster requires one or three colour components without alpha"};
     }
 
+    heif_colorspace codec_space = space;
+    heif_chroma codec_chroma = source->get_chroma_format();
+    if (encoder->plugin->plugin_api_version >= 2) {
+      encoder->plugin->query_input_colorspace2(encoder->encoder, &codec_space, &codec_chroma);
+    }
+    else {
+      encoder->plugin->query_input_colorspace(&codec_space, &codec_chroma);
+    }
+    const bool subsampled = codec_space == heif_colorspace_YCbCr &&
+                            (codec_chroma == heif_chroma_420 || codec_chroma == heif_chroma_422);
     heif_color_profile_nclx signalling{};
     signalling.version = 1;
     signalling.color_primaries = heif_color_primaries_unspecified;
     signalling.transfer_characteristics = heif_transfer_characteristic_unspecified;
     signalling.matrix_coefficients = space == heif_colorspace_monochrome ?
-        heif_matrix_coefficients_unspecified : heif_matrix_coefficients_RGB_GBR;
+        heif_matrix_coefficients_unspecified : (subsampled ?
+        heif_matrix_coefficients_ITU_R_BT_601_6 : heif_matrix_coefficients_RGB_GBR);
     signalling.full_range_flag = 1;
     if (gain_options && gain_options->nclx) {
       signalling = *gain_options->nclx;
@@ -399,6 +410,10 @@ heif_error heif_context_encode_gain_map_image(
         signalling.full_range_flag > 1 || signalling.version != 1) {
       return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
               "Gain-map NCLX requires CP=2, TC=2 and a valid range flag"};
+    }
+    if (signalling.matrix_coefficients == heif_matrix_coefficients_RGB_GBR && subsampled) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "Identity-matrix gain encoding requires a codec configured for 4:4:4"};
     }
     // Copy pixels with existing memory accounting. Never change a caller's
     // colour metadata or subject logical gain samples to a transfer curve.
@@ -425,6 +440,11 @@ heif_error heif_context_encode_gain_map_image(
     auto result = ctx->context->encode_image(pixels, encoder, *options,
                                              heif_image_input_class_normal);
     if (!result) { return result.error_struct(ctx->context.get()); }
+    // Ordinary RGB-to-YCbCr conversion fills unspecified CP/TC with sRGB
+    // defaults in its working raster. The emitted colr retains our exact
+    // signalling; the writer-side handle must describe that same property.
+    // Update the cached description without adding a duplicate colr box.
+    (*result)->ImageDescription::set_color_profile_nclx(nclx);
     if (!gain_options || gain_options->hidden) {
       if (Error error = ctx->context->set_item_hidden((*result)->get_id(), true)) {
         return error.error_struct(ctx->context.get());

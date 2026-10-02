@@ -33,7 +33,7 @@ namespace {
 Error unsupported_colour()
 {
   return {heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
-          "ISO tone-map reconstruction supports CICP BT.709/P3-D65/BT.2020 and sRGB/BT.709/linear/PQ only"};
+          "Unsupported ISO tone-map colour description"};
 }
 
 Error unsupported_icc()
@@ -60,6 +60,11 @@ constexpr double pq_c1 = 3424.0 / 4096.0;
 constexpr double pq_c2 = 2413.0 / 128.0;
 constexpr double pq_c3 = 2392.0 / 128.0;
 constexpr double pq_scale = 10000.0 / 203.0;
+constexpr double hlg_scale = 1000.0 / 203.0;
+constexpr double hlg_gamma = 1.2;
+constexpr double hlg_a = 0.17883277;
+const double hlg_b = 1.0 - 4.0 * hlg_a;
+const double hlg_c = 0.5 - hlg_a * std::log(4.0 * hlg_a);
 
 constexpr uint32_t icc_sig(char a, char b, char c, char d)
 {
@@ -547,7 +552,7 @@ Result<nclx_profile> nclx_from_matrix_trc(const IccView& view)
 bool gain_map_supports_transfer(uint16_t transfer)
 {
   return transfer == 1 || transfer == 6 || transfer == 8 || transfer == 13 ||
-         transfer == 16;
+         transfer == 16 || transfer == 18;
 }
 
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
@@ -586,6 +591,72 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
     }
     default: return unsupported_colour();
   }
+}
+
+namespace {
+Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile, bool decode)
+{
+  auto xyz = to_xyz(profile.m_colour_primaries);
+  if (!xyz) { return xyz.error(); }
+  GainMapRGB linear{};
+  for (size_t c = 0; c < 3; ++c) {
+    if (!std::isfinite(value[c])) { return invalid_value(); }
+    if (decode) {
+      const double v = std::clamp(value[c], 0.0, 1.0);
+      linear[c] = v <= 0.5 ? v * v / 3.0 :
+                            (std::exp((v - hlg_c) / hlg_a) + hlg_b) / 12.0;
+    }
+    else {
+      linear[c] = std::max(value[c], 0.0) / hlg_scale;
+    }
+  }
+
+  // BT.2100 Table 5: the OOTF depends on luminance, not independent
+  // per-channel powers. Obtain luminance from the declared RGB primaries.
+  const double luminance = (*xyz)[1][0] * linear[0] +
+                           (*xyz)[1][1] * linear[1] + (*xyz)[1][2] * linear[2];
+  if (!std::isfinite(luminance)) { return invalid_value(); }
+  if (luminance <= 0) { return GainMapRGB{0, 0, 0}; }
+  const double scale = decode ? hlg_scale * std::pow(luminance, hlg_gamma - 1.0) :
+                                std::pow(luminance, 1.0 / hlg_gamma - 1.0);
+  GainMapRGB result{};
+  for (size_t c = 0; c < 3; ++c) {
+    const double v = linear[c] * scale;
+    result[c] = decode ? v :
+                (v <= 1.0 / 12.0 ? std::sqrt(3.0 * v) :
+                                  hlg_a * std::log(12.0 * v - hlg_b) + hlg_c);
+    if (!std::isfinite(result[c])) { return invalid_value(); }
+  }
+  return result;
+}
+}  // namespace
+
+Result<GainMapRGB> gain_map_decode_rgb(const GainMapRGB& value, const nclx_profile& profile)
+{
+  if (profile.m_transfer_characteristics == 18) {
+    return hlg_rgb(value, profile, true);
+  }
+  GainMapRGB result{};
+  for (size_t c = 0; c < 3; ++c) {
+    auto component = gain_map_decode_transfer(value[c], profile.m_transfer_characteristics);
+    if (!component) { return component.error(); }
+    result[c] = *component;
+  }
+  return result;
+}
+
+Result<GainMapRGB> gain_map_encode_rgb(const GainMapRGB& value, const nclx_profile& profile)
+{
+  if (profile.m_transfer_characteristics == 18) {
+    return hlg_rgb(value, profile, false);
+  }
+  GainMapRGB result{};
+  for (size_t c = 0; c < 3; ++c) {
+    auto component = gain_map_encode_transfer(value[c], profile.m_transfer_characteristics);
+    if (!component) { return component.error(); }
+    result[c] = *component;
+  }
+  return result;
 }
 
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value)

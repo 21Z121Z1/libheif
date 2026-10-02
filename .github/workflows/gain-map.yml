@@ -10,6 +10,66 @@ permissions:
   contents: read
 
 jobs:
+  ultrahdr-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build independent pinned libultrahdr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libjpeg-dev
+          git clone https://github.com/google/libultrahdr.git /tmp/ultrahdr
+          git -C /tmp/ultrahdr checkout 66821e0a261aa3a06c0e7c889f52eced52850be1
+          cmake -S /tmp/ultrahdr -B /tmp/ultrahdr-build \
+            -DUHDR_ENABLE_HEIF=OFF -DUHDR_BUILD_TESTS=OFF \
+            -DUHDR_BUILD_EXAMPLES=OFF -DUHDR_BUILD_DEPS=OFF
+          cmake --build /tmp/ultrahdr-build --parallel 2
+      - name: Check bidirectional Annex C bytes
+        run: |
+          cmake --preset testing -S . -B build-ultrahdr \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
+            -DLIBHEIF_ULTRAHDR_SOURCE_DIR=/tmp/ultrahdr \
+            -DLIBHEIF_ULTRAHDR_LIBRARY=/tmp/ultrahdr-build/libuhdr.a
+          cmake --build build-ultrahdr --target gain_map_ultrahdr --parallel 2
+          ctest --test-dir build-ultrahdr -R '^gain_map_ultrahdr$' --output-on-failure
+
+  apple-frameworks:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build HEVC reader and writer
+        run: |
+          brew install cmake ninja pkg-config libde265 x265 aom
+          cmake --preset testing -G Ninja -S . -B build-apple \
+            -DENABLE_EXPERIMENTAL_FEATURES=ON \
+            -DENABLE_PLUGIN_LOADING=OFF -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=ON -DWITH_LIBDE265_PLUGIN=OFF \
+            -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
+            -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF
+          cmake --build build-apple --target tmap_write tmap_interop --parallel 3
+      - name: Verify independent Apple HDR pixels and producer round trip
+        run: |
+          LIBHEIF_TMAP_WRITE_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_write 'Generate synthetic*'
+          swift scripts/check-tmap-apple.swift build-apple/synthetic
+          LIBHEIF_TMAP_APPLE_FIXTURE=build-apple/synthetic/apple-mono.heic \
+            LIBHEIF_TMAP_INTEROP_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_interop
+      - name: Preserve synthetic interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: tmap-apple-synthetic
+          path: build-apple/synthetic/
+
   conformance:
     runs-on: ubuntu-24.04
     strategy:
@@ -33,15 +93,15 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
           if [ "${{ matrix.experimental }}" = "ON" ]; then
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write entity_groups --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write id_creator entity_groups --parallel 2
           else
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color entity_groups --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color id_creator entity_groups --parallel 2
           fi
       - name: Run metadata, reconstruction and graph regressions
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|entity_groups' --output-on-failure
+        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|id_creator|entity_groups' --output-on-failure
       - name: Check stable public headers and exported symbols
         run: |
           ./scripts/check-c-headers.sh

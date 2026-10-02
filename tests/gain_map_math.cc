@@ -106,6 +106,42 @@ TEST_CASE("D65 primaries conversions preserve white and match reference red")
   REQUIRE_FALSE(gain_map_primaries_matrix(2, 9));
 }
 
+TEST_CASE("HLG reference EOTF includes the luminance-dependent OOTF")
+{
+  nclx_profile profile;
+  profile.set_colour_primaries(9);
+  profile.set_transfer_characteristics(18);
+  profile.set_matrix_coefficients(0);
+  profile.set_full_range_flag(true);
+  auto white = gain_map_decode_rgb({1, 1, 1}, profile);
+  REQUIRE(white);
+  REQUIRE((*white)[0] == Catch::Approx(1000.0 / 203.0).margin(1e-8));
+  auto reference_white = gain_map_decode_rgb({0.75, 0.75, 0.75}, profile);
+  REQUIRE(reference_white);
+  REQUIRE((*reference_white)[0] == Catch::Approx(203.152146 / 203.0).margin(1e-8));
+  auto red = gain_map_decode_rgb({0.5, 0, 0}, profile);
+  REQUIRE(red);
+  // At signal 0.5, scene R=1/12 and scene luminance=0.262700212/12.
+  const double expected = (1000.0 / 203.0) / 12.0 * std::pow(0.262700212 / 12.0, 0.2);
+  REQUIRE((*red)[0] == Catch::Approx(expected).margin(1e-10));
+  REQUIRE((*red)[1] == 0);
+  REQUIRE((*red)[2] == 0);
+  for (const GainMapRGB input : {GainMapRGB{0, 0, 0}, GainMapRGB{0.2, 0.7, 0.9},
+                                GainMapRGB{1, 1, 1}}) {
+    auto decoded = gain_map_decode_rgb(input, profile);
+    REQUIRE(decoded);
+    auto encoded = gain_map_encode_rgb(*decoded, profile);
+    REQUIRE(encoded);
+    for (size_t c = 0; c < 3; ++c) {
+      REQUIRE((*encoded)[c] == Catch::Approx(input[c]).margin(1e-9));
+    }
+  }
+  REQUIRE_FALSE(gain_map_decode_rgb({std::numeric_limits<double>::infinity(), 0, 0}, profile));
+  REQUIRE_FALSE(gain_map_encode_rgb({std::numeric_limits<double>::quiet_NaN(), 0, 0}, profile));
+  profile.set_colour_primaries(2);
+  REQUIRE_FALSE(gain_map_decode_rgb({1, 1, 1}, profile));
+}
+
 namespace {
 std::shared_ptr<HeifPixelImage> make_pixels(uint32_t width, bool mono, uint16_t sample,
                                             uint16_t transfer, uint8_t bit_depth = 16)

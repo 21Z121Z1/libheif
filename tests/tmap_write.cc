@@ -31,9 +31,14 @@
 #include "libheif/heif_properties.h"
 #include "libheif/heif_entity_groups.h"
 #include "test_utils.h"
+#include "gain_map_color.h"
 
 #include <cstdint>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 
@@ -207,6 +212,115 @@ bool item_has_property(
 }
 
 }  // namespace
+
+TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
+{
+  const char* directory = std::getenv("LIBHEIF_TMAP_WRITE_DIR");
+  if (!directory) { return; }
+  std::filesystem::create_directories(directory);
+  REQUIRE(heif_have_encoder_for_format(heif_compression_HEVC));
+  for (bool rgb : {false, true}) {
+    auto* ctx = heif_context_alloc();
+    REQUIRE(ctx);
+    auto* encoder = get_encoder_or_skip_test(heif_compression_HEVC);
+    REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
+    REQUIRE(heif_encoder_set_logging_level(encoder, 0).code == heif_error_Ok);
+    const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+        heif_transfer_characteristic_IEC_61966_2_1,
+        heif_matrix_coefficients_ITU_R_BT_601_6, true);
+    const auto alternate = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+        heif_transfer_characteristic_ITU_R_BT_2100_0_PQ,
+        heif_matrix_coefficients_RGB_GBR, true);
+    heif_image* base_pixels = nullptr;
+    REQUIRE(heif_image_create(64, 64, heif_colorspace_RGB,
+                             heif_chroma_444, &base_pixels).code == heif_error_Ok);
+    for (auto c : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+      REQUIRE(heif_image_add_plane(base_pixels, c, 64, 64, 8).code == heif_error_Ok);
+      int stride = 0;
+      auto* plane = heif_image_get_plane(base_pixels, c, &stride);
+      REQUIRE(plane);
+      for (int y = 0; y < 64; ++y) { std::memset(plane + y * stride, 192, 64); }
+    }
+    REQUIRE(heif_image_set_nclx_color_profile(base_pixels, &baseline).code == heif_error_Ok);
+    auto* encoding = heif_encoding_options_alloc();
+    encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+    heif_image_handle* base = nullptr;
+    auto error = heif_context_encode_image(ctx, base_pixels, encoder, encoding, &base);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    heif_encoding_options_free(encoding);
+    heif_image_release(base_pixels);
+
+    heif_image* gain_pixels = nullptr;
+    REQUIRE(heif_image_create(64, 64, rgb ? heif_colorspace_RGB : heif_colorspace_monochrome,
+        rgb ? heif_chroma_444 : heif_chroma_monochrome, &gain_pixels).code == heif_error_Ok);
+    const std::vector<heif_channel> channels = rgb ?
+        std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B} :
+        std::vector<heif_channel>{heif_channel_Y};
+    for (auto c : channels) {
+      REQUIRE(heif_image_add_plane(gain_pixels, c, 64, 64, 8).code == heif_error_Ok);
+      int stride = 0;
+      auto* plane = heif_image_get_plane(gain_pixels, c, &stride);
+      REQUIRE(plane);
+      const uint8_t value = c == heif_channel_G ? 128 : (c == heif_channel_B ? 64 : 255);
+      for (int y = 0; y < 64; ++y) { std::memset(plane + y * stride, value, 64); }
+    }
+    heif_image_handle* gain = nullptr;
+    error = heif_context_encode_gain_map_image(ctx, gain_pixels, encoder, nullptr, nullptr, &gain);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    heif_image_release(gain_pixels);
+    auto metadata = make_metadata();
+    metadata.channel_count = rgb ? 3 : 1;
+    for (uint8_t c = 0; c < metadata.channel_count; ++c) {
+      metadata.channels[c] = metadata.channels[0];
+      metadata.channels[c].gain_map_min = {0, 1};
+      metadata.channels[c].gain_map_max = {c == 0 ? 2 : 1, 1};
+    }
+    auto* options = heif_tone_map_options_alloc();
+    options->alternate_nclx = &alternate;
+    options->pixi_num_channels = 3;
+    for (uint8_t& bits : options->pixi_bits_per_channel) { bits = 16; }
+    heif_image_handle* tmap = nullptr;
+    error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, options, &tmap);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    auto* decode_options = heif_decoding_options_alloc();
+    decode_options->output_image_nclx_profile_passthrough = true;
+    heif_image* reconstructed = nullptr;
+    error = heif_decode_image(tmap, &reconstructed, heif_colorspace_RGB, heif_chroma_444, decode_options);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    const double base_linear = std::pow((192.0 / 255.0 + 0.055) / 1.055, 2.4);
+    uint8_t component = 0;
+    for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+      int stride = 0;
+      const auto* plane = heif_image_get_plane_readonly(reconstructed, channel, &stride);
+      REQUIRE(plane);
+      uint16_t sample = 0;
+      std::memcpy(&sample, plane, sizeof(sample));
+      auto linear = gain_map_decode_transfer(sample / 65535.0, 16);
+      REQUIRE(linear);
+      const double log_gain = !rgb || component == 0 ? 2.0 :
+                              (component == 1 ? 128.0 : 64.0) / 255.0;
+      REQUIRE(*linear == Catch::Approx(base_linear * std::exp2(log_gain)).margin(0.025));
+      ++component;
+    }
+    heif_image_release(reconstructed);
+    heif_decoding_options_free(decode_options);
+    const auto bytes = write_context(ctx);
+    const auto path = std::filesystem::path(directory) / (rgb ? "libheif-rgb-pq.heic" : "libheif-mono-pq.heic");
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(output.good());
+    heif_image_handle_release(tmap);
+    heif_tone_map_options_free(options);
+    heif_image_handle_release(gain);
+    heif_image_handle_release(base);
+    heif_encoder_release(encoder);
+    heif_context_free(ctx);
+  }
+}
 
 TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
 {

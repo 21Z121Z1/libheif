@@ -1169,7 +1169,11 @@ static heif_error x265_encode_sequence_frame(void* encoder_raw, const heif_image
 #if X265_BUILD == 212
   // In x265 build version 212, the signature of the encoder_encode() function was changed. But it was changed back in version 213.
   // https://bitbucket.org/multicoreware/x265_git/issues/952/crash-in-libheif-tests
-  x265_picture* out_pic = NULL;
+  // The pointer is an output destination, not storage allocated by x265.
+  // A null destination suppresses picture metadata (and previously lost NALs).
+  x265_picture output_picture;
+  api->picture_init(encoder->param, &output_picture);
+  x265_picture* out_pic = &output_picture;
   api->encoder_encode(encoder->encoder,
                       &nals,
                       &num_nals,
@@ -1210,7 +1214,9 @@ static heif_error x265_end_sequence_encoding(void* encoder_raw)
   uint32_t num_nals = 0;
 
 #if X265_BUILD == 212
-  x265_picture* out_pic = NULL;
+  x265_picture output_picture;
+  api->picture_init(encoder->param, &output_picture);
+  x265_picture* out_pic = &output_picture;
   int result = api->encoder_encode(encoder->encoder,
                                    &nals,
                                    &num_nals,
@@ -1233,8 +1239,9 @@ static heif_error x265_end_sequence_encoding(void* encoder_raw)
     encoder->append_nal_packets(nals, num_nals, frameNr);
   }
 
-  encoder->api->param_free(encoder->param);
-  encoder->param = nullptr;
+  // Track_Visual may flush repeatedly until all delayed frames are drained.
+  // Keep the parameters for picture_init(); the next start or free_encoder
+  // releases them together with the encoder.
 
   return heif_error_ok;
 }

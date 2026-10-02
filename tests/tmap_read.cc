@@ -284,7 +284,7 @@ heif_image_handle* open_tmap(
 
 
 std::vector<uint8_t> build_two_tmap_file(
-    uint16_t second_base_id)
+    uint16_t second_base_id, uint16_t transfer = 16)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -336,7 +336,7 @@ std::vector<uint8_t> build_two_tmap_file(
       "mskC", std::vector<uint8_t>{8}, true);
   auto base_colr = make_nclx(1, 13, 1, true);
   auto gain_colr = make_nclx(2, 2, 0, true);
-  auto tmap_colr = make_nclx(9, 16, 9, true);
+  auto tmap_colr = make_nclx(9, transfer, 9, true);
 
   std::vector<uint8_t> ipco_payload;
   append(ipco_payload, ispe);      // 1
@@ -737,7 +737,8 @@ TEST_CASE("Unknown minimum metadata version decodes baseline without alternate c
 
 TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
 {
-  const auto file = build_two_tmap_file(3);
+  const uint16_t transfer = GENERATE(uint16_t{16}, uint16_t{18});
+  const auto file = build_two_tmap_file(3, transfer);
   auto* ctx = heif_context_alloc();
   REQUIRE(heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr).code == heif_error_Ok);
   heif_image_handle* handle = nullptr;
@@ -751,7 +752,7 @@ TEST_CASE("Nested tmap decode fully reconstructs both derived nodes")
   heif_color_profile_nclx* profile = nullptr;
   REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
   REQUIRE(profile->color_primaries == heif_color_primaries_ITU_R_BT_2020_2_and_2100_0);
-  REQUIRE(profile->transfer_characteristics == heif_transfer_characteristic_ITU_R_BT_2100_0_PQ);
+  REQUIRE(profile->transfer_characteristics == transfer);
   heif_nclx_color_profile_free(profile);
   heif_image_release(image);
   heif_image_handle_release(handle);

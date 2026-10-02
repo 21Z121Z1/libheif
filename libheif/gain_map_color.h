@@ -37,6 +37,11 @@ using GainMapMatrix = std::array<GainMapRGB, 3>;
 bool gain_map_supports_transfer(uint16_t transfer);
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer);
 Result<double> gain_map_encode_transfer(double value, uint16_t transfer);
+// HLG is a luminance-dependent RGB transform. Use the BT.2100 reference
+// display (1000 cd/m2, gamma 1.2, zero black) and HDR reference white 203.
+// Scalar transfer helpers intentionally cannot interpret HLG.
+Result<GainMapRGB> gain_map_decode_rgb(const GainMapRGB& value, const nclx_profile& profile);
+Result<GainMapRGB> gain_map_encode_rgb(const GainMapRGB& value, const nclx_profile& profile);
 Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target);
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value);
 

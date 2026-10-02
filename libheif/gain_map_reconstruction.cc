@@ -155,9 +155,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   }
   if (!gain_map_supports_transfer(baseline.m_transfer_characteristics) ||
       !gain_map_supports_transfer(alternate.m_transfer_characteristics)) {
-    return unsupported("Unsupported tone-map transfer function (including unconfigured HLG)");
+    return unsupported("Unsupported tone-map transfer function");
   }
-  // HLG and unspecified matrices cannot be guessed from unspecified primaries.
+  // Matrix interpretation cannot be guessed from unspecified primaries.
   const uint16_t gain_matrix = gain->get_color_profile_nclx().m_matrix_coefficients;
   if (gain->get_colorspace() == heif_colorspace_YCbCr &&
       gain_matrix != 0 && gain_matrix != 1 && gain_matrix != 5 &&
@@ -217,12 +217,11 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       const uint32_t x0 = std::min(static_cast<uint32_t>(gx), gain_width - 1);
       const uint32_t x1 = std::min(x0 + 1, gain_width - 1);
       const double fx = gx - x0;
-      GainMapRGB linear{};
-      for (size_t c = 0; c < 3; ++c) {
-        auto value = gain_map_decode_transfer(base_planes.sample(c, x, y), baseline.m_transfer_characteristics);
-        if (!value) { return value.error(); }
-        linear[c] = *value;
-      }
+      auto decoded = gain_map_decode_rgb({base_planes.sample(0, x, y),
+                                         base_planes.sample(1, x, y),
+                                         base_planes.sample(2, x, y)}, baseline);
+      if (!decoded) { return decoded.error(); }
+      GainMapRGB linear = *decoded;
       linear = gain_map_transform(*before, linear);
       for (size_t c = 0; c < 3; ++c) {
         const auto& channel = metadata.channels[metadata.channel_count == 1 ? 0 : c];
@@ -241,11 +240,11 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
         linear[c] = *value;
       }
       linear = gain_map_transform(*after, linear);
+      auto encoded = gain_map_encode_rgb(linear, alternate);
+      if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
-        auto value = gain_map_encode_transfer(linear[c], alternate.m_transfer_characteristics);
-        if (!value) { return value.error(); }
         out[c][size_t(y) * strides[c] + x] = static_cast<uint16_t>(
-            std::round(std::clamp(*value, 0.0, 1.0) * 65535.0));
+            std::round(std::clamp((*encoded)[c], 0.0, 1.0) * 65535.0));
       }
     }
   }
