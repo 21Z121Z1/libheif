@@ -63,9 +63,11 @@ regressions that failed on this Mac before the correction.
 ## Conformance assessment and next bounded goal
 
 Assessment baseline for this continuation: `c54744f5079b57eba041d58c4cada27a7b86a896`.
-This includes subsequent upstream fixes and the corrected clause 4.4 requirement
-of at least eight bits per gain component. Writer rejection of lower-depth input
-and tolerant reader behaviour are distinct policies.
+This includes subsequent upstream fixes and the writer's eight-bit minimum
+policy. Direct inspection of English clause 4.4 (page 3, PDF page 9) confirms
+that at least eight bits is recommended, not mandatory. Writer rejection of
+lower-depth input is a supported-subset policy; lower-depth reader inputs are
+not labelled non-conforming solely for that reason.
 
 | Standard surface | Implementation and evidence | Assessment |
 | --- | --- | --- |

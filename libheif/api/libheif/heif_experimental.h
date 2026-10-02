@@ -178,6 +178,8 @@ LIBHEIF_API
 void heif_gain_map_image_options_free(heif_gain_map_image_options* options);
 
 // Input samples are normalized gain data, not an SDR/HDR colour image.
+// This writer supports at least 8 bits per component, following the clause 4.4
+// recommendation; lower-depth input is rejected as a writer policy.
 // Does not modify the input image or select a primary image. NULL gain_options
 // uses defaults (including hidden=true). The encoded gain may be shared.
 LIBHEIF_API

@@ -216,7 +216,7 @@ TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Reader tolerates non-conforming full-range gain maps below 8 bits")
+TEST_CASE("Reader supports full-range gain maps below the recommended 8 bits")
 {
   auto base = make_pixels(1, false, 16384, 8);
   auto gain = make_pixels(1, true, 15, 2, 4);
