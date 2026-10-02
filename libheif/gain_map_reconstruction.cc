@@ -93,6 +93,17 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
     rgb->set_color_profile_nclx(profile);
     return rgb;
   }
+  if (image->get_colorspace() == heif_colorspace_YCbCr) {
+    const auto matrix = profile.m_matrix_coefficients;
+    // Guard both inputs: the generic converter still substitutes NCL for CL
+    // and can use a default matrix for an unspecified colour description.
+    const bool explicit_linear = matrix == 0 || matrix == 1 || matrix == 4 ||
+                                 matrix == 5 || matrix == 6 || matrix == 7 || matrix == 9;
+    const bool derived_linear = matrix == 12 && get_colour_primaries(profile.m_colour_primaries).defined;
+    if (!explicit_linear && !derived_linear) {
+      return unsupported("Unsupported tone-map YCbCr matrix coefficients");
+    }
+  }
   profile.set_matrix_coefficients(0);
   profile.set_full_range_flag(true);
   return convert_colorspace(image, heif_colorspace_RGB, heif_chroma_444,
@@ -178,13 +189,6 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   // Codec matrix/range stays on the raster; the item colour description is
   // used only after conversion to RGB sample values.
   const auto baseline_colour = baseline_colour_override.value_or(GainMapColour(base->get_color_profile_nclx()));
-  // Matrix interpretation cannot be guessed from unspecified primaries.
-  const uint16_t gain_matrix = gain->get_color_profile_nclx().m_matrix_coefficients;
-  if (gain->get_colorspace() == heif_colorspace_YCbCr &&
-      gain_matrix != 0 && gain_matrix != 1 && gain_matrix != 5 &&
-      gain_matrix != 6 && gain_matrix != 9) {
-    return unsupported("Unsupported gain-map YCbCr matrix coefficients");
-  }
   if (base->is_premultiplied_alpha() && !base->has_alpha()) {
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map baseline has no alpha channel"};

@@ -144,7 +144,10 @@ non-conforming. Unsupported sample formats still return an explicit error.
   unsupported. They require a resolved linear RGB application space and a CMS
   strategy; supported matrix/TRC and CICP cases are handled as described above.
 - HLG is limited to the reference viewing conditions described above.
-- Unsupported YCbCr matrices return explicit errors.
+- YCbCr raster conversion supports explicit linear matrices 0, 1, 4, 5, 6, 7
+  and 9, plus matrix 12 when the raster's primaries are defined. Both baseline
+  and gain inputs reject unsupported or unresolved matrices. In particular,
+  BT.2020 constant luminance is not substituted with non-constant luminance.
 - The tile API exposes `tmap` as one logical tile covering the complete coded
   image. Decoding `(0,0)` reconstructs both whole inputs, including their own
   transformations. It does not expose the baseline or gain raster's internal

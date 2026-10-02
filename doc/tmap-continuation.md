@@ -166,3 +166,8 @@ ST 428 equations, with independent high-precision reference values. Logarithmic
 zero signals decode as black because their lower interval cannot be inverted
 uniquely; ST 428 retains its physical 48 cd/m2 white in the shared 203 cd/m2
 normalization. Unsupported raster matrices and profile models remain explicit.
+
+FCC and SMPTE 240 raster matrices now work for baseline and gain inputs, with
+independent full/limited-range RGB and gain expectations. The matrix guard is
+shared by both inputs; a baseline constant-luminance or unspecified matrix
+cannot silently take the generic converter's non-constant/default path.

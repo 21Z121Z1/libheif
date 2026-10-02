@@ -267,6 +267,60 @@ TEST_CASE("Reconstruction reconciles mono pixels with RGB metadata and the rever
   heif_decoding_options_free(options);
 }
 
+TEST_CASE("Tone maps interpret FCC and SMPTE240 raster matrices for both inputs")
+{
+  const uint16_t matrix = GENERATE(uint16_t{4}, uint16_t{7});
+  const bool limited = GENERATE(false, true);
+  const bool colour_is_gain = GENERATE(false, true);
+  auto colour = std::make_shared<HeifPixelImage>();
+  colour->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  for (auto channel : {heif_channel_Y, heif_channel_Cb, heif_channel_Cr}) {
+    REQUIRE_FALSE(colour->add_channel(channel, 1, 1, 16, nullptr));
+  }
+  colour->fill_channel(heif_channel_Y, 32768);
+  colour->fill_channel(heif_channel_Cb, 40000);
+  colour->fill_channel(heif_channel_Cr, 26000);
+  nclx_profile profile;
+  profile.set_colour_primaries(colour_is_gain ? 2 : 1);
+  profile.set_transfer_characteristics(colour_is_gain ? 2 : 8);
+  profile.set_matrix_coefficients(matrix);
+  profile.set_full_range_flag(!limited);
+  colour->set_color_profile_nclx(profile);
+  auto base = colour_is_gain ? make_pixels(1, false, 16384, 8) : colour;
+  auto gain = colour_is_gain ? colour : make_pixels(1, true, 0, 2);
+  auto alternate = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  if (colour_is_gain) {
+    for (auto& channel : metadata.channels) { channel.gain_map_max = {1, 1}; }
+  }
+  const double y = limited ? (32768.0 - 4096) / 56064 : 32768.0 / 65535;
+  const double cb = (40000.0 - 32768) / (limited ? 57344 : 65535);
+  const double cr = (26000.0 - 32768) / (limited ? 57344 : 65535);
+  const double kr = matrix == 4 ? 0.30 : 0.212;
+  const double kb = matrix == 4 ? 0.11 : 0.087;
+  const GainMapRGB signal{y + 2 * (1 - kr) * cr,
+                           y - 2 * kb * (1 - kb) / (1 - kr - kb) * cb -
+                               2 * kr * (1 - kr) / (1 - kr - kb) * cr,
+                           y + 2 * (1 - kb) * cb};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < 3; ++c) {
+    const double normalized = std::clamp(signal[c], 0.0, 1.0);
+    const double expected = colour_is_gain ? 16384 * std::exp2(normalized) : 65535 * normalized;
+    REQUIRE(sample_at(**result, channels[c], 0) == Catch::Approx(std::round(expected)).margin(3));
+  }
+  profile.set_matrix_coefficients(10); // CL must not silently use the NCL matrix.
+  colour->set_color_profile_nclx(profile);
+  result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
+  heif_decoding_options_free(options);
+}
+
 TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
 {
   auto base = make_pixels(4, false, 8192, 8);
