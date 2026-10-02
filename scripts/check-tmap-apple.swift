@@ -43,7 +43,6 @@ for rgb in [false, true] {
         fatalError()
     }
     require(decoded.width == 64 && decoded.height == 64, "Incorrect output geometry")
-    require(decoded.contentHeadroom > 1.0, "HDR decode did not expose content headroom")
     let image = CIImage(cgImage: decoded)
     var pixels = [Float](repeating: 0, count: 64 * 64 * 4)
     pixels.withUnsafeMutableBytes { bytes in
@@ -52,13 +51,20 @@ for rgb in [false, true] {
     }
     let gains = rgb ? [4.0, exp2(128.0 / 255.0), exp2(64.0 / 255.0)] : [4.0, 4.0, 4.0]
     var maximumError = 0.0
+    var maximumLinearValue = 0.0
     for i in 0..<(64 * 64) {
         for c in 0..<3 {
             let value = Double(pixels[i * 4 + c])
             require(value.isFinite, "Non-finite Apple HDR pixel")
+            maximumLinearValue = max(maximumLinearValue, value)
             maximumError = max(maximumError, abs(value - baselineLinear * gains[c]))
         }
     }
+    // Some hosted macOS ImageIO versions reconstruct extended-range HDR pixels
+    // while leaving CGImage.contentHeadroom at 1.0. The independently checked
+    // extended-linear pixels are the cross-version evidence that DecodeToHDR
+    // actually applied the gain map; contentHeadroom remains diagnostic only.
+    require(maximumLinearValue > 1.0, "ImageIO HDR decode stayed in SDR range")
     // Includes 8-bit YCbCr codec/matrix rounding and Apple colour management.
     require(maximumError < 0.025, "Apple HDR pixel error \(maximumError) for \(name)")
     guard let sdr = CGImageSourceCreateImageAtIndex(source, 0,
@@ -73,7 +79,7 @@ for rgb in [false, true] {
     require(sdrPixels.enumerated().filter { $0.offset % 4 != 3 }.allSatisfy {
         $0.element.isFinite && abs(Double($0.element) - baselineLinear) < 0.01
     }, "Apple SDR fallback differs from baseline")
-    print("PASS Apple consumer \(name) headroom=\(decoded.contentHeadroom) maxLinearError=\(maximumError)")
+    print("PASS Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError)")
 }
 
 // Apple producer, with separately constructed SDR and HDR intentions.
