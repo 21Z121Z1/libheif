@@ -26,6 +26,12 @@ let context = CIContext(options: [.workingColorSpace: linearSpace,
 let signal = 192.0 / 255.0
 let baselineLinear = pow((signal + 0.055) / 1.055, 2.4)
 let bounds = CGRect(x: 0, y: 0, width: 64, height: 64)
+let hdrOptions = [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+                  kCGImageSourceShouldCache: true,
+                  kCGImageSourceShouldAllowFloat: true,
+                  // Check the full alternate, without a generated display curve.
+                  kCGImageSourceGenerateImageSpecificLumaScaling: false] as CFDictionary
+var failures = [String]()
 
 for rgb in [false, true] {
     let name = rgb ? "libheif-rgb-pq.heic" : "libheif-mono-pq.heic"
@@ -36,9 +42,7 @@ for rgb in [false, true] {
     }
     require(CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0,
             kCGImageAuxiliaryDataTypeISOGainMap) != nil, "Missing ISO auxiliary data in \(name)")
-    guard let decoded = CGImageSourceCreateImageAtIndex(source, 0,
-            [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
-             kCGImageSourceShouldCache: true] as CFDictionary) else {
+    guard let decoded = CGImageSourceCreateImageAtIndex(source, 0, hdrOptions) else {
         require(false, "ImageIO HDR decode failed for \(name)")
         fatalError()
     }
@@ -64,9 +68,14 @@ for rgb in [false, true] {
     // while leaving CGImage.contentHeadroom at 1.0. The independently checked
     // extended-linear pixels are the cross-version evidence that DecodeToHDR
     // actually applied the gain map; contentHeadroom remains diagnostic only.
-    require(maximumLinearValue > 1.0, "ImageIO HDR decode stayed in SDR range")
+    print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
+    if maximumLinearValue <= 1.0 {
+        failures.append("ImageIO HDR decode stayed in SDR range for \(name)")
+    }
     // Includes 8-bit YCbCr codec/matrix rounding and Apple colour management.
-    require(maximumError < 0.025, "Apple HDR pixel error \(maximumError) for \(name)")
+    if maximumError >= 0.025 {
+        failures.append("Apple HDR pixel error \(maximumError) for \(name)")
+    }
     guard let sdr = CGImageSourceCreateImageAtIndex(source, 0,
             [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToSDR] as CFDictionary) else {
         fatalError("Missing SDR fallback")
@@ -79,7 +88,9 @@ for rgb in [false, true] {
     require(sdrPixels.enumerated().filter { $0.offset % 4 != 3 }.allSatisfy {
         $0.element.isFinite && abs(Double($0.element) - baselineLinear) < 0.01
     }, "Apple SDR fallback differs from baseline")
-    print("PASS Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError)")
+    if maximumLinearValue > 1.0 && maximumError < 0.025 {
+        print("PASS Apple consumer \(name)")
+    }
 }
 
 // Apple producer, with separately constructed SDR and HDR intentions.
@@ -95,8 +106,7 @@ try context.writeHEIFRepresentation(of: baseline, to: output, format: .RGBA8,
 guard let source = CGImageSourceCreateWithURL(output as CFURL, nil) else { fatalError("Missing Apple output") }
 require(CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0,
         kCGImageAuxiliaryDataTypeISOGainMap) != nil, "Apple producer omitted ISO gain map")
-guard let produced = CGImageSourceCreateImageAtIndex(source, 0,
-        [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary) else {
+guard let produced = CGImageSourceCreateImageAtIndex(source, 0, hdrOptions) else {
     fatalError("Apple producer HDR decode failed")
 }
 var reference = [Float](repeating: 0, count: 64 * 64 * 4)
@@ -112,3 +122,4 @@ try reference.withUnsafeBytes { bytes in
     try Data(bytes).write(to: URL(fileURLWithPath: output.path + ".rgba32f"), options: .withoutOverwriting)
 }
 print("PASS Apple producer apple-mono.heic (canonical libheif decode checked separately)")
+require(failures.isEmpty, failures.joined(separator: "\n"))

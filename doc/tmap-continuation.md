@@ -101,3 +101,12 @@ and changed-source cpplint pass. The new symbol is exported only in ON builds.
 Apple's synthetic mono/RGB consumer and producer round trip pass again with
 the existing pixel tolerances. Hosted CI status must be checked for the actual
 published commit rather than inferred from these local results.
+
+The hosted macOS 15 framework run at `37e0fb07` returned SDR-range pixels from
+the synthetic files even after making `contentHeadroom` diagnostic. The exact
+downloaded files reconstruct correctly on macOS 27. Framework-version
+interoperability therefore remains unproven until the hosted pixel gate passes.
+The harness now explicitly allows floating-point decode and disables generated
+image-specific display scaling while checking the full alternate. It logs
+range, error, bit depth and colour space before asserting, and retains producer
+fixtures on consumer pixel failures. The 0.025 HDR error gate is unchanged.
