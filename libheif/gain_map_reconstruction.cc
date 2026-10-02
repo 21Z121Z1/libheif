@@ -160,7 +160,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const GainMapColour& alternate_colour,
     const heif_decoding_options& options,
     const heif_security_limits* limits,
-    std::optional<GainMapColour> baseline_colour_override,
+    const std::optional<GainMapColour>& baseline_colour_override,
     std::optional<double> target_headroom)
 {
   if (!limits) {
