@@ -407,7 +407,7 @@ TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
   heif_context_free(ctx);
 }
 
-TEST_CASE("Gain-map encoder rejects components below ISO minimum bit depth")
+TEST_CASE("Gain-map encoder rejects components below its supported bit depth")
 {
   auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
