@@ -181,3 +181,13 @@ sample values fail before adding an encoded item. This closes the former blanket
 minimum-depth writer policy without inventing lower-depth YCbCr normalization.
 The byte-interleaved RGB layout also expands each component independently;
 lossless AV1 checks cover its unequal component values and padded image rows.
+
+YCgCo, its reversible -R/-Re/-Ro forms, and ST 2085 now use the actual H.273
+inverse equations for both baseline and gain rasters. Reversible codewords are
+normalized at their RGB depth rather than their larger coded depth; negative
+odd differences use floor division, and B is clipped before deriving R as
+required by equations 64-65. Independent codewords, full/limited range, 4:4:4,
+4:2:2 and 4:2:0 nearest-neighbor sampling, mixed Y/C depths and alpha preservation
+pass native and experimental ON/OFF sanitizer checks. The focused math target
+has 3,716 assertions in 20 cases. No bitstream colour-description override or
+producer-specific inference is introduced.

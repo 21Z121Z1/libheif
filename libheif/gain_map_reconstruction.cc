@@ -35,6 +35,103 @@ Error unsupported(const char* message)
   return {heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion, message};
 }
 
+Result<std::shared_ptr<HeifPixelImage>> decode_special_ycbcr(
+    const std::shared_ptr<HeifPixelImage>& image,
+    const heif_decoding_options& options, const heif_security_limits* limits)
+{
+  auto profile = image->get_color_profile_nclx();
+  const auto matrix = profile.m_matrix_coefficients;
+  const int y_bits = image->get_bits_per_pixel(heif_channel_Y);
+  const int c_bits = image->get_bits_per_pixel(heif_channel_Cb);
+  if (y_bits < 1 || c_bits < 1 || c_bits != image->get_bits_per_pixel(heif_channel_Cr)) {
+    return unsupported("Tone-map matrix requires matching Cb and Cr depths");
+  }
+  const int rgb_bits = y_bits - (matrix == 16 ? 2 : matrix == 17 ? 1 : 0);
+  if (rgb_bits < 1 || (!profile.get_full_range_flag() &&
+                      (rgb_bits < 8 || (matrix == 11 && c_bits < 8))) ||
+      (matrix == 8 && c_bits != y_bits && c_bits != y_bits + 1)) {
+    return unsupported("Unsupported tone-map matrix bit depths");
+  }
+  const auto chroma = image->get_chroma_format();
+  if (chroma != heif_chroma_444 &&
+      options.color_conversion_options.only_use_preferred_chroma_algorithm &&
+      options.color_conversion_options.preferred_chroma_upsampling_algorithm !=
+          heif_chroma_upsampling_nearest_neighbor) {
+    return unsupported("Tone-map matrix requires nearest-neighbor chroma upsampling");
+  }
+  const uint32_t width = image->get_width(), height = image->get_height();
+  auto output = std::make_shared<HeifPixelImage>();
+  output->create(width, height, heif_colorspace_RGB, heif_chroma_444);
+  const std::array<heif_channel, 3> in_channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const std::array<heif_channel, 3> out_channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  std::array<const uint8_t*, 3> input{};
+  std::array<uint16_t*, 3> out{};
+  std::array<size_t, 3> in_stride{}, out_stride{};
+  for (size_t c = 0; c < 3; ++c) {
+    input[c] = image->get_channel_memory(in_channels[c], &in_stride[c]);
+    if (auto error = output->add_channel(out_channels[c], width, height, 16, limits)) {
+      return error;
+    }
+    out[c] = output->get_channel_memory<uint16_t>(out_channels[c], &out_stride[c]);
+    out_stride[c] /= sizeof(uint16_t);
+  }
+  const double rgb_max = (1U << rgb_bits) - 1;
+  const double rgb_offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (rgb_bits - 8));
+  const double rgb_scale = profile.get_full_range_flag() ? rgb_max : 219.0 * (1U << (rgb_bits - 8));
+  const int32_t c_mid = 1U << (c_bits - 1);
+  const double c_scale = matrix != 11 ? 1 : profile.get_full_range_flag() ? (1U << c_bits) - 1 :
+                                                                         224.0 * (1U << (c_bits - 8));
+  // Portable arithmetic right shift for negative, odd lifting differences.
+  auto half_floor = [](int32_t value) { return value >= 0 ? value / 2 : -((1 - value) / 2); };
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      std::array<int32_t, 3> sample{};
+      for (size_t c = 0; c < 3; ++c) {
+        const uint32_t sx = c == 0 || chroma == heif_chroma_444 ? x : x / 2;
+        const uint32_t sy = c == 0 || chroma != heif_chroma_420 ? y : y / 2;
+        const auto* row = input[c] + size_t(sy) * in_stride[c];
+        sample[c] = (c == 0 ? y_bits : c_bits) <= 8 ? row[sx] :
+                        reinterpret_cast<const uint16_t*>(row)[sx];
+      }
+      const int32_t cb = sample[1] - c_mid, cr = sample[2] - c_mid;
+      GainMapRGB signal{};
+      if (matrix == 11) {
+        // H.273 (2024) Eq.30-38 and 76-78, with independent Y/C depths.
+        const double ey = (sample[0] - rgb_offset) / rgb_scale;
+        signal = {2 * cr / c_scale + 0.991902 * ey, ey,
+                  (2 * cb / c_scale + ey) / 0.986566};
+      }
+      else {
+        // Eq.54-57 (YCgCo) or Eq.62-65 (YCgCo-R, -Re and -Ro).
+        const bool reversible = matrix != 8 || c_bits != y_bits;
+        const int32_t t = sample[0] - (reversible ? half_floor(cb) : cb);
+        const double g = (reversible ? t : sample[0]) + cb;
+        const double b = t - (reversible ? half_floor(cr) : cr);
+        // Eq.65 uses B after the Clip3 in Eq.64.
+        const double r = reversible ? std::clamp(b, 0.0, rgb_max) + cr : t + cr;
+        const GainMapRGB rgb{r, g, b};
+        for (size_t c = 0; c < 3; ++c) {
+          signal[c] = (std::clamp(rgb[c], 0.0, rgb_max) - rgb_offset) / rgb_scale;
+        }
+      }
+      for (size_t c = 0; c < 3; ++c) {
+        out[c][size_t(y) * out_stride[c] + x] = static_cast<uint16_t>(
+            std::round(std::clamp(signal[c], 0.0, 1.0) * 65535));
+      }
+    }
+  }
+  if (image->has_channel(heif_channel_Alpha)) {
+    if (auto error = output->copy_new_channel_from(image, heif_channel_Alpha, heif_channel_Alpha, limits)) {
+      return error;
+    }
+  }
+  output->set_premultiplied_alpha(image->is_premultiplied_alpha());
+  profile.set_matrix_coefficients(0);
+  profile.set_full_range_flag(true);
+  output->set_color_profile_nclx(profile);
+  return output;
+}
+
 Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
     const std::shared_ptr<HeifPixelImage>& image,
     const heif_decoding_options& options, const heif_security_limits* limits)
@@ -95,6 +192,9 @@ Result<std::shared_ptr<HeifPixelImage>> to_rgb16(
   }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
     const auto matrix = profile.m_matrix_coefficients;
+    if (matrix == 8 || matrix == 11 || matrix == 16 || matrix == 17) {
+      return decode_special_ycbcr(image, options, limits);
+    }
     // Guard both inputs: the generic converter still substitutes NCL for CL
     // and can use a default matrix for an unspecified colour description.
     const bool explicit_linear = matrix == 0 || matrix == 1 || matrix == 4 ||
