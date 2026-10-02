@@ -212,3 +212,14 @@ storage inversion. Native math passes 4,532 assertions in 26 cases; the same
 ON/OFF sanitizer targets and local clang-tidy pass. This covers the defined
 matrix equations within the documented integer raster and sampling subset,
 not general floating-point/ICC-LUT or unspecified-signalling compatibility.
+
+The additional matrix paths now honor mandatory bilinear chroma upsampling at
+uniform coded depths by reusing the existing sampling pipeline with alpha's
+original depth. Independent 5/6-pixel border expectations exposed an existing
+4:2:0 sampler indexing error: its border loop's chroma coordinates were divided
+by two again. The local correction covers every border, with odd/even width
+and height checks. Native math passes 4,886 assertions in 27 cases, and the
+complete 103-target suite has 97 passes, six capability/external-fixture skips
+and no failures. Focused experimental ON/OFF ASan/UBSan and clang-tidy pass.
+Fresh Mac 27 Apple consumer/producer, original Apple read-only samples and
+pinned Google metadata checks retain their earlier pixel and byte results.

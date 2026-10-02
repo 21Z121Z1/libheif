@@ -504,7 +504,7 @@ TEST_CASE("Tone-map matrix bit depths and upsampling requirements are explicit")
   base->set_color_profile_nclx(profile);
   options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
   options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
-  REQUIRE_FALSE(reconstruct_tone_map(base, gain, GainMapMetadata{}, alternate, *options, nullptr));
+  REQUIRE(reconstruct_tone_map(base, gain, GainMapMetadata{}, alternate, *options, nullptr));
   options->color_conversion_options.only_use_preferred_chroma_algorithm = false;
   REQUIRE(reconstruct_tone_map(base, gain, GainMapMetadata{}, alternate, *options, nullptr));
   REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 1, 1, 4, nullptr));
@@ -761,6 +761,54 @@ TEST_CASE("LMS matrices preserve neutral signals and reject unresolved transfer"
   REQUIRE_FALSE(gain_map_decode_lms_matrix({0.5, 0, 0}, matrix, 2));
   REQUIRE_FALSE(gain_map_decode_lms_matrix({std::numeric_limits<double>::infinity(), 0, 0}, matrix, transfer));
   REQUIRE_FALSE(gain_map_decode_lms_matrix({0.5, 0, 0}, 2, transfer));
+}
+
+TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd and even borders")
+{
+  const auto chroma = GENERATE(heif_chroma_422, heif_chroma_420);
+  const uint32_t width = GENERATE(5, 6);
+  const uint32_t height = GENERATE(5, 6);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(width, height, heif_colorspace_YCbCr, chroma);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Y, width, height, 16, nullptr));
+  const uint32_t c_height = chroma == heif_chroma_420 ? (height + 1) / 2 : height;
+  REQUIRE_FALSE(base->add_channel(heif_channel_Cb, 3, c_height, 16, nullptr));
+  REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 3, c_height, 16, nullptr));
+  base->fill_channel(heif_channel_Y, 32768);
+  base->fill_channel(heif_channel_Cr, 32768);
+  size_t stride = 0;
+  auto* cb = base->get_channel_memory<uint16_t>(heif_channel_Cb, &stride);
+  for (uint32_t y = 0; y < c_height; ++y) {
+    for (uint32_t x = 0; x < 3; ++x) { cb[size_t(y) * stride / 2 + x] = 30000 + 2000 * x + 4000 * y; }
+  }
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, width, height, 8, nullptr));
+  base->fill_channel(heif_channel_Alpha, 128);
+  auto alternate = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  auto raster = alternate;
+  raster.set_matrix_coefficients(11);
+  base->set_color_profile_nclx(raster);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+  options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2),
+                                     GainMapMetadata{}, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<double, 6> location{0, 0.25, 0.75, 1.25, 1.75, 2};
+  size_t out_stride = 0;
+  const auto* blue = (*result)->get_channel_memory<uint16_t>(heif_channel_B, &out_stride);
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const double c = 30000 + 2000 * location[x] + 4000 * (chroma == heif_chroma_420 ? location[y] : y);
+      const double expected = std::clamp((32768 + 2 * (c - 32768)) / 0.986566, 0.0, 65535.0);
+      REQUIRE(blue[size_t(y) * out_stride / 2 + x] == Catch::Approx(std::round(expected)).margin(1));
+    }
+  }
+  REQUIRE((*result)->get_bits_per_pixel(heif_channel_Alpha) == 8);
+  REQUIRE((*result)->get_channel_memory(heif_channel_Alpha, nullptr)[0] == 128);
+  REQUIRE(base->get_chroma_format() == chroma);
+  REQUIRE(cb[2] == 34000);
+  heif_decoding_options_free(options);
 }
 
 TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
