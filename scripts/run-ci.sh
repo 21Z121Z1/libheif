@@ -310,4 +310,22 @@ if [ ! -z "$FUZZER" ] && [ "$CURRENT_OS" = "linux" ]; then
 
     echo "Running tile fuzzer ..."
     ./fuzzing/tile_fuzzer -dict=./fuzzing/data/dictionary.txt -max_total_time=120
+
+    echo "Running ISO gain-map metadata and arithmetic fuzzer ..."
+    GAIN_MAP_CORPUS=$(mktemp -d)
+    python3 - "$GAIN_MAP_CORPUS" <<'PY'
+import pathlib
+import struct
+import sys
+
+corpus = pathlib.Path(sys.argv[1])
+for channels in (1, 3):
+    channel = struct.pack('>iIiIIIiIiI', -1, 2, 3, 2, 1, 1, -1, 64, 1, 32)
+    metadata = struct.pack('>HHBIIII', 0, 0, 0x40 | (0x80 if channels == 3 else 0), 0, 1, 3, 1)
+    metadata += channel * channels
+    (corpus / f'annex-c-{channels}').write_bytes(metadata)
+    (corpus / f'tmap-{channels}').write_bytes(b'\0' + metadata)
+PY
+    ./fuzzing/gain_map_fuzzer "$GAIN_MAP_CORPUS" -max_len=512 -max_total_time=120
+    rm -rf "$GAIN_MAP_CORPUS"
 fi

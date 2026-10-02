@@ -98,6 +98,10 @@ ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
 installs AOM and includes writer and generic entity-group tests, so codec-backed
 writer regressions cannot pass merely because the encoder is unavailable.
 
+The ordinary fuzzer workflow also runs a focused Annex C/ToneMapImage fuzzer
+with synthetic mono/RGB seeds. It checks canonical serializer round trips and
+exercises inverse gamma, headroom weighting and finite-checked gain arithmetic.
+
 External sample checking avoids redistributing the user's images:
 
 ```sh
