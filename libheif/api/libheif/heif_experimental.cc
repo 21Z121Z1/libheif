@@ -373,6 +373,15 @@ heif_error heif_context_encode_gain_map_image(
     if (Error error = source->check_plane_layout()) {
       return error.error_struct(ctx->context.get());
     }
+    // ISO 21496-1:2025 4.4 requires at least 8 bits per gain-map
+    // component. Readers may choose to tolerate non-conforming files, but the
+    // standards-aware writer must not emit them.
+    for (auto channel : source->get_channel_set()) {
+      if (source->get_bits_per_pixel_range(channel) < 8) {
+        return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                "ISO 21496-1 gain-map components require at least 8 bits"};
+      }
+    }
     const auto space = source->get_colorspace();
     if ((space != heif_colorspace_monochrome && space != heif_colorspace_RGB &&
          space != heif_colorspace_YCbCr) || source->has_alpha()) {
