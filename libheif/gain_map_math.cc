@@ -54,10 +54,13 @@ Result<double> gain_map_target_weight(const GainMapMetadata& metadata, double ta
   const uint64_t ap = uint64_t(a.numerator) * b.denominator;
   const uint64_t bp = uint64_t(b.numerator) * a.denominator;
   const double direction = gain_map_full_weight(metadata);
-  const double difference = direction * static_cast<double>(ap > bp ? ap - bp : bp - ap) /
-                            (static_cast<double>(a.denominator) * b.denominator);
-  const double base = static_cast<double>(b.numerator) / b.denominator;
-  return direction * std::clamp((target_headroom - base) / difference, 0.0, 1.0);
+  const double difference = direction * static_cast<double>(ap > bp ? ap - bp : bp - ap);
+  // Form (target * base_denominator - base_numerator) with one rounding.
+  // Subtracting a rounded base quotient can lose the entire interval between
+  // nearby rational endpoints even though the integer cross-products differ.
+  const double distance = std::fma(target_headroom, static_cast<double>(b.denominator),
+                                    -static_cast<double>(b.numerator));
+  return direction * std::clamp(distance * a.denominator / difference, 0.0, 1.0);
 }
 
 Result<double> gain_map_unnormalize(double normalized, const GainMapChannel& channel)

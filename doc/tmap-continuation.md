@@ -88,7 +88,12 @@ explicitly unsupported instead of assigning a misleading conformance percentage.
 The bounded goal is to expose the already implemented Formula (3) through actual
 root decoding while preserving canonical nested semantics and the stable API.
 English ISO 21496-1 page 7 (PDF page 13), clause 6.3, was checked directly.
-The existing scalar formula was correct; no change to its arithmetic is needed.
+The existing scalar formula was correct. A subsequent endpoint regression found
+that subtracting separately rounded rational headrooms could erase a nonzero
+interval. The algebraically equivalent implementation now uses exact integer
+cross-product differences and a fused multiply-add for the target distance.
+Forward and reverse intervals near `UINT32_MAX`, including finite extreme
+targets, pass native and experimental ON/OFF ASan/UBSan checks.
 No new CMS, legacy-format heuristics or producer-specific matrix guesses are part
 of this change. Hosted Linux sanitizer and macOS framework jobs exercise the
 new tests through the existing workflow.

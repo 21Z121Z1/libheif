@@ -54,6 +54,23 @@ TEST_CASE("ISO gain weight includes HDR-to-SDR direction and clamps")
   REQUIRE_FALSE(gain_map_target_weight(m, 1));
 }
 
+TEST_CASE("Target headroom clamps correctly when rational endpoints round identically")
+{
+  const uint32_t n = UINT32_MAX;
+  GainMapMetadata metadata;
+  metadata.base_hdr_headroom = {n - 2, n - 1};
+  metadata.alternate_hdr_headroom = {n - 1, n};
+  // Both endpoints are below the exactly representable 1 - 2^-32, but round
+  // to it as doubles. Subtracting a rounded baseline would incorrectly give 0.
+  REQUIRE(*gain_map_target_weight(metadata, 1.0 - std::ldexp(1.0, -32)) == 1);
+  REQUIRE(*gain_map_target_weight(metadata, std::numeric_limits<double>::max()) == 1);
+  metadata.base_hdr_headroom = {n - 1, n - 2};
+  metadata.alternate_hdr_headroom = {n, n - 1};
+  // Reverse direction: both endpoints exceed 1 + 2^-32, so the full weight is -1.
+  REQUIRE(*gain_map_target_weight(metadata, 1.0 + std::ldexp(1.0, -32)) == -1);
+  REQUIRE(*gain_map_target_weight(metadata, std::numeric_limits<double>::max()) == 0);
+}
+
 TEST_CASE("ISO inverse gamma, signed gains and offsets have hand-calculated values")
 {
   GainMapChannel c;
