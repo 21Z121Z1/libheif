@@ -14,7 +14,7 @@ than copying intervening upstream-master changes onto the v1.24.x tree.
 | 4 / `c12d52da` | Experimental POD inspection, target headroom and floating output APIs; reader/container regressions | `tmap_read`, public C headers and exported symbols |
 | 5 / `80b35b61` | Typed altr/stereo writers, ID allocation and primary/visibility invariants | Entity-group, ID and reader tests |
 | 6 / `be5b3b51` | Gain-raster producer, tmap writer and colour/light/pixel hints; reopen graphs and pixels | Read/write and uncompressed-encode tests |
-| 7 / branch tip | Pinned Google and public Apple oracles, fuzzing, CI and support/acceptance documentation | Consolidated core/oracle checks and fresh branch-specific Actions |
+| 7 / `49ea0cbf` | Pinned Google and public Apple oracles, fuzzing, CI and support/acceptance documentation | Consolidated core/oracle checks and fresh branch-specific Actions |
 
 Each implementation commit was built from its actual cumulative source tree;
 later files were absent. A saved three-way target patch keeps the migration
@@ -53,6 +53,27 @@ the backport; afterwards all 68 assertions, 11 related native tests, five
 ASan/UBSan tests and six exp OFF/CMM OFF tests passed. The production patch
 is reused from upstream, rather than suppressing the missing gate. Three
 missing standard includes in unchanged v1.24.x sources are corrected separately.
+
+The published review revision `e28e36ee` has terminal success for all 12 workflows
+and 47 jobs, including the six Intel/ARM macOS builds, four Linux sanitizer
+configurations, license/API gates and public Apple producer/consumer. Complete
+job/step logs are reviewed in matrix E10, including the existing x265 UB reported
+by CIFuzz. The dedicated raw gain-map fuzzer runs in the ordinary fuzzer job;
+the stock OSS-Fuzz job does not include that new target.
+
+Later convergence changes remain narrowly reviewable: effective writer
+orientation and transformed extents; baseline include/security prerequisites;
+PIXI component semantics; then graph-budget and independent-container regression
+evidence. The seven implementation scopes above are dependency boundaries, not
+a requirement to hide later corrections in a single oversized commit. Colour
+math and numerical raster plumbing remain together because their acceptance
+tests depend on preserving the same samples and chroma phase.
+
+The [independent implementation review](tmap-independent-review.md) compares
+pinned libavif, CrabbyAvif, Skia, libultrahdr and libjxl. Two parser/writers are
+executed in a byte differential and libavif supplies an independent AVIF
+container/pixel cross-check. Differences that conflict with ISO do not introduce
+producer-specific acceptance rules or a new dependency.
 
 The [conformance matrix](tmap-conformance-matrix.md) is the remaining task queue.
 Complete standards conformance remains unclaimed while the requested archives,

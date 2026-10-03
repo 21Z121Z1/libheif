@@ -160,7 +160,9 @@ typedef struct heif_tone_map_options
   int has_clli;
   heif_content_light_level clli;
 
-  // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI.
+  // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI;
+  // otherwise three colour components describe this writer's RGB alternate.
+  // Bit depths are approximate precision, independent of input/decoded storage.
   uint8_t pixi_num_channels;
   uint8_t pixi_bits_per_channel[4];
 

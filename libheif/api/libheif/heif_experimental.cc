@@ -564,11 +564,11 @@ heif_error heif_context_add_tone_map_derived_image(
       };
     }
 
-    if (options->pixi_num_channels > 4) {
+    if (options->pixi_num_channels != 0 && options->pixi_num_channels != 3) {
       return {
           heif_error_Usage_error,
           heif_suberror_Invalid_parameter_value,
-          "Tone-map PIXI hint may contain at most four channels"
+          "Tone-map PIXI hint must describe three reconstructed colour components"
       };
     }
 
