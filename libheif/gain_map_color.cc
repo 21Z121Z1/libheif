@@ -467,7 +467,9 @@ Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double
   if (!std::isfinite(result)) {
     return unsupported_icc();
   }
-  return std::clamp(result, 0.0, 1.0);
+  // Parametric/gamma equations also describe extended relative HDR samples.
+  // Sampled tables remain bounded by their own endpoint values above.
+  return std::max(result, 0.0);
 }
 
 Result<uint16_t> classify_matrix_trc_transfer(const IccView& view,
@@ -950,7 +952,7 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
   auto last = evaluate_icc_curve(view, tag, 1, true);
   if (!first) { return first.error(); }
   if (!last) { return last.error(); }
-  const double target = std::clamp(value, *first, *last);
+  double target = std::max(value, *first);
   uint32_t type = 0;
   read_u32(*view.bytes, tag.offset, type);
   if (type == icc_sig('c', 'u', 'r', 'v')) {
@@ -962,6 +964,7 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
       read_u16(*view.bytes, tag.offset + 12, gamma);
       return std::pow(target, 256.0 / gamma);
     }
+    target = std::min(target, *last);
     // Find the table interval in O(log n), retaining exact plateau endpoints.
     const auto entry = [&view, &tag](uint32_t i) {
       uint16_t sample = 0;
@@ -999,14 +1002,14 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
     const double high_offset = function == 2 ? p[3] : (function == 4 ? p[5] : 0);
     const double breakpoint = function <= 2 ? -p[2] / p[1] : p[4];
     const double high_value = (std::pow(std::max(target - high_offset, 0.0), 1.0 / p[0]) - p[2]) / p[1];
-    if (function <= 2) { return std::clamp(high_value, 0.0, 1.0); }
+    if (function <= 2) { return std::max(high_value, 0.0); }
     const double low_offset = function == 4 ? p[6] : 0;
-    const double low_end = std::clamp(p[3] * breakpoint + low_offset, 0.0, 1.0);
-    if (breakpoint > 0 && (breakpoint > 1 || target < low_end || (target == *last && target <= low_end))) {
+    const double low_end = std::max(p[3] * breakpoint + low_offset, 0.0);
+    if (breakpoint > 0 && (target < low_end || (target == *last && target <= low_end))) {
       const double low_value = p[3] > 0 ? (target - low_offset) / p[3] : breakpoint;
-      return std::clamp(low_value, 0.0, std::min(breakpoint, 1.0));
+      return std::clamp(low_value, 0.0, breakpoint);
     }
-    return std::clamp(high_value, std::clamp(breakpoint, 0.0, 1.0), 1.0);
+    return std::max(high_value, std::max(breakpoint, 0.0));
   }
 }
 
@@ -1151,7 +1154,7 @@ Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
   for (size_t c = 0; c < 3; ++c) {
     if (!std::isfinite(signal[c])) { return invalid_value(); }
     auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[c],
-                                    std::clamp(signal[c], 0.0, 1.0), true);
+                                    std::max(signal[c], 0.0), true);
     if (!value) { return value.error(); }
     result[c] = *value;
   }
@@ -1182,6 +1185,7 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
   for (size_t c = 0; c < 3; ++c) {
     auto value = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[c], linear[c]);
     if (!value) { return value.error(); }
+    if (!std::isfinite(*value)) { return invalid_value(); }
     result[c] = *value;
   }
   return result;

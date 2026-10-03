@@ -34,7 +34,7 @@ All defined H.273 transfer codes are supported (1 and 4-18): linear,
 display gamma 2.2/2.8, sRGB, BT.709/BT.601/BT.2020 SDR, SMPTE 240,
 logarithmic 100:1 and 100√10:1, IEC 61966-2-4, BT.1361 extended gamut,
 SMPTE ST 428, PQ and HLG. Signed extended-gamut branches are evaluated
-before the unsigned output raster clips to its representable range.
+before a requested integer output clips to its representable range.
 For a logarithmic zero signal, the non-invertible low interval is decoded as
 black; levels below its cutoff cannot be recovered from that signal.
 The four equivalent SDR code points (1, 6, 14, 15) use H.273's continuous
@@ -60,6 +60,8 @@ to a CICP approximation. Sampled curves use linear interpolation; inverse
 plateaus follow ICC.1:2022 Annex F.1. Cross-profile conversions use relative
 colourimetry through the D50 PCS, with a double-precision Bradford white adaptation
 for the supported NCLX spaces.
+Gamma and parametric equations retain extended positive relative HDR values;
+sampled tables remain bounded by their stored endpoints.
 
 When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
 input, display and output LUT profiles use their relative-colorimetric CMM
@@ -85,9 +87,10 @@ Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
 then unnormalized to log2 gains before co-sited bilinear resampling with edge
 extension. Mono pixels and mono metadata are independently replicated. The
 headroom direction determines the sign of the full-application weight. Offsets
-are applied in linear application primaries; gamut excursions are clipped at
-output encoding. Results are quantized to planar 16-bit RGB in alternate colour
-encoding. This decoded pixel depth is independent of the writer's caller-supplied
+are applied in linear application primaries. Derived-node samples retain float32
+precision in the alternate encoding through nested reconstruction and requested
+root colour conversion. Ordinary decode quantizes to planar 16-bit RGB at the
+public output boundary. This decoded pixel depth is independent of the writer's caller-supplied
 `pixi` hint. All raster allocations use existing pixel-image security accounting;
 no upscaled full-resolution floating-point gain raster is allocated.
 The reconstructed RGB raster is tagged with identity matrix and full range,
@@ -122,6 +125,13 @@ changes a nested `tmap` operation. A changed encoding drops the original ICC
 property, which would describe different samples. General HDR-to-SDR display
 tone mapping is not part of this implementation; integer output clips excursions
 outside its representable range.
+
+The experimental `heif_decode_tone_map_image_float32()` uses the same target
+headroom weighting and returns planar RGB float32, retaining values above one
+in relative encodings such as extended sRGB ICC. Explicit output NCLX can instead
+request linear RGB or PQ. Its alpha plane reports its own datatype and depth;
+an unknown minimum version returns the baseline converted to floating RGB.
+The existing integer decoding APIs retain their output contract.
 
 For a premultiplied baseline, reconstruction divides the decoded RGB sample
 values by normalized alpha before linearization, applies the gain and offsets
@@ -222,7 +232,9 @@ full-range samples; bit depth alone does not make a file non-conforming.
 reconciliation, limited-range endpoints and resampling order/phase. `tmap_read`
 checks canonical decode, nested reconstruction, baseline fallback and existing
 container error isolation, including distinct baseline/alternate `ndwt` values
-and independently known physical PQ luminance. Existing `tmap_write` checks
+and independently known physical PQ luminance. Relative HDR tests exercise
+values above one through nested nodes, ICC/NCLX alternates, integer PQ output
+and floating output with premultiplied alpha and version fallback. Existing `tmap_write` checks
 writer round trips. Unknown-version fallback retains baseline HDR properties
 and its colour profile through output layout conversion.
 

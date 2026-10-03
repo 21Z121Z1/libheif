@@ -115,7 +115,8 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t baseline_transfer = 13,
     const std::array<uint32_t, 2>* diffuse_whites = nullptr,
     uint16_t alternate_matrix = 9,
-    bool alternate_full_range = true)
+    bool alternate_full_range = true,
+    uint16_t alternate_transfer = 16)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -167,7 +168,7 @@ std::vector<uint8_t> build_tmap_file(
   auto gain_colr =
       make_nclx(gain_primaries, gain_transfer, 2, true);
   auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, alternate_full_range) :
-                                  make_nclx(9, 16, alternate_matrix, alternate_full_range);
+                                  make_nclx(9, alternate_transfer, alternate_matrix, alternate_full_range);
 
   std::vector<uint8_t> ipco_payload;
   append(ipco_payload, ispe);
@@ -399,13 +400,14 @@ std::vector<uint8_t> make_custom_gamma_icc()
 
 
 std::vector<uint8_t> build_two_tmap_file(
-    uint16_t second_base_id, uint16_t transfer = 16)
+    uint16_t second_base_id, uint16_t transfer = 16,
+    const GainMapMetadata* metadata = nullptr)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
 
   const std::vector<uint8_t> tmap_payload =
-      make_tone_map_payload();
+      make_tone_map_payload(0, 0, metadata);
 
   std::vector<uint8_t> ftyp_payload;
   append_fourcc(ftyp_payload, "mif1");
@@ -883,6 +885,166 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[0] == 0);
   REQUIRE(reinterpret_cast<const uint16_t*>(alpha)[1] == 21845);
   heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Requested PQ retains HDR above a relative alternate's integer range")
+{
+  const bool icc_colour = GENERATE(false, true);
+  const bool tile = GENERATE(false, true);
+  const auto icc = make_custom_gamma_icc();
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {3, 1};
+  metadata.channels[0].gain_map_max = {3, 1};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata, false,
+                                    icc_colour ? &icc : nullptr, icc_colour ? &icc : nullptr,
+                                    13, nullptr, 0, true, 13);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_ITU_R_BT_2100_0_PQ;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                               heif_chroma_444, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const double baseline = icc_colour ? std::pow(127.0 / 255, 2) : 0.2122307574140550956;
+  const double p = std::pow(baseline * 8 * 203 / 10000, 2610.0 / 16384);
+  const double expected = std::pow((3424.0 / 4096 + (2413.0 / 128) * p) /
+                                  (1 + (2392.0 / 128) * p), 2523.0 / 32);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int stride = 0;
+    const auto* pixels = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly(image, channel, &stride));
+    REQUIRE(pixels);
+    REQUIRE(pixels[0] == Catch::Approx(expected * 65535).margin(6));
+  }
+  REQUIRE(heif_image_get_raw_color_profile_size(image) == 0);
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Nested relative tmap preserves HDR before root PQ quantization")
+{
+  const uint16_t transfer = GENERATE(uint16_t{8}, uint16_t{13});
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {3, 1};
+  metadata.channels[0].gain_map_max = {3, 1};
+  const auto file = build_two_tmap_file(3, transfer, &metadata);
+  auto* context = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(context, file.data(), file.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* outer = nullptr;
+  REQUIRE(heif_context_get_image_handle(context, 5, &outer).code == heif_error_Ok);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_ITU_R_BT_2100_0_PQ;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(outer, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const double p = std::pow(0.2122307574140550956 * 64 * 203 / 10000, 2610.0 / 16384);
+  const double expected = std::pow((3424.0 / 4096 + (2413.0 / 128) * p) /
+                                  (1 + (2392.0 / 128) * p), 2523.0 / 32);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int stride = 0;
+    const auto* pixels = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly(image, channel, &stride));
+    REQUIRE(pixels);
+    REQUIRE(pixels[0] == Catch::Approx(expected * 65535).margin(2));
+  }
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(outer);
+  heif_context_free(context);
+}
+
+TEST_CASE("Float32 tmap output preserves relative HDR, ICC, alpha and baseline fallback")
+{
+  const bool icc_colour = GENERATE(false, true);
+  const bool fallback = GENERATE(false, true);
+  const bool convert = GENERATE(false, true);
+  const bool premultiplied = GENERATE(false, true);
+  const auto icc = make_custom_gamma_icc();
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {3, 1};
+  metadata.channels[0].gain_map_max = {3, 1};
+  const auto file = build_tmap_file(2, 0, fallback ? 1 : 0, 2, 2, 1, false, false, &metadata, premultiplied,
+                                    icc_colour ? &icc : nullptr, icc_colour ? &icc : nullptr,
+                                    13, nullptr, 0, true, 13);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  if (convert) { options->output_image_nclx_profile = requested; }
+  heif_image* image = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(tmap, &image, options, 32);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  const double alpha = premultiplied ? 1.0 / 3 : 1;
+  const double signal = premultiplied ? 0.6 : 127.0 / 255;
+  double expected = icc_colour ? signal * signal : std::pow((signal + 0.055) / 1.055, 2.4);
+  expected *= fallback ? 1 : 8;
+  if (!convert) { expected = icc_colour ? std::sqrt(expected) : 1.055 * std::pow(expected, 1 / 2.4) - 0.055; }
+  expected *= alpha;
+  const auto count = heif_image_get_number_of_used_components(image);
+  REQUIRE(count == (premultiplied ? 4 : 3));
+  std::vector<uint32_t> ids(count);
+  heif_image_get_used_component_ids(image, ids.data());
+  size_t colour_count = 0;
+  for (auto id : ids) {
+    const auto channel = heif_image_get_component_channel(image, id);
+    if (channel == heif_channel_Alpha) { continue; }
+    REQUIRE(heif_image_get_component_datatype(image, id) == heif_component_datatype_floating_point);
+    REQUIRE(heif_image_get_component_bits_per_pixel(image, id) == 32);
+    size_t row_elements = 0;
+    const auto* pixels = heif_image_get_component_float32_readonly(image, id, &row_elements);
+    REQUIRE(pixels);
+    REQUIRE(row_elements >= 2);
+    REQUIRE(pixels[1] == Catch::Approx(expected).margin(0.0003));
+    ++colour_count;
+  }
+  REQUIRE(colour_count == 3);
+  REQUIRE(heif_image_get_raw_color_profile_size(image) == (icc_colour && !convert ? icc.size() : 0));
+  REQUIRE(heif_image_is_premultiplied_alpha(image) == premultiplied);
+  heif_color_profile_nclx* profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
+  REQUIRE(profile->matrix_coefficients == heif_matrix_coefficients_RGB_GBR);
+  REQUIRE(profile->full_range_flag);
+  heif_nclx_color_profile_free(profile);
+  heif_image_release(image);
+  options->convert_hdr_to_8bit = true;
+  image = nullptr;
+  REQUIRE(heif_decode_tone_map_image_float32(tmap, &image, options, 32).code == heif_error_Usage_error);
+  REQUIRE(image == nullptr);
   heif_nclx_color_profile_free(requested);
   options->output_image_nclx_profile = nullptr;
   heif_decoding_options_free(options);

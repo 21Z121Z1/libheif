@@ -123,6 +123,19 @@ heif_error heif_decode_tone_map_image(
     const heif_decoding_options* options,
     double target_headroom);
 
+// Same weighting, returning planar RGB float32 without unit-range clipping.
+// Useful for relative HDR encodings (e.g. extended sRGB ICC) whose reconstructed
+// values exceed 1. Alpha, if present, is separate; query its datatype and depth.
+// output_image_nclx_profile selects primaries/transfer; storage matrix/range do
+// not apply to floating RGB. convert_hdr_to_8bit must be false. Unknown minimum
+// versions still return the baseline, converted to RGB float32.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image_float32(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    const heif_decoding_options* options,
+    double target_headroom);
+
 
 typedef struct heif_tone_map_options
 {

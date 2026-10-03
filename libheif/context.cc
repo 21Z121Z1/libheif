@@ -1552,7 +1552,8 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
                                                                   const heif_decoding_options& options,
                                                                   bool decode_only_tile, uint32_t tx, uint32_t ty,
                                                                   std::set<heif_item_id> processed_ids,
-                                                                  std::optional<double> root_tmap_target_headroom) const
+                                                                  std::optional<double> root_tmap_target_headroom,
+                                                                  bool tmap_output_float) const
 {
   std::shared_ptr<ImageItem> imgitem;
   if (m_all_images.contains(ID)) {
@@ -1621,11 +1622,17 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
     // unknown minimum metadata version. Do not silently re-tag it as sRGB.
     if (options.output_image_nclx_profile) {
       auto converted = convert_tone_map_colour(img, *options.output_image_nclx_profile,
-                                              options, get_security_limits());
+                                              options, get_security_limits(), tmap_output_float);
       if (!converted) { return converted.error(); }
       img = *converted;
     }
-    if (!options.output_image_nclx_profile) {
+    if (tmap_output_float || imgitem->use_item_color_profile_for_decoding()) {
+      auto finished = finish_tone_map_output(img, options, get_security_limits(), tmap_output_float);
+      if (!finished) { return finished.error(); }
+      img = *finished;
+    }
+    if (!options.output_image_nclx_profile || tmap_output_float) {
+      output_options.output_image_nclx_profile = nullptr;
       output_options.output_image_nclx_profile_passthrough = true;
     }
   }

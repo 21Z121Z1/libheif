@@ -36,13 +36,22 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const heif_decoding_options& options,
     const heif_security_limits* limits,
     const std::optional<GainMapColour>& baseline_colour_override = std::nullopt,
-    std::optional<double> target_headroom = std::nullopt);
+    std::optional<double> target_headroom = std::nullopt,
+    bool defer_quantization = false);
+
+// Quantize only at the public output boundary, after nested gains and colour
+// conversion. Internal tmap samples may exceed a relative encoding's unit range.
+Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
+    const std::shared_ptr<HeifPixelImage>& image,
+    const heif_decoding_options& options,
+    const heif_security_limits* limits, bool floating = false);
 
 // Root output conversion, after all nested ISO gain-map operations complete.
 Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
     const std::shared_ptr<HeifPixelImage>& image,
     const heif_color_profile_nclx& requested,
     const heif_decoding_options& options,
-    const heif_security_limits* limits);
+    const heif_security_limits* limits,
+    bool floating = false);
 
 #endif

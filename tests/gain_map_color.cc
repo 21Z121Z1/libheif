@@ -388,6 +388,36 @@ TEST_CASE("Sampled ICC curves use interpolation and normative plateau inverses")
   REQUIRE_FALSE(GainMapColour::from_icc(matrix_profile({invalid, invalid, invalid})));
 }
 
+TEST_CASE("ICC gamma and parametric equations preserve extended relative HDR")
+{
+  const int kind = GENERATE(-2, -1, 0, 1, 2, 3, 4);
+  std::vector<uint8_t> curve;
+  if (kind < 0) {
+    curve = sampled_trc_tag(kind == -2 ? std::vector<uint16_t>{} : std::vector<uint16_t>{512});
+  }
+  else {
+    put_u32(curve, signature("para"));
+    put_u32(curve, 0);
+    put_u16(curve, static_cast<uint16_t>(kind));
+    put_u16(curve, 0);
+    const std::array<double, 7> p{2, 1, 0, kind == 2 ? 0.125 : 0.25, 0.25, 0.125, 0.125};
+    const std::array<size_t, 5> counts{1, 3, 4, 5, 7};
+    for (size_t i = 0; i < counts[static_cast<size_t>(kind)]; ++i) { put_fixed(curve, p[i]); }
+  }
+  auto colour = GainMapColour::from_icc(matrix_profile({curve, curve, curve}));
+  REQUIRE(colour);
+  const GainMapRGB signal{1.25, 2, 4};
+  auto linear = colour->decode(signal);
+  REQUIRE(linear);
+  for (size_t c = 0; c < 3; ++c) {
+    const double expected = kind == -2 ? signal[c] : signal[c] * signal[c] + ((kind == 2 || kind == 4) ? 0.125 : 0);
+    REQUIRE((*linear)[c] == Catch::Approx(expected).margin(1e-12));
+  }
+  auto encoded = colour->encode(*linear);
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; ++c) { REQUIRE((*encoded)[c] == Catch::Approx(signal[c]).margin(1e-12)); }
+}
+
 #if LIBHEIF_TEST_LCMS
 namespace {
 std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,

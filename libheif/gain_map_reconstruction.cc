@@ -387,9 +387,27 @@ struct RGBPlanes {
 
 Error copy_alpha(const std::shared_ptr<HeifPixelImage>& output,
                  const std::shared_ptr<HeifPixelImage>& input, const heif_security_limits* limits,
-                 bool normalize_depth)
+                 bool normalize_depth, bool preserve_precision = false)
 {
   if (!input->has_alpha()) { return Error::Ok; }
+  if (preserve_precision && input->has_channel(heif_channel_Alpha)) {
+    return output->copy_new_channel_from(input, heif_channel_Alpha, heif_channel_Alpha, limits);
+  }
+  if (preserve_precision) {
+    // Typed interleaved alpha has no separate plane to copy.
+    const uint32_t width = input->get_width(), height = input->get_height();
+    if (auto error = output->add_channel(heif_channel_Alpha, width, height, 64, limits,
+                                         heif_component_datatype_floating_point)) { return error; }
+    const SamplePlane alpha(*input, heif_channel_Alpha, true);
+    size_t stride = 0;
+    auto* plane = output->get_channel_memory<double>(heif_channel_Alpha, &stride);
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        plane[size_t(y) * (stride / sizeof(double)) + x] = alpha.sample(x, y);
+      }
+    }
+    return Error::Ok;
+  }
   if (input->get_datatype(heif_channel_Alpha) == heif_component_datatype_unsigned_integer &&
       (input->get_bits_per_pixel(heif_channel_Alpha) == 16 ||
        (input->get_bits_per_pixel(heif_channel_Alpha) < 16 && !normalize_depth))) {
@@ -427,7 +445,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const heif_decoding_options& options,
     const heif_security_limits* limits,
     const std::optional<GainMapColour>& baseline_colour_override,
-    std::optional<double> target_headroom)
+    std::optional<double> target_headroom,
+    bool defer_quantization)
 {
   if (!limits) {
     limits = &global_security_limits;
@@ -486,13 +505,22 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   output->create(width, height, heif_colorspace_RGB, heif_chroma_444);
   const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
   std::array<uint16_t*, 3> out{};
+  std::array<float*, 3> floating_out{};
   std::array<size_t, 3> strides{};
   for (size_t c = 0; c < 3; ++c) {
-    if (auto error = output->add_channel(channels[c], width, height, 16, limits)) {
+    if (auto error = output->add_channel(channels[c], width, height, defer_quantization ? 32 : 16, limits,
+                                          defer_quantization ? heif_component_datatype_floating_point :
+                                                               heif_component_datatype_unsigned_integer)) {
       return error;
     }
-    out[c] = output->get_channel_memory<uint16_t>(channels[c], &strides[c]);
-    strides[c] /= sizeof(uint16_t);
+    if (defer_quantization) {
+      floating_out[c] = output->get_channel_memory<float>(channels[c], &strides[c]);
+      strides[c] /= sizeof(float);
+    }
+    else {
+      out[c] = output->get_channel_memory<uint16_t>(channels[c], &strides[c]);
+      strides[c] /= sizeof(uint16_t);
+    }
   }
   // Co-sited bilinear interpolation, with edge extension. Unnormalize each
   // of the four gain samples BEFORE interpolation; no full-resolution gain
@@ -541,12 +569,24 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       auto encoded = alternate_colour.encode(linear);
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
-        out[c][size_t(y) * strides[c] + x] = static_cast<uint16_t>(
-            std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+        const size_t position = size_t(y) * strides[c] + x;
+        if (defer_quantization) {
+          const float value = static_cast<float>((*encoded)[c] * alpha);
+          if (!std::isfinite(value)) {
+            return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
+                         "Tone-map output exceeds floating-point range"};
+          }
+          floating_out[c][position] = value;
+        }
+        else {
+          out[c][position] = static_cast<uint16_t>(
+              std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+        }
       }
     }
   }
-  if (auto error = copy_alpha(output, *base_rgb, limits, base->get_colorspace() == heif_colorspace_RGB)) { return error; }
+  if (auto error = copy_alpha(output, *base_rgb, limits, base->get_colorspace() == heif_colorspace_RGB,
+                              defer_quantization)) { return error; }
   output->set_premultiplied_alpha(premultiplied);
   auto raster_profile = alternate_colour.raster_profile();
   raster_profile.set_matrix_coefficients(0);
@@ -559,11 +599,69 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   return output;
 }
 
+Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
+    const std::shared_ptr<HeifPixelImage>& image,
+    const heif_decoding_options& options,
+    const heif_security_limits* limits, bool floating)
+{
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  const bool rgb = image->get_colorspace() == heif_colorspace_RGB && image->get_chroma_format() == heif_chroma_444;
+  if (floating && rgb && std::all_of(channels.begin(), channels.end(), [&image](heif_channel channel) {
+        return image->get_datatype(channel) == heif_component_datatype_floating_point &&
+               image->get_bits_per_pixel(channel) == 32;
+      })) {
+    return image;
+  }
+  if (!floating && (!rgb || image->get_datatype(heif_channel_R) != heif_component_datatype_floating_point)) {
+    return image; // Includes an unknown-version baseline fallback.
+  }
+  if (!limits) { limits = &global_security_limits; }
+  auto prepared = prepare_rgb(image, options, limits);
+  if (!prepared) { return prepared.error(); }
+  const uint32_t width = image->get_width(), height = image->get_height();
+  auto output = std::make_shared<HeifPixelImage>();
+  output->create(width, height, heif_colorspace_RGB, heif_chroma_444);
+  output->copy_metadata_from(*image);
+  output->add_warnings(image->get_warnings());
+  const RGBPlanes input(**prepared);
+  for (size_t c = 0; c < 3; ++c) {
+    if (auto error = output->add_channel(channels[c], width, height, floating ? 32 : 16, limits,
+                                         floating ? heif_component_datatype_floating_point :
+                                                    heif_component_datatype_unsigned_integer)) { return error; }
+    size_t stride = 0;
+    auto* plane = output->get_channel_memory(channels[c], &stride);
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        const double value = input.sample(c, x, y);
+        if (!std::isfinite(value) || (floating && !std::isfinite(static_cast<float>(value)))) {
+          return Error{heif_error_Invalid_input, heif_suberror_Unspecified, "Non-finite tone-map output sample"};
+        }
+        if (floating) {
+          reinterpret_cast<float*>(plane + size_t(y) * stride)[x] = static_cast<float>(value);
+        }
+        else {
+          reinterpret_cast<uint16_t*>(plane + size_t(y) * stride)[x] =
+              static_cast<uint16_t>(std::round(std::clamp(value, 0.0, 1.0) * 65535));
+        }
+      }
+    }
+  }
+  if (auto error = copy_alpha(output, *prepared, limits, image->get_colorspace() == heif_colorspace_RGB,
+                              floating)) { return error; }
+  output->set_premultiplied_alpha(image->is_premultiplied_alpha());
+  auto profile = image->get_color_profile_nclx();
+  profile.set_matrix_coefficients(0);
+  profile.set_full_range_flag(true);
+  output->set_color_profile_nclx(profile);
+  return output;
+}
+
 Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
     const std::shared_ptr<HeifPixelImage>& image,
     const heif_color_profile_nclx& requested,
     const heif_decoding_options& options,
-    const heif_security_limits* limits)
+    const heif_security_limits* limits,
+    bool floating)
 {
   if (!limits) { limits = &global_security_limits; }
   auto source = image->get_color_profile_nclx();
@@ -610,11 +708,20 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   output->add_warnings(image->get_warnings());
   const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
   std::array<uint16_t*, 3> out{};
+  std::array<float*, 3> floating_out{};
   std::array<size_t, 3> strides{};
   for (size_t c = 0; c < 3; ++c) {
-    if (auto error = output->add_channel(channels[c], width, height, 16, limits)) { return error; }
-    out[c] = output->get_channel_memory<uint16_t>(channels[c], &strides[c]);
-    strides[c] /= sizeof(uint16_t);
+    if (auto error = output->add_channel(channels[c], width, height, floating ? 32 : 16, limits,
+                                         floating ? heif_component_datatype_floating_point :
+                                                    heif_component_datatype_unsigned_integer)) { return error; }
+    if (floating) {
+      floating_out[c] = output->get_channel_memory<float>(channels[c], &strides[c]);
+      strides[c] /= sizeof(float);
+    }
+    else {
+      out[c] = output->get_channel_memory<uint16_t>(channels[c], &strides[c]);
+      strides[c] /= sizeof(uint16_t);
+    }
   }
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
@@ -630,12 +737,23 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
       auto encoded = target_colour.encode(gain_map_transform(*matrix, *linear));
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
-        out[c][size_t(y) * strides[c] + x] = static_cast<uint16_t>(
-            std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+        const size_t position = size_t(y) * strides[c] + x;
+        if (floating) {
+          const float value = static_cast<float>((*encoded)[c] * alpha);
+          if (!std::isfinite(value)) {
+            return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
+                         "Tone-map output exceeds floating-point range"};
+          }
+          floating_out[c][position] = value;
+        }
+        else {
+          out[c][position] = static_cast<uint16_t>(
+              std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+        }
       }
     }
   }
-  if (auto error = copy_alpha(output, *rgb, limits, image->get_colorspace() == heif_colorspace_RGB)) { return error; }
+  if (auto error = copy_alpha(output, *rgb, limits, image->get_colorspace() == heif_colorspace_RGB, floating)) { return error; }
   target.set_matrix_coefficients(0);
   target.set_full_range_flag(true);
   output->set_color_profile_nclx(target);

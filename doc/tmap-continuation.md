@@ -265,3 +265,41 @@ and the complete suite again has 97 passes/six skips with no failures.
 Experimental ON/OFF ASan/UBSan, local tidy/lint, unchanged stable symbols and
 fresh Mac 27 Apple/Google checks pass. The preceding typed-raster commit's
 four Linux gain-map jobs passed; its hosted Apple job remained queued.
+
+## Additional convergence work (2026-10-03)
+
+Cb and Cr now use their own coded depths and storage widths during direct
+centred bilinear sampling. Interleaved RGB/RGBA reads its actual integer/float
+type, stride, embedded opacity and declared 16-bit byte order. Known-value
+tests cover both input roles and preserve precision before the ISO equation.
+
+RGB ICC v2/v4 LUT transforms now use optional Little CMS in production, with
+independent oracle tests and a runtime-CMM ON/OFF Actions matrix. Missing optional
+colourants permit PCS conversion when the other item defines the application
+primaries; they never invent an application RGB space. Missing transform
+directions remain errors. Each item's `ndwt` now controls its absolute transfer's
+reference-white normalization, including unknown-version baseline fallback.
+
+Pinned stock libultrahdr now verifies actual reconstructed HDR pixels in addition
+to Annex C bytes. Mono/RGB, BT.709/BT.2020/Display P3, both application spaces
+and three headrooms pass 16,416 assertions. The upstream RGBA input path avoids
+its incomplete RGB888 classification; its historical private HEIF API still
+needs a separate adapter for drop-in integration.
+
+Canonical RGB uses its actual identity matrix/full range, independently of
+the alternate item's storage description. Reconstructed nodes retain float32
+samples through nested gains and requested root colour conversion, fixing
+HDR clipping before a requested PQ encoding. ICC gamma/parametric equations
+also retain extended positive values. The experimental float32 decode entry
+point exposes relative HDR above one without changing the existing integer API.
+Tests cover independent HDR expectations, ICC/NCLX, premultiplied opacity,
+version fallback and the component datatype contract.
+
+The complete Mac suite has 97 passes and six capability/external-fixture skips.
+Targeted experimental ON/OFF ASan/UBSan, C headers, 469 stable API symbols,
+lint and LLVM 22 tidy pass. Fresh Mac 27 ImageIO/SDR consumers and the Apple
+producer round trip retain their strict pixel gates. Read-only comparisons
+with two original Apple ISO files exposed the relative-HDR clipping above;
+remaining whole-framework/codec pixel differences are still under investigation.
+Originals and their derived pixel probes stay local and are not redistributed.
+Hosted Mac 15 acceptance is still required; no complete-standards claim is made.

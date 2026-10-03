@@ -245,7 +245,8 @@ static heif_error decode_image(const heif_image_handle* in_handle,
                              heif_colorspace colorspace,
                              heif_chroma chroma,
                              const heif_decoding_options* input_options,
-                             std::optional<double> target_headroom)
+                             std::optional<double> target_headroom,
+                             bool tmap_output_float = false)
 {
   if (out_img == nullptr || in_handle == nullptr) {
     return heif_error_null_pointer_argument;
@@ -264,7 +265,8 @@ static heif_error decode_image(const heif_image_handle* in_handle,
                                                                                                colorspace,
                                                                                                chroma,
                                                                                                dec_options,
-                                                                                               false, 0, 0, {}, target_headroom);
+                                                                                               false, 0, 0, {}, target_headroom,
+                                                                                               tmap_output_float);
 
     if (!decodingResult) {
       return decodingResult.error_struct(in_handle->image.get());
@@ -308,5 +310,21 @@ heif_error heif_decode_tone_map_image(const heif_image_handle* tmap,
             "Expected a root tmap and finite nonnegative log2 target headroom"};
   }
   return decode_image(tmap, out_img, colorspace, chroma, options, target_headroom);
+}
+
+heif_error heif_decode_tone_map_image_float32(const heif_image_handle* tmap,
+                                             heif_image** out_img,
+                                             const heif_decoding_options* options,
+                                             double target_headroom)
+{
+  if (!out_img || !tmap) { return heif_error_null_pointer_argument; }
+  *out_img = nullptr;
+  if (!heif_image_handle_is_tone_map_derived_image(tmap) ||
+      !std::isfinite(target_headroom) || target_headroom < 0 ||
+      (options && options->version >= 2 && options->convert_hdr_to_8bit)) {
+    return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+            "Expected a root tmap, finite nonnegative log2 headroom and floating-point output"};
+  }
+  return decode_image(tmap, out_img, heif_colorspace_RGB, heif_chroma_444, options, target_headroom, true);
 }
 #endif
