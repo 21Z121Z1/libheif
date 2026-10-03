@@ -586,6 +586,22 @@ Error HeifContext::write(StreamWriter& writer)
 
   auto ftyp = m_heif_file->get_ftyp_box();
 
+  // HEIF 2025/Amd.1 10.2.6.2: a manually added 'tmap' brand still
+  // requires a tone-map item, including one that is hidden or nested.
+  if (ftyp->has_compatible_brand(fourcc("tmap"))) {
+    bool has_tone_map = false;
+    for (heif_item_id id : m_heif_file->get_item_IDs()) {
+      if (m_heif_file->get_item_type_4cc(id) == fourcc("tmap")) {
+        has_tone_map = true;
+        break;
+      }
+    }
+    if (!has_tone_map) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "The 'tmap' compatible brand requires a tone-map derived image item"};
+    }
+  }
+
   // set major brand if not set manually yet
   if (ftyp->get_major_brand() == 0) {
     ftyp->set_major_brand(main_brand);

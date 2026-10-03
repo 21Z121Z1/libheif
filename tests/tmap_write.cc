@@ -686,6 +686,33 @@ TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reco
 }
 
 
+TEST_CASE("tmap brand cannot be written without a tone-map item")
+{
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  const auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, colour);
+  heif_encoder_release(encoder);
+  heif_context_add_compatible_brand(ctx, fourcc("tmap"));
+
+  std::vector<uint8_t> encoded;
+  heif_writer writer{};
+  writer.writer_api_version = 1;
+  writer.write = memory_writer;
+  const auto error = heif_context_write(ctx, &writer, &encoded);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Usage_error);
+  REQUIRE(error.subcode == heif_suberror_Invalid_parameter_value);
+  REQUIRE(encoded.empty());
+
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+
 TEST_CASE("tmap writer round-trips graph metadata colour and brand")
 {
   heif_context* ctx = heif_context_alloc();
