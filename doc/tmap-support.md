@@ -4,7 +4,8 @@ This branch implements final-2025 Annex C metadata parsing/writing, first-class
 `tmap` inspection, gain-raster encoding, construction from existing base/gain items, and canonical
 reconstruction with direct NCLX and RGB ICC colour descriptions. ICC matrix/TRC
 profiles use their actual colourants and per-channel curves for the ISO gain-map
-operation. It is not a complete implementation of every colour profile
+operation. RGB LUT profiles with explicit colourants use optional Little CMS.
+It is not a complete implementation of every colour profile
 allowed by HEIF.
 
 ## Reconstruction
@@ -56,15 +57,24 @@ monotone `curveType` or `parametricCurveType` (types 0-4), without matching them
 to a CICP approximation. Sampled curves use linear interpolation; inverse
 plateaus follow ICC.1:2022 Annex F.1. Cross-profile conversions use relative
 colourimetry through the D50 PCS, with a double-precision Bradford white adaptation
-for the supported NCLX spaces. No runtime CMS dependency is added.
+for the supported NCLX spaces.
+
+When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
+input, display and output LUT profiles use their relative-colorimetric CMM
+transforms through XYZ PCS. The actual `rXYZ`/`gXYZ`/`bXYZ` colourants define
+the linear RGB application space. Both directions must be available, and LUT
+tags take precedence over coexisting shaper tags. The CMM uses per-decode
+contexts and uncached transforms. Without this dependency, these profiles
+return unsupported; the matrix/TRC and CICP paths remain available.
 
 When ICC and NCLX are both associated, HEIF 6.5.5's CP=2/TC=2 storage NCLX
 does not replace the ICC colourimetry. Codec matrix/range handling remains on
 the decoded raster. A matrix/TRC alternate retains its original ICC and uses
 CP=2/TC=2 for the RGB raster instead of inventing a CICP encoding. Unknown-version
 baseline fallback also honours ICC during requested output conversion.
-LUT/device-link/non-RGB transforms are not approximated, and a LUT tag does not
-silently fall back to the matrix/TRC model. The original ICC property remains
+LUT profiles without explicit RGB colourants, device-link and non-RGB transforms
+are not approximated. A LUT tag does not silently fall back to the matrix/TRC
+model. The original ICC property remains
 available on the canonical decoded image.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
@@ -161,9 +171,10 @@ full-range samples; bit depth alone does not make a file non-conforming.
 
 ## Remaining limitations
 
-- ICC LUT, device-link, non-RGB and non-monotone shaper transforms remain
-  unsupported. They require a resolved linear RGB application space and a CMS
-  strategy; supported matrix/TRC and CICP cases are handled as described above.
+- ICC LUT profiles without explicit RGB colourants, device-link, non-RGB and
+  non-monotone shaper transforms remain unsupported. ISO Annex B requires a
+  resolved linear RGB application space. Supported RGB LUTs use the optional
+  CMM described above; matrix/TRC and CICP profiles need no CMM dependency.
 - HLG is limited to the reference viewing conditions described above.
 - YCbCr raster conversion supports explicit linear matrices 0, 1, 4, 5, 6, 7
   and 9, plus matrix 12 when the raster's primaries are defined. YCgCo (8),
@@ -205,7 +216,9 @@ container error isolation. Existing `tmap_write` checks writer round trips.
 sampled-curve interpolation and plateau inverses, and actual reconstruction
 with ICC alternates. Optional `LIBHEIF_TEST_LCMS=ON` compares serialized profiles
 in both directions against independent Little CMS. Actions enables this oracle
-for both experimental modes; it is linked only into the test executable.
+for both experimental modes, with the runtime CMM independently enabled and
+disabled. Serialized ICC v2 LUT16 and v4 LUT profiles also have independently
+known gamma, gain and offset expectations, including LUT precedence.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It

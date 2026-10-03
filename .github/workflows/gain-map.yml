@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
       - name: Build HEVC reader and writer
         run: |
-          brew install cmake ninja pkg-config libde265 x265 aom
+          brew install cmake ninja pkg-config libde265 x265 aom little-cms2
           cmake --preset testing -G Ninja -S . -B build-apple \
             -DENABLE_EXPERIMENTAL_FEATURES=ON \
             -DENABLE_PLUGIN_LOADING=OFF -DWITH_EXAMPLES=OFF \
@@ -81,6 +81,7 @@ jobs:
       fail-fast: false
       matrix:
         experimental: ["OFF", "ON"]
+        lcms: ["OFF", "ON"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
@@ -92,6 +93,7 @@ jobs:
           cmake --preset testing -S . -B build-gain-map \
             -DENABLE_EXPERIMENTAL_FEATURES=${{ matrix.experimental }} \
             -DLIBHEIF_TEST_LCMS=ON \
+            -DWITH_LCMS2=${{ matrix.lcms }} \
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
             -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
             -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
@@ -116,7 +118,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
         with:
-          name: gain-map-${{ matrix.experimental }}
+          name: gain-map-${{ matrix.experimental }}-lcms-${{ matrix.lcms }}
           path: build-gain-map/Testing/Temporary/
 
   interop-binary:

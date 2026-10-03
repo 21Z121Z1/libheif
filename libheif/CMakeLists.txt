@@ -286,6 +286,12 @@ if (ZLIB_FOUND)
     target_link_libraries(heif PRIVATE ZLIB::ZLIB)
 endif ()
 
+if (WITH_LCMS2 AND LCMS2_FOUND)
+    target_compile_definitions(heif PRIVATE HAVE_LCMS2=1)
+    target_include_directories(heif PRIVATE ${LCMS2_INCLUDE_DIRS})
+    target_link_libraries(heif PRIVATE ${LCMS2_LINK_LIBRARIES})
+endif ()
+
 if (Brotli_FOUND)
     target_compile_definitions(heif PRIVATE HAVE_BROTLI=1)
     target_include_directories(heif PRIVATE ${BROTLI_INCLUDE_DIRS})

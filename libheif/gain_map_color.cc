@@ -30,6 +30,10 @@
 #include <utility>
 #include <vector>
 
+#if HAVE_LCMS2
+#include <lcms2.h>
+#endif
+
 namespace {
 Error unsupported_colour()
 {
@@ -869,6 +873,23 @@ struct GainMapIccColour
   IccView view;
   std::array<IccTag, 3> curves;
   GainMapMatrix to_pcs;
+#if HAVE_LCMS2
+  cmsContext context = nullptr;
+  cmsHPROFILE lut_profile = nullptr;
+  cmsHPROFILE xyz_profile = nullptr;
+  cmsHTRANSFORM decode_lut = nullptr;
+  cmsHTRANSFORM encode_lut = nullptr;
+  GainMapMatrix from_pcs;
+
+  ~GainMapIccColour()
+  {
+    if (decode_lut) { cmsDeleteTransform(decode_lut); }
+    if (encode_lut) { cmsDeleteTransform(encode_lut); }
+    if (lut_profile) { cmsCloseProfile(lut_profile); }
+    if (xyz_profile) { cmsCloseProfile(xyz_profile); }
+    if (context) { cmsDeleteContext(context); }
+  }
+#endif
 };
 
 namespace {
@@ -1015,17 +1036,19 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     result.m_profile = profile;
     return result;
   }
-  if (view->data_space != icc_sig('R', 'G', 'B', ' ') || view->pcs != icc_sig('X', 'Y', 'Z', ' ') ||
+  if (view->data_space != icc_sig('R', 'G', 'B', ' ') ||
+      (view->pcs != icc_sig('X', 'Y', 'Z', ' ') && view->pcs != icc_sig('L', 'a', 'b', ' ')) ||
       (view->profile_class != icc_sig('m', 'n', 't', 'r') &&
-       view->profile_class != icc_sig('s', 'c', 'n', 'r'))) {
+       view->profile_class != icc_sig('s', 'c', 'n', 'r') &&
+       view->profile_class != icc_sig('p', 'r', 't', 'r'))) {
     return unsupported_icc();
   }
-  // Respect ICC tag precedence; do not substitute the shaper for a LUT/CMM
-  // transform whose linear RGB application space has not been resolved.
+  // Respect ICC LUT precedence even when a matrix/TRC model is also present.
+  bool lut = false;
   for (char i : {'0', '1', '2', '3'}) {
     for (uint32_t tag : {icc_sig('A', '2', 'B', i), icc_sig('B', '2', 'A', i),
                          icc_sig('D', '2', 'B', i), icc_sig('B', '2', 'D', i)}) {
-      if (view->find(tag)) { return unsupported_icc(); }
+      lut |= view->find(tag) != nullptr;
     }
   }
   auto transform = std::make_shared<GainMapIccColour>();
@@ -1034,15 +1057,42 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     const char name = "rgb"[c];
     const auto* xyz = view->find(icc_sig(name, 'X', 'Y', 'Z'));
     const auto* curve = view->find(icc_sig(name, 'T', 'R', 'C'));
-    if (!xyz || !curve) { return unsupported_icc(); }
+    // ISO 21496-1 Annex B needs actual RGB application primaries. PCS XYZ/Lab
+    // alone is not that space; do not substitute sRGB for absent colourants.
+    if (!xyz || (!lut && !curve)) { return unsupported_icc(); }
     auto column = parse_xyz_tag(*view, *xyz);
     if (!column) { return column.error(); }
-    if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
-    transform->curves[c] = *curve;
+    if (!lut) {
+      if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
+      transform->curves[c] = *curve;
+    }
     for (size_t row = 0; row < 3; ++row) { transform->to_pcs[row][c] = (*column)[row]; }
   }
   const double det = determinant(transform->to_pcs);
   if (!std::isfinite(det) || std::abs(det) < 1e-12) { return unsupported_icc(); }
+  if (lut) {
+#if HAVE_LCMS2
+    transform->context = cmsCreateContext(nullptr, nullptr);
+    if (!transform->context) { return unsupported_icc(); }
+    // Per-decode context and uncached transforms avoid shared CMM state during
+    // parallel image decoding. Little CMS validates the bounded tag payloads.
+    cmsSetLogErrorHandlerTHR(transform->context, [](cmsContext, cmsUInt32Number, const char*) {});
+    transform->lut_profile = cmsOpenProfileFromMemTHR(transform->context, view->bytes->data(),
+                                                     static_cast<cmsUInt32Number>(view->profile_size));
+    transform->xyz_profile = cmsCreateXYZProfileTHR(transform->context);
+    if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
+    constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
+    transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, TYPE_RGB_DBL,
+        transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+    transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
+        transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+    if (!transform->decode_lut || !transform->encode_lut) { return unsupported_icc(); }
+    transform->from_pcs = inverse(transform->to_pcs);
+#else
+    return unsupported_icc();
+#endif
+  }
+  else if (view->pcs != icc_sig('X', 'Y', 'Z', ' ')) { return unsupported_icc(); }
   nclx_profile raster = nclx_profile::undefined();
   raster.set_matrix_coefficients(0);
   raster.set_full_range_flag(true);
@@ -1056,6 +1106,15 @@ Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
 {
   if (!m_matrix_trc) { return gain_map_decode_rgb(signal, m_nclx); }
   GainMapRGB result{};
+#if HAVE_LCMS2
+  if (m_matrix_trc->decode_lut) {
+    for (double value : signal) { if (!std::isfinite(value)) { return invalid_value(); } }
+    cmsDoTransform(m_matrix_trc->decode_lut, signal.data(), result.data(), 1);
+    result = gain_map_transform(m_matrix_trc->from_pcs, result);
+    for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+    return result;
+  }
+#endif
   for (size_t c = 0; c < 3; ++c) {
     if (!std::isfinite(signal[c])) { return invalid_value(); }
     auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[c],
@@ -1070,6 +1129,15 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
 {
   if (!m_matrix_trc) { return gain_map_encode_rgb(linear, m_nclx); }
   GainMapRGB result{};
+#if HAVE_LCMS2
+  if (m_matrix_trc->encode_lut) {
+    const auto pcs = gain_map_transform(m_matrix_trc->to_pcs, linear);
+    for (double value : pcs) { if (!std::isfinite(value)) { return invalid_value(); } }
+    cmsDoTransform(m_matrix_trc->encode_lut, pcs.data(), result.data(), 1);
+    for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+    return result;
+  }
+#endif
   for (size_t c = 0; c < 3; ++c) {
     auto value = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[c], linear[c]);
     if (!value) { return value.error(); }
