@@ -321,11 +321,13 @@ The public libheif decoder with that phase yields maxima of 0.016445 and
 pixel identity or as a passed 100% acceptance gate. The originals and full
 auxiliary buffers remain private local evidence.
 
-Hosted run `37091358325` at `91978466` passed all six Linux jobs. On Mac 15,
-ImageIO still returned SDR-range pixels for both synthetic files and the Apple
-producer, while the direct Core Image HDR load gave errors of 0.000000639 and
-0.012865. A request-options A/B now records minimal, floating, nested-options
-and uncached ImageIO requests on failure; the original strict gate is unchanged.
+Hosted runs `37091358325` and `37104332250` passed all six Linux jobs. The
+second run isolated the Mac 15 ImageIO failure: the luma-scaling option must be
+inside `kCGImageSourceDecodeRequestOptions`. With that request, the same hosted
+files decode above reference white with errors of 0.000465 (mono) and 0.015871
+(RGB), below the unchanged 0.025 gate. The corrected script removes the temporary
+request A/B. A fresh local Mac 27 consumer/producer round trip passes 24,635
+assertions; the corrected hosted producer round trip still needs a completed run.
 
 The reconstruction path now observes declared 4:2:0 chroma locations 0-5
 according to H.273 Table 8. A known two-dimensional chroma ramp failed ten

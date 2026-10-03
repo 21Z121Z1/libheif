@@ -30,7 +30,8 @@ let hdrOptions = [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
                   kCGImageSourceShouldCache: true,
                   kCGImageSourceShouldAllowFloat: true,
                   // Check the full alternate, without a generated display curve.
-                  kCGImageSourceGenerateImageSpecificLumaScaling: false] as CFDictionary
+                  kCGImageSourceDecodeRequestOptions:
+                    [kCGImageSourceGenerateImageSpecificLumaScaling: false]] as CFDictionary
 var failures = [String]()
 
 for rgb in [false, true] {
@@ -67,50 +68,9 @@ for rgb in [false, true] {
             maximumError = max(maximumError, abs(value - baselineLinear * gains[c]))
         }
     }
-    // Some hosted macOS ImageIO versions reconstruct extended-range HDR pixels
-    // while leaving CGImage.contentHeadroom at 1.0. The independently checked
-    // extended-linear pixels are the cross-version evidence that DecodeToHDR
-    // actually applied the gain map; contentHeadroom remains diagnostic only.
+    // Independently checked extended-linear pixels establish that DecodeToHDR
+    // applied the gain map; contentHeadroom remains diagnostic only.
     print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
-    if maximumError >= 0.025 {
-        // Diagnostic A/B only; none of these alternatives replaces the gate.
-        let variants: [(String, [CFString: Any])] = [
-            ("minimal", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR]),
-            ("float", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
-                       kCGImageSourceShouldAllowFloat: true]),
-            ("nested-options", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
-                                 kCGImageSourceShouldAllowFloat: true,
-                                 kCGImageSourceDecodeRequestOptions:
-                                    [kCGImageSourceGenerateImageSpecificLumaScaling: false]]),
-            ("no-cache", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
-                          kCGImageSourceShouldAllowFloat: true,
-                          kCGImageSourceShouldCache: false,
-                          kCGImageSourceGenerateImageSpecificLumaScaling: false])
-        ]
-        for (label, options) in variants {
-            guard let probeSource = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary),
-                  let probe = CGImageSourceCreateImageAtIndex(probeSource, 0, options as CFDictionary) else {
-                print("CHECK ImageIO request \(label) \(name) decode failed")
-                continue
-            }
-            var values = [Float](repeating: 0, count: 64 * 64 * 4)
-            values.withUnsafeMutableBytes { bytes in
-                context.render(CIImage(cgImage: probe), toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
-                               bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
-            }
-            var error = 0.0
-            var maximum = 0.0
-            for i in 0..<(64 * 64) {
-                for c in 0..<3 {
-                    let value = Double(values[i * 4 + c])
-                    require(value.isFinite, "Non-finite ImageIO request probe pixel")
-                    maximum = max(maximum, value)
-                    error = max(error, abs(value - baselineLinear * gains[c]))
-                }
-            }
-            print("CHECK ImageIO request \(label) \(name) headroom=\(probe.contentHeadroom) maxLinear=\(maximum) error=\(error) space=\(String(describing: probe.colorSpace?.name))")
-        }
-    }
     // An independent public Core Image load helps distinguish the ImageIO
     // decode-request path from file discovery/reconstruction on hosted Macs.
     // It does not replace or relax the ImageIO pixel gate below.
