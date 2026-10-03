@@ -210,6 +210,8 @@ public:
 
   virtual void get_tile_size(uint32_t& w, uint32_t& h) const;
 
+  virtual bool use_item_color_profile_for_decoding() const { return true; }
+
   virtual Error get_coded_image_colorspace(heif_colorspace* out_colorspace, heif_chroma* out_chroma) const;
 
   Error postprocess_coded_image_colorspace(heif_colorspace* inout_colorspace, heif_chroma* inout_chroma) const;

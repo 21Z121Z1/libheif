@@ -50,6 +50,7 @@
 #include "security_limits.h"
 #include "compression.h"
 #include "color-conversion/colorconversion.h"
+#include "gain_map_reconstruction.h"
 #include "plugin_registry.h"
 #include "image-items/hevc.h"
 #include "image-items/vvc.h"
@@ -566,6 +567,7 @@ static bool item_type_is_image(uint32_t item_type, const std::string& content_ty
   return (item_type == fourcc("hvc1") ||
           item_type == fourcc("av01") ||
           item_type == fourcc("grid") ||
+          item_type == fourcc("tmap") ||
           item_type == fourcc("tili") ||
           item_type == fourcc("iden") ||
           item_type == fourcc("iovl") ||
@@ -1482,7 +1484,10 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
                                                                   heif_chroma out_chroma,
                                                                   const heif_decoding_options& options,
                                                                   bool decode_only_tile, uint32_t tx, uint32_t ty,
-                                                                  std::set<heif_item_id> processed_ids) const
+                                                                  std::set<heif_item_id> processed_ids,
+                                                                  std::optional<double> root_tmap_target_headroom,
+                                                                  bool tmap_output_float,
+                                                                  bool centered_gain_samples) const
 {
   std::shared_ptr<ImageItem> imgitem;
   if (m_all_images.contains(ID)) {
@@ -1510,6 +1515,8 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
   // (GHSA-x8xm-cm2c-cfc8)
   DecodeTraversalState decode_state;
   decode_state.processed_ids = std::move(processed_ids);
+  decode_state.root_tmap_target_headroom = root_tmap_target_headroom;
+  decode_state.centered_gain_map_samples = centered_gain_samples;
 
   const heif_security_limits* limits = get_security_limits();
   if (limits && limits->max_items != 0) {
@@ -1544,7 +1551,27 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
 
   // --- convert to output chroma format
 
-  auto img_result = convert_to_output_colorspace(img, out_colorspace, out_chroma, options);
+  auto output_options = options;
+  if (imgitem->get_infe_type() == fourcc("tmap")) {
+    // Canonical tmap decoding describes the alternate, or the baseline for an
+    // unknown minimum metadata version. Do not silently re-tag it as sRGB.
+    if (options.output_image_nclx_profile) {
+      auto converted = convert_tone_map_colour(img, *options.output_image_nclx_profile,
+                                              options, get_security_limits(), tmap_output_float);
+      if (!converted) { return converted.error(); }
+      img = *converted;
+    }
+    if (tmap_output_float || imgitem->use_item_color_profile_for_decoding()) {
+      auto finished = finish_tone_map_output(img, options, get_security_limits(), tmap_output_float);
+      if (!finished) { return finished.error(); }
+      img = *finished;
+    }
+    if (!options.output_image_nclx_profile || tmap_output_float) {
+      output_options.output_image_nclx_profile = nullptr;
+      output_options.output_image_nclx_profile_passthrough = true;
+    }
+  }
+  auto img_result = convert_to_output_colorspace(img, out_colorspace, out_chroma, output_options);
   if (!img_result) {
     return img_result.error();
   }
@@ -1640,9 +1667,15 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::convert_to_output_colorspac
       output_profile.set_sRGB_defaults();
     }
 
-    return convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
-                                         options.color_conversion_options, options.color_conversion_options_ext,
-                                         get_security_limits());
+    auto converted = convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
+                                        options.color_conversion_options, options.color_conversion_options_ext,
+                                        get_security_limits());
+    if (converted && nclx_passthrough) {
+      // Layout-only RGB operators may have an undefined intermediate profile.
+      // Passthrough must retain the original description, including HDR curves.
+      (*converted)->set_color_profile_nclx(img->get_color_profile_nclx());
+    }
+    return converted;
   }
   else {
     return img;
