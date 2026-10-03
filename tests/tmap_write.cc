@@ -31,6 +31,7 @@
 #include "libheif/heif_items.h"
 #include "libheif/heif_properties.h"
 #include "libheif/heif_entity_groups.h"
+#include "libheif/heif_uncompressed.h"
 #include "test_utils.h"
 #include "gain_map_color.h"
 
@@ -1163,25 +1164,40 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
 
 TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma phase")
 {
+  const int bits = GENERATE(8, 17, 32);
+  const uint32_t width = bits == 8 ? 4 : 5, height = bits == 8 ? 4 : 3;
   const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5});
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
-  auto* pixels = make_ycbcr_image(baseline);
-  REQUIRE(heif_image_set_chroma_location(pixels, location).code == heif_error_Ok);
-  int stride = 0;
-  auto* y_plane = heif_image_get_plane(pixels, heif_channel_Y, &stride);
-  for (size_t y = 0; y < 4; ++y) { std::memset(y_plane + y * stride, 128, 4); }
-  for (auto channel : {heif_channel_Cb, heif_channel_Cr}) {
-    auto* plane = heif_image_get_plane(pixels, channel, &stride);
-    for (uint32_t y = 0; y < 2; ++y) {
-      for (uint32_t x = 0; x < 2; ++x) {
-        plane[size_t(y) * stride + x] = static_cast<uint8_t>((channel == heif_channel_Cb ? 112 : 128) + 16 * x + 32 * y);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(static_cast<int>(width), static_cast<int>(height),
+                          heif_colorspace_YCbCr, heif_chroma_420, &pixels).code == heif_error_Ok);
+  const std::array<heif_cmpd_component_type, 3> types{heif_cmpd_component_type_Y,
+      heif_cmpd_component_type_Cb, heif_cmpd_component_type_Cr};
+  for (size_t c = 0; c < types.size(); ++c) {
+    uint32_t id = 0;
+    const uint32_t cw = c == 0 ? width : (width + 1) / 2;
+    const uint32_t ch = c == 0 ? height : (height + 1) / 2;
+    REQUIRE(heif_image_add_component(pixels, cw, ch, types[c],
+        heif_component_datatype_unsigned_integer, bits, &id).code == heif_error_Ok);
+    size_t row_bytes = 0;
+    auto* plane = heif_image_get_component(pixels, id, &row_bytes);
+    REQUIRE(plane);
+    for (uint32_t y = 0; y < ch; ++y) {
+      for (uint32_t x = 0; x < cw; ++x) {
+        const uint32_t value = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * x + 32 * y) << (bits - 8)) + 1;
+        auto* row = plane + size_t(y) * row_bytes;
+        if (bits <= 8) { row[x] = static_cast<uint8_t>(value); }
+        else { reinterpret_cast<uint32_t*>(row)[x] = value; }
       }
     }
   }
+  REQUIRE(heif_image_set_nclx_color_profile(pixels, &baseline).code == heif_error_Ok);
+  REQUIRE(heif_image_set_chroma_location(pixels, location).code == heif_error_Ok);
+  int stride = 0;
   auto* encoding = heif_encoding_options_alloc();
   REQUIRE(encoding);
   encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
@@ -1202,7 +1218,9 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
   alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
   auto options = make_options(&alternate);
   heif_image_handle* tmap = nullptr;
-  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap).code == heif_error_Ok);
+  const auto add_error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
+  INFO(add_error.message);
+  REQUIRE(add_error.code == heif_error_Ok);
   const auto bytes = write_context(ctx);
   auto* read = reopen(bytes);
   heif_image_handle* handle = nullptr;
@@ -1217,10 +1235,144 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   const std::array<int, 6> cr_code{144, 140, 152, 148, 136, 132};
-  const double expected_red = 128.0 / 255 + 2 * (1 - 0.299) * (cr_code[location] - 128.0) / 255;
+  const double unit = std::ldexp(1.0, bits - 8), maximum = std::ldexp(1.0, bits) - 1;
+  const double expected_red = (128 * unit + 1) / maximum +
+      2 * (1 - 0.299) * ((cr_code[location] - 128) * unit + 1) / maximum;
   const auto* red = reinterpret_cast<const float*>(heif_image_get_plane_readonly(output, heif_channel_R, &stride));
   REQUIRE(red);
   REQUIRE(red[stride / sizeof(float) + 1] == Catch::Approx(expected_red).margin(1e-7));
+  heif_image_handle* raw_handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(base), &raw_handle).code == heif_error_Ok);
+  heif_image* raw = nullptr;
+  REQUIRE(heif_decode_image(raw_handle, &raw, heif_colorspace_undefined,
+                            heif_chroma_undefined, nullptr).code == heif_error_Ok);
+  for (size_t c = 0; c < 3; ++c) {
+    const auto channel = static_cast<heif_channel>(heif_channel_Y + c);
+    const uint32_t cw = c == 0 ? width : (width + 1) / 2;
+    const uint32_t ch = c == 0 ? height : (height + 1) / 2;
+    REQUIRE(heif_image_get_bits_per_pixel_range(raw, channel) == bits);
+    int row_bytes = 0;
+    const auto* plane = heif_image_get_plane_readonly(raw, channel, &row_bytes);
+    REQUIRE(plane);
+    for (uint32_t y = 0; y < ch; ++y) {
+      for (uint32_t x = 0; x < cw; ++x) {
+        const uint32_t expected = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * x + 32 * y) << (bits - 8)) + 1;
+        const auto* row = plane + size_t(y) * row_bytes;
+        REQUIRE((bits <= 8 ? row[x] : reinterpret_cast<const uint32_t*>(row)[x]) == expected);
+      }
+    }
+  }
+  heif_image_release(raw);
+  heif_image_handle_release(raw_handle);
+  heif_image_release(output);
+  heif_decoding_options_free(decoding);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Wide subsampled uncompressed tiles reconstruct at their own component origins")
+{
+  const int bits = GENERATE(17, 32);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
+  const auto make_pixels = [&](uint32_t size, uint32_t tile) {
+    heif_image* image = nullptr;
+    REQUIRE(heif_image_create(static_cast<int>(size), static_cast<int>(size),
+        heif_colorspace_YCbCr, heif_chroma_420, &image).code == heif_error_Ok);
+    const std::array<heif_cmpd_component_type, 3> types{heif_cmpd_component_type_Y,
+        heif_cmpd_component_type_Cb, heif_cmpd_component_type_Cr};
+    const std::array<uint32_t, 3> levels{128, 120 + 2 * tile, 130 + 4 * tile};
+    for (size_t c = 0; c < 3; ++c) {
+      uint32_t id = 0;
+      const uint32_t side = c == 0 ? size : size / 2;
+      REQUIRE(heif_image_add_component(image, side, side, types[c],
+          heif_component_datatype_unsigned_integer, bits, &id).code == heif_error_Ok);
+      size_t stride = 0;
+      auto* plane = heif_image_get_component(image, id, &stride);
+      REQUIRE(plane);
+      for (uint32_t y = 0; y < side; ++y) {
+        for (uint32_t x = 0; x < side; ++x) {
+          reinterpret_cast<uint32_t*>(plane + size_t(y) * stride)[x] = (levels[c] << (bits - 8)) + 1;
+        }
+      }
+    }
+    REQUIRE(heif_image_set_nclx_color_profile(image, &baseline).code == heif_error_Ok);
+    return image;
+  };
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  auto* prototype = make_pixels(8, 0);
+  heif_unci_image_parameters parameters{};
+  parameters.version = 1;
+  parameters.image_width = parameters.image_height = 8;
+  parameters.tile_width = parameters.tile_height = 4;
+  parameters.compression = heif_unci_compression_off;
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_add_empty_unci_image(ctx, &parameters, encoding, prototype, &base).code == heif_error_Ok);
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 2; ++x) {
+      auto* tile = make_pixels(4, y * 2 + x);
+      REQUIRE(heif_context_add_image_tile(ctx, base, x, y, tile, encoder).code == heif_error_Ok);
+      heif_image_release(tile);
+    }
+  }
+  heif_encoding_options_free(encoding);
+  heif_image_release(prototype);
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  int stride = 0;
+  heif_image_get_plane(pixels, heif_channel_Y, &stride)[0] = 255;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(pixels);
+  auto metadata = make_metadata();
+  metadata.channels[0].gain_map_min = metadata.channels[0].gain_map_max = {1, 1};
+  auto alternate = baseline;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  auto options = make_options(&alternate);
+  heif_image_handle* tmap = nullptr;
+  const auto add_error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
+  INFO(add_error.message);
+  REQUIRE(add_error.code == heif_error_Ok);
+  const auto bytes = write_context(ctx);
+  auto* read = reopen(bytes);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  auto* decoding = heif_decoding_options_alloc();
+  REQUIRE(decoding);
+  decoding->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_nearest_neighbor;
+  heif_image* output = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(handle, &output, decoding, 2,
+                                                       heif_gain_map_resampling_phase_co_sited);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const double unit = std::ldexp(1.0, bits - 8), maximum = std::ldexp(1.0, bits) - 1;
+  for (size_t c = 0; c < 3; ++c) {
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly(output,
+        static_cast<heif_channel>(heif_channel_R + c), &stride));
+    REQUIRE(plane);
+    for (uint32_t y = 0; y < 8; ++y) {
+      for (uint32_t x = 0; x < 8; ++x) {
+        const double tile = (y / 4) * 2 + x / 4;
+        const double ey = (128 * unit + 1) / maximum;
+        const double cb = ((-8 + 2 * tile) * unit + 1) / maximum;
+        const double cr = ((2 + 4 * tile) * unit + 1) / maximum;
+        const double r = ey + 1.402 * cr, b = ey + 1.772 * cb;
+        const std::array<double, 3> rgb{r, (ey - 0.299 * r - 0.114 * b) / 0.587, b};
+        REQUIRE(plane[size_t(y) * stride / sizeof(float) + x] == Catch::Approx(2 * rgb[c]).margin(1e-7));
+      }
+    }
+  }
   heif_image_release(output);
   heif_decoding_options_free(decoding);
   heif_image_handle_release(handle);

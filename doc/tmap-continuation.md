@@ -387,3 +387,24 @@ Fresh local Apple consumer/producer checks again pass 24,635 assertions, and
 stock Google container checks pass 884,844 assertions with unchanged tolerances.
 At preceding head `f77db169`, all six Linux Actions jobs passed while the Intel
 Mac job remained queued. Hosted acceptance is still pending actual completion.
+
+Unsigned YCbCr reconstruction now reads 17-32-bit codewords without truncating
+to 16 bits, including independently declared Y/Cb/Cr depths, range scaling,
+bilinear phases and reversible YCgCo lifting. The shared uncompressed decoder
+also reads dense and byte-aligned wide component interleave, retaining native
+storage widths, odd image dimensions and per-component tile origins. The tiled
+writer now keeps explicit ICC/NCLX descriptions; oversized component tiles fail
+before writing outside their decoded planes. Existing narrow sequence edge
+handling and general colour-conversion depth guards remain intact.
+
+Known-value math covers 26,783 assertions in 44 cases; writer tests cover 9,613
+assertions, including serialized odd-sized 17/32-bit planes and tiled tmap
+reconstruction. Complete Mac CTest again has 97 passes/six capability skips and
+no failures. Experimental ON/OFF ASan/UBSan pass ten/seven focused targets,
+including uncompressed tile, narrow sequence and wide-conversion regressions.
+Changed reconstruction/uncompressed sources pass LLVM 22 tidy and source lint.
+Fresh Apple consumer/producer checks pass 24,635 assertions; stock Google
+container checks pass 884,844, with unchanged tolerances. At `3f5b0820`, all six
+Linux Actions jobs passed; the Intel Mac job remained queued. The workflow now
+includes the shared-decoder regressions. Floating and greater-than-32-bit YCbCr
+reconstruction remain explicit limitations.

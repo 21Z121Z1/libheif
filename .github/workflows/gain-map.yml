@@ -65,7 +65,7 @@ jobs:
           cmake --build build-apple --target tmap_read tmap_write tmap_interop --parallel 3
       - name: Verify independent Apple HDR pixels and producer round trip
         run: |
-          ctest --test-dir build-apple -R '^tmap_read$' --output-on-failure
+          ctest --test-dir build-apple -R '^(tmap_read|tmap_write)$' --output-on-failure
           LIBHEIF_TMAP_WRITE_DIR=build-apple/synthetic \
             build-apple/tests/tmap_write 'Generate synthetic*'
           swift scripts/check-tmap-apple.swift build-apple/synthetic
@@ -121,15 +121,15 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
           if [ "${{ matrix.experimental }}" = "ON" ]; then
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write id_creator entity_groups --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write id_creator entity_groups uncompressed_encode uncompressed_encode_multicomponent uncompressed_sequence_odd_chroma uncompressed_tile_range_overflow uncompressed_tile_data_fetch uncompressed_wide_component_colorconv --parallel 2
           else
-            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color id_creator entity_groups --parallel 2
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color id_creator entity_groups uncompressed_encode uncompressed_sequence_odd_chroma uncompressed_tile_range_overflow uncompressed_tile_data_fetch uncompressed_wide_component_colorconv --parallel 2
           fi
       - name: Run metadata, reconstruction and graph regressions
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|id_creator|entity_groups' --output-on-failure
+        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|id_creator|entity_groups|uncompressed_(encode|sequence_odd_chroma|tile_range_overflow|tile_data_fetch|wide_component_colorconv)' --output-on-failure
       - name: Check stable public headers and exported symbols
         run: |
           ./scripts/check-c-headers.sh

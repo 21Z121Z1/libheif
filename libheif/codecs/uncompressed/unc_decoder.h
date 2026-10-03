@@ -119,7 +119,7 @@ public:
       const std::vector<uint32_t>& uncC_index_to_comp_ids);
 
 protected:
-  static bool check_common_requirements(const std::shared_ptr<const Box_uncC>& uncC);
+  static bool check_common_requirements(const std::shared_ptr<const Box_uncC>& uncC, uint16_t maximum_depth = 16);
 
   static bool has_any_multi_byte_components(const std::shared_ptr<const Box_uncC>& uncC);
 

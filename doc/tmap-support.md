@@ -115,15 +115,25 @@ as integer gains. Opacity must be finite and within [0,1]; its original value
 is used before final output quantization. Interleaved RGB/RGBA samples use their
 actual pixel stride and embedded alpha, including native wide integer/float
 storage. RRGGBB(AA) layouts use their declared 16-bit byte order and coded depth.
-No intermediate RGB raster is needed for these layouts. Integer YCbCr inversions use double-precision RGB planes
+No intermediate RGB raster is needed for these layouts. Unsigned 1-32-bit
+YCbCr inversions use double-precision RGB planes
 at the original raster dimensions rather than quantizing before gain. H.273's
 explicit YCgCo code-domain clipping remains in its required order; extended
 TC 11/12 and non-identity TC 13 signals retain their sign and range until the
 ISO linear operation and final output. Other transfers retain their nominal
 signal range. The original non-identity TC 13 description selects the signed
 sYCC EOTF/OETF rather than unsigned sRGB. Floating limited-range, signed/complex component formats,
-and floating or greater-than-16-bit YCbCr rasters remain explicit
+and floating or greater-than-32-bit YCbCr rasters remain explicit
 unsupported cases.
+
+The uncompressed component-interleave decoder supports dense 17-32-bit
+unsigned YCbCr and byte-aligned wide components, including odd image dimensions
+and subsampled tile origins. Native destination storage is independent of
+coded bit depth. Tiles that exceed a component's dimensions return an error;
+ceil-sized chroma tiles cannot extend beyond the full component grid.
+The tiled writer preserves explicit colour descriptions using the ordinary
+encoder's ICC/NCLX policy. General colour-conversion operators retain their
+existing supported-depth checks; gain reconstruction reads wide samples directly.
 
 The default root `tmap` output preserves its alternate encoding instead of
 silently tagging PQ pixels as sRGB. Explicit requested-output NCLX uses the

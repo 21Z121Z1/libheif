@@ -23,6 +23,7 @@
 
 #include "unc_decoder.h"
 #include <memory>
+#include <utility>
 #include <vector>
 
 
@@ -39,6 +40,9 @@ public:
   Error decode_tile(const std::vector<uint8_t>& tile_data,
                     std::shared_ptr<HeifPixelImage>& img,
                     uint32_t out_x0, uint32_t out_y0) override;
+
+private:
+  std::pair<uint32_t, uint32_t> component_tile_size(const Box_uncC::Component& component) const;
 };
 
 

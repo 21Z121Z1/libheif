@@ -340,8 +340,8 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
   struct Codeword {
     uint16_t matrix;
     int y_bits, c_bits;
-    std::array<uint16_t, 3> encoded;
-    std::array<uint16_t, 3> rgb;
+    std::array<uint32_t, 3> encoded;
+    std::array<uint32_t, 3> rgb;
   };
   // Independently calculated H.273 (2024) Eq.51-65 codewords. The odd
   // negative differences exercise floor division in the reversible lifting.
@@ -351,7 +351,11 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
       Codeword{16, 10, 10, {115, 487, 319}, {32, 103, 225}},
       Codeword{17, 9, 9, {115, 231, 63}, {32, 103, 225}},
       Codeword{16, 16, 16, {7250, 30268, 45768}, {15000, 6000, 2000}},
-      Codeword{17, 16, 16, {11000, 22768, 60768}, {30000, 6000, 2000}});
+      Codeword{17, 16, 16, {11000, 22768, 60768}, {30000, 6000, 2000}},
+      Codeword{0, 32, 32, {1073741825, 2147483649, 3221225473}, {3221225473, 1073741825, 2147483649}},
+      Codeword{16, 32, 32, {469762051, 1744830464, 2415919108}, {805306373, 268435459, 536870913}},
+      Codeword{17, 32, 32, {939524099, 1342177279, 2684354554}, {1610612737, 536870915, 1073741831}},
+      Codeword{16, 32, 32, {0, 2147483648, 3221225472}, {1073741823, 0, 0}});
   const bool limited = GENERATE(false, true);
   const bool colour_is_gain = GENERATE(false, true);
   const auto chroma = GENERATE(heif_chroma_444, heif_chroma_422, heif_chroma_420);
@@ -365,7 +369,18 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
     const uint32_t w = c == 0 || chroma == heif_chroma_444 ? 3 : 2;
     const uint32_t h = c == 0 || chroma != heif_chroma_420 ? 3 : 2;
     REQUIRE_FALSE(colour->add_channel(channels[c], w, h, c == 0 ? code.y_bits : code.c_bits, nullptr));
-    colour->fill_channel(channels[c], code.encoded[c]);
+    if (code.y_bits <= 16 && code.c_bits <= 16) {
+      colour->fill_channel(channels[c], static_cast<uint16_t>(code.encoded[c]));
+    }
+    else {
+      size_t stride = 0;
+      auto* plane = colour->get_channel_memory(channels[c], &stride);
+      for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+          reinterpret_cast<uint32_t*>(plane + size_t(y) * stride)[x] = code.encoded[c];
+        }
+      }
+    }
   }
   nclx_profile profile;
   profile.set_colour_primaries(colour_is_gain ? 2 : 1);
@@ -389,8 +404,8 @@ TEST_CASE("Tone maps decode H273 YCgCo codewords at their actual RGB depth")
   }
   auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
   REQUIRE(result);
-  const double offset = limited ? 16.0 * (1U << (rgb_bits - 8)) : 0;
-  const double scale = limited ? 219.0 * (1U << (rgb_bits - 8)) : (1U << rgb_bits) - 1;
+  const double offset = limited ? std::ldexp(16.0, rgb_bits - 8) : 0;
+  const double scale = limited ? std::ldexp(219.0, rgb_bits - 8) : std::ldexp(1.0, rgb_bits) - 1;
   const std::array<heif_channel, 3> rgb_channels{heif_channel_R, heif_channel_G, heif_channel_B};
   for (size_t c = 0; c < rgb_channels.size(); ++c) {
     const double normalized = std::clamp((code.rgb[c] - offset) / scale, 0.0, 1.0);
@@ -915,6 +930,85 @@ TEST_CASE("Tone maps normalize and interpolate Cb and Cr at independent depths")
   }
   REQUIRE(raster->get_bits_per_pixel(heif_channel_Cb) == cb_bits);
   REQUIRE(raster->get_bits_per_pixel(heif_channel_Cr) == cr_bits);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Wide integer YCbCr preserves independent depths through gain reconstruction")
+{
+  const int y_bits = GENERATE(17, 32);
+  const uint16_t matrix = GENERATE(uint16_t{6}, uint16_t{11});
+  const auto chroma = GENERATE(heif_chroma_444, heif_chroma_422, heif_chroma_420);
+  const bool full_range = GENERATE(false, true);
+  const bool as_gain = GENERATE(false, true);
+  const bool bilinear = GENERATE(false, true);
+  const std::array<int, 3> depths{y_bits, 17, 32};
+  const std::array<heif_channel, 3> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  auto raster = std::make_shared<HeifPixelImage>();
+  raster->create(5, 3, heif_colorspace_YCbCr, chroma);
+  for (size_t c = 0; c < 3; ++c) {
+    const uint32_t cw = c == 0 || chroma == heif_chroma_444 ? 5 : 3;
+    const uint32_t ch = c == 0 || chroma != heif_chroma_420 ? 3 : 2;
+    REQUIRE_FALSE(raster->add_channel(channels[c], cw, ch, depths[c], nullptr));
+    size_t stride = 0;
+    auto* plane = raster->get_channel_memory(channels[c], &stride);
+    for (uint32_t y = 0; y < ch; ++y) {
+      auto* row = reinterpret_cast<uint32_t*>(plane + size_t(y) * stride);
+      for (uint32_t x = 0; x < cw; ++x) {
+        row[x] = static_cast<uint32_t>(((c == 0 ? 128 : 116 + 4 * c + 8 * x + 16 * y) <<
+                                       (depths[c] - 8)) + 1);
+      }
+    }
+  }
+  auto alternate = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  auto profile = alternate;
+  profile.set_matrix_coefficients(matrix);
+  profile.set_full_range_flag(full_range);
+  raster->set_color_profile_nclx(profile);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->color_conversion_options.preferred_chroma_upsampling_algorithm = bilinear ?
+      heif_chroma_upsampling_bilinear : heif_chroma_upsampling_nearest_neighbor;
+  options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].gamma = {3, 2};
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(5, 3, heif_colorspace_RGB, heif_chroma_444);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(base->add_channel(channel, 5, 3, 16, nullptr));
+    base->fill_channel(channel, 16384);
+  }
+  base->set_color_profile_nclx(alternate);
+  auto result = reconstruct_tone_map(as_gain ? base : raster,
+                                     as_gain ? raster : make_pixels(1, true, 0, 8),
+                                     metadata, alternate, *options, nullptr, std::nullopt, std::nullopt, true);
+  REQUIRE(result);
+  const std::array<double, 5> position{0, 0.25, 0.75, 1.25, 1.75};
+  for (uint32_t y = 0; y < 3; ++y) {
+    for (uint32_t x = 0; x < 5; ++x) {
+      const double cx = chroma == heif_chroma_444 ? x : bilinear ? position[x] : x / 2;
+      const double cy = chroma != heif_chroma_420 ? y : bilinear ? position[y] : y / 2;
+      const double y_code = std::ldexp(128.0, y_bits - 8) + 1;
+      const double ey = full_range ? y_code / (std::ldexp(1.0, y_bits) - 1) :
+          (y_code - std::ldexp(16.0, y_bits - 8)) / std::ldexp(219.0, y_bits - 8);
+      const double cb = (std::ldexp(-8 + 8 * cx + 16 * cy, 17 - 8) + 1) /
+          (full_range ? std::ldexp(1.0, 17) - 1 : std::ldexp(224.0, 17 - 8));
+      const double cr = (std::ldexp(-4 + 8 * cx + 16 * cy, 32 - 8) + 1) /
+          (full_range ? std::ldexp(1.0, 32) - 1 : std::ldexp(224.0, 32 - 8));
+      const double r = matrix == 6 ? ey + 1.402 * cr : 2 * cr + 0.991902 * ey;
+      const double b = matrix == 6 ? ey + 1.772 * cb : (2 * cb + ey) / 0.986566;
+      const GainMapRGB rgb{r, matrix == 6 ? (ey - 0.299 * r - 0.114 * b) / 0.587 : ey, b};
+      for (size_t c = 0; c < 3; ++c) {
+        const double v = std::clamp(rgb[c], 0.0, 1.0);
+        const double expected = as_gain ? (16384.0 / 65535) * std::exp2(std::pow(v, 2.0 / 3)) : v;
+        size_t stride = 0;
+        const auto* plane = (*result)->get_channel_memory<float>(static_cast<heif_channel>(heif_channel_R + c), &stride);
+        REQUIRE(plane[size_t(y) * stride / sizeof(float) + x] == Catch::Approx(expected).margin(1e-7));
+      }
+    }
+  }
+  REQUIRE(raster->get_channel_memory<uint32_t>(heif_channel_Y, nullptr)[0] ==
+          (uint32_t{128} << (y_bits - 8)) + 1);
   heif_decoding_options_free(options);
 }
 

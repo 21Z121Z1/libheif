@@ -552,7 +552,7 @@ protected:
   // --- encoding utility functions
 
   static std::vector<std::shared_ptr<Box_colr> >
-  add_color_profile(const std::shared_ptr<HeifPixelImage>& image,
+  add_color_profile(const std::shared_ptr<const HeifPixelImage>& image,
                     const heif_encoding_options& options,
                     heif_image_input_class input_class,
                     const heif_color_profile_nclx* target_heif_nclx);
