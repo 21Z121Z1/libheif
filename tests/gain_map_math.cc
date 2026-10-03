@@ -103,6 +103,19 @@ TEST_CASE("sRGB and PQ use independent reference values")
   REQUIRE_FALSE(gain_map_decode_transfer(0.5, 2));
 }
 
+TEST_CASE("Linear transfer retains signed floating values")
+{
+  for (double value : {-4.0, -0.125, 0.0, 0.5, 8.0}) {
+    REQUIRE(*gain_map_decode_transfer(value, 8) == value);
+    REQUIRE(*gain_map_encode_transfer(value, 8) == value);
+  }
+  for (double value : {std::numeric_limits<double>::infinity(),
+                       std::numeric_limits<double>::quiet_NaN()}) {
+    REQUIRE_FALSE(gain_map_decode_transfer(value, 8));
+    REQUIRE_FALSE(gain_map_encode_transfer(value, 8));
+  }
+}
+
 TEST_CASE("BT2020 SDR code points use continuous H273 transfer curves")
 {
   const uint16_t transfer = GENERATE(uint16_t{1}, uint16_t{6}, uint16_t{14}, uint16_t{15});

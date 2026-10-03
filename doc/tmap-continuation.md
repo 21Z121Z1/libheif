@@ -346,3 +346,18 @@ mono/RGB HEIC and AVIF files and libheif-produced mono/RGB HEIC files pass
 constructed HDR intentions. The maximum linear difference is 0.001586; the
 existing LUT/half-precision tolerance is unchanged. The Mac Actions job includes
 the same six synthetic-file comparisons and archives only synthetic evidence.
+
+Requested linear RGB now retains negative out-of-gamut floating components.
+The former transfer-code-8 identity clipped them to zero after the primaries
+conversion. Independent BT.2020-to-BT.709 values reproduce that defect through
+the public floating API, while ordinary integer output retains its final range
+clipping. The scalar identity and public-container regressions fail before the
+two-return correction and pass afterwards.
+
+For the second original Apple file, the public centered-phase linear comparison
+now has a maximum difference of 0.024271 instead of 0.130829; the first remains
+0.016445. These are 589-position comparisons, not full-image equality. Using
+the existing FFmpeg HEVC plugin independently gives 0.021310 on the second
+file. Native math/colour/reader/writer and experimental ON/OFF ASan/UBSan pass.
+Fresh Apple consumer/producer checks pass 24,635 assertions with unchanged
+pixel tolerances, and stock Google container checks pass 884,844 assertions.

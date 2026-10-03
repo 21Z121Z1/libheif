@@ -652,7 +652,7 @@ Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
     case 5: return std::pow(v, 2.8);
     case 7: return v < 4 * smpte240_beta ? v / 4 :
                     std::pow((v + smpte240_alpha - 1) / smpte240_alpha, 1.0 / 0.45);
-    case 8: return v;
+    case 8: return value; // Identity also retains out-of-gamut floating samples.
     case 9: return v == 0 ? 0.0 : std::pow(10.0, 2 * (v - 1));
     case 10: return v == 0 ? 0.0 : std::pow(10.0, 2.5 * (v - 1));
     case 11: return std::copysign(decode_bt(std::abs(value)), value);
@@ -682,7 +682,7 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
     case 5: return std::pow(v, 1.0 / 2.8);
     case 7: return v < smpte240_beta ? 4 * v :
                     smpte240_alpha * std::pow(v, 0.45) - (smpte240_alpha - 1);
-    case 8: return v;
+    case 8: return value;
     case 9: return v < 0.01 ? 0.0 : 1 + std::log10(v) / 2;
     case 10: return v < std::sqrt(10.0) / 1000 ? 0.0 : 1 + std::log10(v) / 2.5;
     case 11: return std::copysign(encode_bt(std::abs(value)), value);

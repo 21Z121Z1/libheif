@@ -1281,6 +1281,53 @@ TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline 
 }
 
 
+TEST_CASE("Floating linear tmap output retains out-of-gamut values")
+{
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  metadata.use_base_colour_space = false;
+  metadata.alternate_hdr_headroom = {4, 1};
+  metadata.channels[0].gain_map_min = {4, 1};
+  metadata.channels[0].gain_map_max = {4, 1};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata,
+                                   false, nullptr, nullptr, 13, nullptr, 0, true, 8);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  REQUIRE(heif_decode_tone_map_image_float32(tmap, &image, options, 32,
+                                            heif_gain_map_resampling_phase_co_sited).code == heif_error_Ok);
+  const double baseline = std::pow((127.0 / 255 + 0.055) / 1.055, 2.4);
+  // BT.2020 red in linear BT.709, independently derived from chromaticities.
+  constexpr std::array<double, 3> red{1.6604910021084345, -0.1245504745215907, -0.0181507633549053};
+  size_t stride = 0;
+  for (size_t c = 0; c < 3; ++c) {
+    const auto channel = static_cast<heif_channel>(heif_channel_R + c);
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(image, channel, &stride));
+    REQUIRE(plane);
+    REQUIRE(plane[0] == Catch::Approx(baseline * (1 + 15 * red[c])).margin(0.00001));
+  }
+  heif_image_release(image);
+  // Integer output still clips at its representable boundary.
+  REQUIRE(heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options).code == heif_error_Ok);
+  REQUIRE(reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_R, &stride))[0] == 65535);
+  REQUIRE(reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_G, &stride))[0] == 0);
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 TEST_CASE("Target headroom decode matches independent ISO and PQ values in both directions")
 {
   const bool reverse = GENERATE(false, true);

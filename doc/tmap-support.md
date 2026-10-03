@@ -130,8 +130,11 @@ outside its representable range.
 The experimental `heif_decode_tone_map_image_float32()` uses the same target
 headroom weighting and returns planar RGB float32, retaining values above one
 in relative encodings such as extended sRGB ICC. Explicit output NCLX can instead
-request linear RGB or PQ. Its alpha plane reports its own datatype and depth;
-an unknown minimum version returns the baseline converted to floating RGB.
+request linear RGB or PQ. Linear RGB retains negative out-of-gamut components
+as well as values above reference white. Its identity transfer does not clip floating samples;
+integer output still clips at the final representable boundary.
+Its alpha plane reports its own datatype and depth; an unknown minimum
+version returns the baseline converted to floating RGB.
 Its explicit phase argument selects co-sited or centered gain-map bilinear
 sampling for all derived nodes. Ordinary integer decode keeps the ISO 6.2.2
 preferred co-sited phase. Centered is a consumer choice, matching the local
