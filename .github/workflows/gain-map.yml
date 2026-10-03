@@ -1,0 +1,185 @@
+name: gain-map-conformance
+
+on:
+  pull_request:
+    branches: [master, v1.24.x]
+  push:
+    branches: [iso21496-gain-map-metadata-core, upstream/iso21496-tmap-v1.24]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  ultrahdr-metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build independent pinned libultrahdr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libjpeg-dev
+          git clone https://github.com/google/libultrahdr.git /tmp/ultrahdr
+          git -C /tmp/ultrahdr checkout 66821e0a261aa3a06c0e7c889f52eced52850be1
+          cmake -S /tmp/ultrahdr -B /tmp/ultrahdr-build \
+            -DUHDR_ENABLE_HEIF=OFF -DUHDR_BUILD_TESTS=OFF \
+            -DUHDR_BUILD_EXAMPLES=OFF -DUHDR_BUILD_DEPS=OFF
+          cmake --build /tmp/ultrahdr-build --parallel 2
+      - name: Check bidirectional Annex C bytes and reconstructed HDR pixels
+        run: |
+          cmake --preset testing -S . -B build-ultrahdr \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
+            -DLIBHEIF_ULTRAHDR_SOURCE_DIR=/tmp/ultrahdr \
+            -DLIBHEIF_ULTRAHDR_LIBRARY=/tmp/ultrahdr-build/libuhdr.a
+          cmake --build build-ultrahdr --target gain_map_ultrahdr --parallel 2
+          ctest --test-dir build-ultrahdr -R '^gain_map_ultrahdr$' --output-on-failure
+
+  apple-frameworks:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build HEVC reader and writer
+        run: |
+          brew install cmake ninja pkg-config libde265 x265 aom dav1d ffmpeg little-cms2
+          sw_vers
+          uname -m
+          xcodebuild -version
+          pkg-config --modversion libde265 x265 aom dav1d libavcodec libavutil
+          cmake --preset testing -G Ninja -S . -B build-apple \
+            -DENABLE_EXPERIMENTAL_FEATURES=ON \
+            -DENABLE_PLUGIN_LOADING=OFF -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=ON -DWITH_LIBDE265_PLUGIN=OFF \
+            -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
+            -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_DAV1D=ON -DWITH_DAV1D_PLUGIN=OFF \
+            -DWITH_FFMPEG_DECODER=ON -DWITH_FFMPEG_DECODER_PLUGIN=OFF \
+            -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF
+          cmake --build build-apple --target tmap_read tmap_write tmap_interop --parallel 3
+      - name: Verify independent Apple HDR pixels and producer round trip
+        run: |
+          ctest --test-dir build-apple -R '^(tmap_read|tmap_write)$' --output-on-failure
+          LIBHEIF_TMAP_WRITE_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_write 'Generate synthetic*'
+          swift scripts/check-tmap-apple.swift build-apple/synthetic
+          LIBHEIF_TMAP_APPLE_FIXTURE=build-apple/synthetic/apple-mono.heic \
+            LIBHEIF_TMAP_INTEROP_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_interop
+      - name: Build stock libultrahdr with its bundled HEIF workaround
+        run: |
+          git clone https://github.com/google/libultrahdr.git /tmp/ultrahdr-heif
+          git -C /tmp/ultrahdr-heif checkout 66821e0a261aa3a06c0e7c889f52eced52850be1
+          cmake -S /tmp/ultrahdr-heif -B /tmp/ultrahdr-heif-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DUHDR_ENABLE_HEIF=ON \
+            -DUHDR_BUILD_DEPS=ON -DUHDR_BUILD_TESTS=OFF \
+            -DUHDR_BUILD_EXAMPLES=ON -DUHDR_ENABLE_GLES=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="$(pkg-config --libs aom libde265 x265)"
+          cmake --build /tmp/ultrahdr-heif-build --target ultrahdr_app --parallel 3
+      - name: Verify bidirectional Google HEIF and AVIF containers and HDR pixels
+        run: |
+          python3 scripts/check-tmap-ultrahdr.py \
+            /tmp/ultrahdr-heif-build/ultrahdr_app build-apple/synthetic
+          LIBHEIF_TMAP_ULTRAHDR_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_interop 'Stock libultrahdr*'
+      - name: Preserve synthetic interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: tmap-apple-synthetic
+          path: build-apple/synthetic/
+
+  conformance:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        experimental: ["OFF", "ON"]
+        lcms: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build with ASan and UBSan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libaom-dev libdav1d-dev libavcodec-dev libavutil-dev libx265-dev liblcms2-dev
+          cmake --preset testing -S . -B build-gain-map \
+            -DENABLE_EXPERIMENTAL_FEATURES=${{ matrix.experimental }} \
+            -DLIBHEIF_TEST_LCMS=ON \
+            -DWITH_LCMS2=${{ matrix.lcms }} \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=OFF -DWITH_X265=OFF -DWITH_X265_PLUGIN=OFF \
+            -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_DAV1D=ON -DWITH_DAV1D_PLUGIN=OFF \
+            -DWITH_FFMPEG_DECODER=ON -DWITH_FFMPEG_DECODER_PLUGIN=OFF \
+            -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          if [ "${{ matrix.experimental }}" = "ON" ]; then
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color tmap_read tmap_write id_creator entity_groups uncompressed_encode uncompressed_encode_multicomponent uncompressed_sequence_odd_chroma uncompressed_tile_range_overflow uncompressed_tile_data_fetch uncompressed_wide_component_colorconv --parallel 2
+          else
+            cmake --build build-gain-map --target gain_map_metadata gain_map_math gain_map_color id_creator entity_groups uncompressed_encode uncompressed_sequence_odd_chroma uncompressed_tile_range_overflow uncompressed_tile_data_fetch uncompressed_wide_component_colorconv --parallel 2
+          fi
+      - name: Run metadata, reconstruction and graph regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-gain-map -R 'gain_map_|tmap_read|tmap_write|id_creator|entity_groups|uncompressed_(encode|sequence_odd_chroma|tile_range_overflow|tile_data_fetch|wide_component_colorconv)' --output-on-failure --output-log build-gain-map/Testing/Temporary/gain-map-leak-check.log
+      - name: Check stable public headers and exported symbols
+        run: |
+          ./scripts/check-c-headers.sh
+          ./scripts/check-api-symbols.sh build-gain-map/libheif/libheif.so
+      - name: Check HEVC codec round trips with ASan and UBSan
+        if: matrix.experimental == 'ON'
+        env:
+          # Ubuntu libx265.so.199 leaks a parameter allocation in encoder_open.
+          # The preceding codec-independent run retains full leak detection.
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          cmake -S . -B build-gain-map -DWITH_X265=ON
+          cmake --build build-gain-map --target tmap_write --parallel 2
+          ctest --test-dir build-gain-map -R '^tmap_write$' --output-on-failure \
+            --output-log build-gain-map/Testing/Temporary/hevc-codec-check.log
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: gain-map-${{ matrix.experimental }}-lcms-${{ matrix.lcms }}
+          path: build-gain-map/Testing/Temporary/
+
+  interop-binary:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install HEVC decoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libde265-dev
+      - name: Build external-sample interop harness
+        run: |
+          cmake --preset testing -S . -B build-interop \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_EXPERIMENTAL_FEATURES=ON \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=ON -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF
+          cmake --build build-interop --target tmap_interop --parallel 2
+      - name: Upload interop harness
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: tmap-interop-linux-x86_64
+          path: |
+            build-interop/tests/tmap_interop
+            build-interop/libheif/libheif.so*

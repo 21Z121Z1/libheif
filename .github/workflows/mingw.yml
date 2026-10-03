@@ -2,9 +2,9 @@ name: mingw
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, upstream/iso21496-tmap-v1.24 ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, v1.24.x ]
 
 permissions:
   contents: read
