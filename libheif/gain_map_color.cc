@@ -1048,7 +1048,8 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
       (view->pcs != icc_sig('X', 'Y', 'Z', ' ') && view->pcs != icc_sig('L', 'a', 'b', ' ')) ||
       (view->profile_class != icc_sig('m', 'n', 't', 'r') &&
        view->profile_class != icc_sig('s', 'c', 'n', 'r') &&
-       view->profile_class != icc_sig('p', 'r', 't', 'r'))) {
+       view->profile_class != icc_sig('p', 'r', 't', 'r') &&
+       view->profile_class != icc_sig('s', 'p', 'a', 'c'))) {
     return unsupported_icc();
   }
   // Respect ICC LUT precedence even when a matrix/TRC model is also present.
@@ -1065,6 +1066,8 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     }
   }
   if (lut && !decode_lut && !encode_lut) { return unsupported_icc(); }
+  // ICC.1:2022 8.7 defines ColorSpace profiles through LUT transforms.
+  if (view->profile_class == icc_sig('s', 'p', 'a', 'c') && !lut) { return unsupported_icc(); }
   auto transform = std::make_shared<GainMapIccColour>();
   transform->view = *view;
   transform->lut = lut;

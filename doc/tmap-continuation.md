@@ -420,3 +420,14 @@ RGB channels, preventing a shared phase from hiding behind a matching red value.
 Native math/reader/writer and experimental ON/OFF ASan/UBSan, tidy and lint pass.
 At `64792b40`, all six Linux Actions jobs, including shared decoder regressions
 and leak detection, passed; the Intel Mac job remained queued.
+
+ICC ColorSpace (`spac`) LUT profiles now join the existing input/display/output
+classes through the same optional CMM. ICC.1:2022 8.7 expressly permits these
+profiles in embedded images. V2/v4 fixtures include both required perceptual
+directions as well as relative-colorimetric LUTs; known gamma/offset/unequal-gain
+values cover both application-space choices and PCS conversion when the other
+item supplies primaries. Six generated variants fail before the class correction.
+The colour target now passes 2,720 assertions, with native math/reader/writer,
+experimental ON/OFF ASan/UBSan, runtime CMM ON/OFF, tidy and lint also passing.
+No new CMM or public API is introduced. At `f160dbb6`, all six Linux Actions jobs
+passed; the Intel Mac job remained queued.

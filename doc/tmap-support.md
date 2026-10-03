@@ -72,7 +72,7 @@ canonical RGB alternate output. Unknown-version baseline fallback can still
 convert a gray baseline to explicitly requested RGB NCLX.
 
 When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
-input, display and output LUT profiles use their relative-colorimetric CMM
+input, display, output and ColorSpace (`spac`) LUT profiles use their relative-colorimetric CMM
 transforms through XYZ PCS. The actual `rXYZ`/`gXYZ`/`bXYZ` colourants define
 the linear RGB application space. A profile without colourants can still convert
 through PCS when the other item supplies the selected application primaries;
@@ -81,6 +81,10 @@ needed must be available. Missing LUT directions return unsupported instead of
 falling back to coexisting shaper tags. The CMM uses per-decode
 contexts and uncached transforms. Without this dependency, these profiles
 return unsupported; the matrix/TRC and CICP paths remain available.
+ColorSpace profiles are permitted in embedded images by
+[ICC.1:2022, 8.7](https://www.color.org/specifications/ICC.1-2022-05.pdf).
+Their LUTs use the same direction and application-primaries rules above;
+changing the profile class does not select a matrix/TRC approximation.
 
 When ICC and NCLX are both associated, HEIF 6.5.5's CP=2/TC=2 storage NCLX
 does not replace the ICC colourimetry. Codec matrix/range handling remains on

@@ -648,7 +648,8 @@ TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
 
 namespace {
 std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,
-                                                       bool colourants = true, bool encode = true)
+                                                       bool colourants = true, bool encode = true,
+                                                       cmsProfileClassSignature profile_class = cmsSigDisplayClass)
 {
   using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
   using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
@@ -665,6 +666,7 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
   Profile profile(cmsCreateRGBProfile(&white, &primaries, curves), cmsCloseProfile);
   REQUIRE(profile);
   cmsSetProfileVersion(profile.get(), version);
+  cmsSetDeviceClass(profile.get(), profile_class);
   // D50-scaled XYZ basis makes the intended LUT and application-space values
   // independently known. Deliberately leave the identity TRCs in the profile:
   // selecting those instead of the LUT would miss the gamma entirely.
@@ -712,6 +714,10 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
     }
     REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, output_curves)));
     REQUIRE(cmsWriteTag(profile.get(), inverse ? cmsSigBToA1Tag : cmsSigAToB1Tag, pipeline.get()));
+    if (profile_class == cmsSigColorSpaceClass) {
+      // ICC.1:2022 8.7 requires both perceptual directions for ColorSpace profiles.
+      REQUIRE(cmsWriteTag(profile.get(), inverse ? cmsSigBToA0Tag : cmsSigAToB0Tag, pipeline.get()));
+    }
   }
   if (!colourants) {
     for (auto tag : tags) { REQUIRE(cmsWriteTag(profile.get(), tag, nullptr)); }
@@ -728,10 +734,11 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
 TEST_CASE("ICC LUT PCS conversions need primaries only on the selected application space")
 {
   const double version = GENERATE(2.1, 4.3);
+  const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);
   const bool missing_base = GENERATE(false, true);
-  const auto profile = rgb_lut_profile(version, 2);
+  const auto profile = rgb_lut_profile(version, 2, true, true, profile_class);
   // Keep the real LUTs, omitting only the three optional RGB colourant tags.
-  auto pcs = GainMapColour::from_icc(rgb_lut_profile(version, 2, false));
+  auto pcs = GainMapColour::from_icc(rgb_lut_profile(version, 2, false, true, profile_class));
   auto rgb = GainMapColour::from_icc(profile);
   INFO((pcs ? "PCS transform supported" : pcs.error().message));
   REQUIRE(pcs);
@@ -783,7 +790,8 @@ TEST_CASE("ICC LUT PCS conversions need primaries only on the selected applicati
 TEST_CASE("RGB ICC LUTs retain their application primaries and take precedence over shaper tags")
 {
   const double version = GENERATE(2.1, 4.3);
-  const auto profile = rgb_lut_profile(version, 2);
+  const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);
+  const auto profile = rgb_lut_profile(version, 2, true, true, profile_class);
   auto colour = GainMapColour::from_icc(profile);
   REQUIRE(colour);
   auto linear = colour->decode({0.25, 0.5, 0.75});
@@ -798,7 +806,7 @@ TEST_CASE("RGB ICC LUTs retain their application primaries and take precedence o
   REQUIRE(colour->icc_profile() == profile);
   REQUIRE_FALSE(colour->decode({INFINITY, 0, 0}));
   REQUIRE_FALSE(colour->encode({NAN, 0, 0}));
-  auto alternate = GainMapColour::from_icc(rgb_lut_profile(version, 1));
+  auto alternate = GainMapColour::from_icc(rgb_lut_profile(version, 1, true, true, profile_class));
   REQUIRE(alternate);
   const bool use_base = GENERATE(false, true);
   GainMapMetadata metadata;
@@ -845,7 +853,8 @@ TEST_CASE("RGB ICC LUTs retain their application primaries and take precedence o
 #else
 TEST_CASE("RGB ICC LUTs return unsupported when the optional CMM is disabled")
 {
-  auto colour = GainMapColour::from_icc(rgb_lut_profile(4.3, 2));
+  const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);
+  auto colour = GainMapColour::from_icc(rgb_lut_profile(4.3, 2, true, true, profile_class));
   REQUIRE_FALSE(colour);
   REQUIRE(colour.error().error_code == heif_error_Unsupported_feature);
 }
