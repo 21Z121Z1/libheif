@@ -117,7 +117,8 @@ std::vector<uint8_t> build_tmap_file(
     uint16_t alternate_matrix = 9,
     bool alternate_full_range = true,
     uint16_t alternate_transfer = 16,
-    bool wide_gain = false)
+    bool wide_gain = false,
+    bool rotate_gain = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -178,7 +179,7 @@ std::vector<uint8_t> build_tmap_file(
   append(ipco_payload, base_colr);
   append(ipco_payload, gain_colr);
   append(ipco_payload, tmap_colr);
-  if (rotate_base) {
+  if (rotate_base || rotate_gain) {
     append(ipco_payload, make_box("irot", std::vector<uint8_t>{1}));
   }
   if (premultiplied_base) {
@@ -186,7 +187,7 @@ std::vector<uint8_t> build_tmap_file(
     const std::vector<uint8_t> auxiliary_payload(auxiliary_type, auxiliary_type + sizeof(auxiliary_type));
     append(ipco_payload, make_box("auxC", auxiliary_payload, true));
   }
-  uint8_t next_property = static_cast<uint8_t>(6 + (rotate_base ? 1 : 0) + (premultiplied_base ? 1 : 0));
+  uint8_t next_property = static_cast<uint8_t>(6 + (rotate_base || rotate_gain ? 1 : 0) + (premultiplied_base ? 1 : 0));
   uint8_t baseline_icc_property = 0, alternate_icc_property = 0;
   for (const auto* profile : {baseline_icc, alternate_icc}) {
     if (!profile) { continue; }
@@ -232,10 +233,13 @@ std::vector<uint8_t> build_tmap_file(
   if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[0]); }
 
   put_u16_be(ipma_payload, 2);
-  ipma_payload.push_back(3);
+  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_gain ? 1 : 0)));
   ipma_payload.push_back(0x80 | gain_ispe_property);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(4);
+  if (rotate_gain) {
+    ipma_payload.push_back(0x80 | 6);
+  }
 
   put_u16_be(ipma_payload, 3);
   ipma_payload.push_back(static_cast<uint8_t>((alternate_icc ? 3 : 2) + (diffuse_whites ? 1 : 0)));
@@ -248,7 +252,7 @@ std::vector<uint8_t> build_tmap_file(
     ipma_payload.push_back(3);
     ipma_payload.push_back(0x80 | 1);
     ipma_payload.push_back(0x80 | 2);
-    ipma_payload.push_back(0x80 | (rotate_base ? 7 : 6));
+    ipma_payload.push_back(0x80 | (rotate_base || rotate_gain ? 7 : 6));
   }
 
   auto ipma = make_box("ipma", ipma_payload, true);
@@ -270,6 +274,10 @@ std::vector<uint8_t> build_tmap_file(
     idat_payload[1] = 63;
     idat_payload[2] = 127;
     idat_payload[3] = 255;
+  }
+  if (rotate_gain) {
+    const std::array<uint8_t, 4> samples{255, 0, 191, 64};
+    std::copy(samples.begin(), samples.end(), idat_payload.begin() + width * height);
   }
   idat_payload.insert(
       idat_payload.end(), tmap_payload.begin(), tmap_payload.end());
@@ -1738,6 +1746,57 @@ TEST_CASE("Baseline fallback applies child transforms when root transforms are s
   REQUIRE(pixels[0] == 63);
   REQUIRE(pixels[1] == 255);
   heif_image_release(image);
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Jointly oriented baseline and nonuniform gain retain display-space correspondence")
+{
+  const bool ignore_root_transformations = GENERATE(false, true);
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, true, false, nullptr, false,
+                                    nullptr, nullptr, 13, nullptr, 9, true, 16, false, true);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  options->ignore_transformations = ignore_root_transformations;
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(
+      tmap, &image, options, 32, heif_gain_map_resampling_phase_centered);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  // irot=1 rotates counterclockwise: displayed pairs are source indices 1,3,0,2.
+  // Annex C maps gain samples to [-1,1]; full alternate headroom gives weight 1.
+  const std::array<double, 4> base{63.0 / 255, 1, 0, 127.0 / 255};
+  const std::array<double, 4> gain{0, 64.0 / 255, 1, 191.0 / 255};
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE(heif_image_get_width(image, channel) == 2);
+    REQUIRE(heif_image_get_height(image, channel) == 2);
+    int stride = 0;
+    const auto* pixels = heif_image_get_plane_readonly(image, channel, &stride);
+    REQUIRE(pixels);
+    for (size_t y = 0; y < 2; ++y) {
+      const auto* row = reinterpret_cast<const float*>(pixels + y * stride);
+      for (size_t x = 0; x < 2; ++x) {
+        const size_t index = y * 2 + x;
+        const double linear = base[index] <= 0.04045 ? base[index] / 12.92 :
+                              std::pow((base[index] + 0.055) / 1.055, 2.4);
+        REQUIRE(row[x] == Catch::Approx(linear * std::exp2(-1 + 2 * gain[index])).margin(1e-6));
+      }
+    }
+  }
+  heif_image_release(image);
+  options->output_image_nclx_profile = nullptr;
+  heif_nclx_color_profile_free(requested);
   heif_decoding_options_free(options);
   heif_image_handle_release(tmap);
   heif_context_free(ctx);
