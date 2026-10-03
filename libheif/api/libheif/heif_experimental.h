@@ -216,6 +216,9 @@ heif_error heif_context_encode_gain_map_image(
     const heif_gain_map_image_options* gain_options,
     heif_image_handle** out_gain);
 
+// The base and gain must have the same effective display orientation.
+// Equivalent ordered irot/imir compositions are accepted; a mismatch is
+// rejected before adding an item or changing visibility/alternative groups.
 LIBHEIF_API
 heif_error heif_context_add_tone_map_derived_image(
     heif_context* ctx,

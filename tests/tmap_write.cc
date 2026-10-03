@@ -106,14 +106,17 @@ heif_image* make_ycbcr_image(
 heif_image_handle* encode_image_with_profile(
     heif_context* ctx,
     heif_encoder* encoder,
-    const heif_color_profile_nclx& nclx)
+    const heif_color_profile_nclx& nclx,
+    heif_orientation orientation = heif_orientation_normal,
+    int width = 4, int height = 4)
 {
-  heif_image* image = make_ycbcr_image(nclx);
+  heif_image* image = make_ycbcr_image(nclx, width, height);
   heif_encoding_options* options =
       heif_encoding_options_alloc();
   REQUIRE(options != nullptr);
   options->output_nclx_profile =
       const_cast<heif_color_profile_nclx*>(&nclx);
+  options->image_orientation = orientation;
 
   heif_image_handle* handle = nullptr;
   heif_error error = heif_context_encode_image(
@@ -1156,6 +1159,136 @@ TEST_CASE("tmap writer rejects invalid roles without changing primary")
   heif_context_free(ctx);
 }
 
+TEST_CASE("tmap writer requires matching effective input orientation")
+{
+  const int base_orientation = GENERATE(1, 2, 3, 4, 5, 6, 7, 8);
+  const int gain_orientation = GENERATE(1, 2, 3, 4, 5, 6, 7, 8);
+  INFO("base=" << base_orientation << " gain=" << gain_orientation);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, baseline,
+      static_cast<heif_orientation>(base_orientation));
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour,
+      static_cast<heif_orientation>(gain_orientation));
+  heif_encoder_release(encoder);
+  const auto count = heif_context_get_number_of_items(ctx);
+  const auto base_id = heif_image_handle_get_item_id(base);
+  const auto gain_id = heif_image_handle_get_item_id(gain);
+  auto metadata = make_metadata();
+  auto* options = heif_tone_map_options_alloc();
+  REQUIRE(options);
+  options->alternate_nclx = &baseline;
+  heif_image_handle* output = nullptr;
+  const auto error = heif_context_add_tone_map_derived_image(ctx, base, gain,
+      &metadata, options, &output);
+  if (base_orientation == gain_orientation) {
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    REQUIRE(output);
+    heif_image_handle_release(output);
+  }
+  else {
+    REQUIRE(error.code == heif_error_Usage_error);
+    REQUIRE(error.subcode == heif_suberror_Invalid_parameter_value);
+    REQUIRE(output == nullptr);
+    REQUIRE(heif_context_get_number_of_items(ctx) == count);
+    REQUIRE_FALSE(heif_item_is_item_hidden(ctx, gain_id));
+    heif_item_id primary = 0;
+    REQUIRE(heif_context_get_primary_image_ID(ctx, &primary).code == heif_error_Ok);
+    REQUIRE(primary == base_id);
+  }
+  heif_tone_map_options_free(options);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("tmap writer compares ordered rotation and mirror composition")
+{
+  const int sequence = GENERATE(0, 1, 2, 3, 4);
+  INFO("sequence=" << sequence);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, baseline,
+      heif_orientation_normal, 4, 6);
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
+  heif_encoder_release(encoder);
+  const auto add = [&](heif_image_handle* image, uint32_t type, uint8_t value) {
+    REQUIRE(heif_item_add_raw_property(ctx, heif_image_handle_get_item_id(image),
+        type, nullptr, &value, 1, 1, nullptr).code == heif_error_Ok);
+  };
+  constexpr auto rotation = heif_fourcc('i', 'r', 'o', 't');
+  constexpr auto mirror = heif_fourcc('i', 'm', 'i', 'r');
+  if (sequence == 0) {
+    // Horizontal reflection equals 180 degrees followed by vertical reflection.
+    add(base, mirror, 1);
+    add(gain, rotation, 2);
+    add(gain, mirror, 0);
+  }
+  else if (sequence == 1 || sequence == 2 || sequence == 4) {
+    const uint8_t turns = sequence == 2 ? 3 : 1;
+    add(base, rotation, turns);
+    add(base, mirror, 1);
+    // Reversing the order requires reflecting about the other axis.
+    add(gain, mirror, sequence == 4 ? 1 : 0);
+    add(gain, rotation, turns);
+  }
+  else {
+    add(base, rotation, 0); // An explicit identity equals an absent property.
+  }
+  auto metadata = make_metadata();
+  auto options = make_options(&baseline);
+  heif_image_handle* output = nullptr;
+  const auto error = heif_context_add_tone_map_derived_image(ctx, base, gain,
+      &metadata, &options, &output);
+  if (sequence == 4) {
+    REQUIRE(error.code == heif_error_Usage_error);
+    REQUIRE(output == nullptr);
+  }
+  else {
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    REQUIRE(output);
+    const int width = sequence == 1 || sequence == 2 ? 6 : 4;
+    const int height = sequence == 1 || sequence == 2 ? 4 : 6;
+    REQUIRE(heif_image_handle_get_ispe_width(output) == width);
+    REQUIRE(heif_image_handle_get_ispe_height(output) == height);
+    const auto bytes = write_context(ctx);
+    auto* read = reopen(bytes);
+    heif_image_handle* reopened = nullptr;
+    REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(output),
+        &reopened).code == heif_error_Ok);
+    heif_image* pixels = nullptr;
+    const auto decoded = heif_decode_tone_map_image_float32(reopened, &pixels,
+        nullptr, 4, heif_gain_map_resampling_phase_co_sited);
+    INFO(decoded.message);
+    REQUIRE(decoded.code == heif_error_Ok);
+    REQUIRE(heif_image_get_primary_width(pixels) == width);
+    REQUIRE(heif_image_get_primary_height(pixels) == height);
+    heif_image_release(pixels);
+    heif_image_handle_release(reopened);
+    heif_context_free(read);
+    heif_image_handle_release(output);
+  }
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
 {
   auto* ctx = heif_context_alloc();
@@ -1552,8 +1685,13 @@ TEST_CASE("tmap writer uses cropped and oriented HEVC baseline dimensions")
                             &pixels).code == heif_error_Ok);
   fill_new_plane(pixels, heif_channel_Y, 4, 2);
   heif_image_handle* gain = nullptr;
-  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr,
+  encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  // The gain retains the baseline's display orientation (ISO 21496-1, 4.5).
+  encoding->image_orientation = static_cast<heif_orientation>(orientation);
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, encoding, nullptr,
                                             &gain).code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
   heif_image_release(pixels);
   heif_encoder_release(encoder);
   auto alternate = baseline;

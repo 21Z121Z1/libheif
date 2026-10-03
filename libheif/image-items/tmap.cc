@@ -186,6 +186,47 @@ Error validate_tone_map_inputs(
   return Error::Ok;
 }
 
+Result<unsigned int> orientation_component(const std::shared_ptr<Box>& property)
+{
+  if (auto rotation = std::dynamic_pointer_cast<Box_irot>(property)) {
+    return static_cast<unsigned int>(rotation->get_rotation_ccw() / 90);
+  }
+  if (auto mirror = std::dynamic_pointer_cast<Box_imir>(property)) {
+    return static_cast<unsigned int>(mirror->get_mirror_direction());
+  }
+  // The raw-property API retains known boxes as Box_other until reopening.
+  auto raw = std::dynamic_pointer_cast<Box_other>(property);
+  if (!raw || raw->get_raw_data().size() != 1) {
+    return Error{heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                 "Tone-map orientation requires a complete irot or imir property"};
+  }
+  const unsigned int mask = property->get_short_type() == fourcc("irot") ? 3 : 1;
+  return static_cast<unsigned int>(raw->get_raw_data()[0]) & mask;
+}
+
+Result<std::pair<unsigned int, bool>> effective_orientation(const ImageItem& item)
+{
+  auto properties = item.get_properties();
+  if (!properties) { return properties.error(); }
+  // Canonical form R^turns H^reflected, composed in ipma display order.
+  // H reverses rotations; vertical reflection is R^2 H.
+  std::pair<unsigned int, bool> orientation{0, false};
+  for (const auto& property : *properties) {
+    const auto type = property->get_short_type();
+    if (type != fourcc("irot") && type != fourcc("imir")) { continue; }
+    auto component = orientation_component(property);
+    if (!component) { return component.error(); }
+    if (type == fourcc("irot")) {
+      orientation.first = (orientation.first + *component) % 4;
+    }
+    else {
+      orientation.first = (4 + (*component == 0 ? 2 : 0) - orientation.first) % 4;
+      orientation.second = !orientation.second;
+    }
+  }
+  return orientation;
+}
+
 Result<GainMapColour> resolve_tone_map_colour(const ImageItem& item)
 {
   const auto nclx = item.get_color_profile_nclx();
@@ -272,6 +313,15 @@ ImageItem_tmap::add_new_tone_map_item(
     return error;
   }
 
+  auto base_orientation = effective_orientation(*base);
+  if (!base_orientation) { return base_orientation.error(); }
+  auto gain_orientation = effective_orientation(*gain);
+  if (!gain_orientation) { return gain_orientation.error(); }
+  if (*base_orientation != *gain_orientation) {
+    return Error{heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                 "Tone-map base and gain images must have matching effective orientation"};
+  }
+
   if (tone_map_image.version != 0) {
     return Error{
         heif_error_Unsupported_feature,
@@ -301,8 +351,10 @@ ImageItem_tmap::add_new_tone_map_item(
   auto base_properties = base->get_properties();
   if (!base_properties) { return base_properties.error(); }
   for (const auto& property : *base_properties) {
-    if (auto rotation = std::dynamic_pointer_cast<Box_irot>(property)) {
-      if (rotation->get_rotation_ccw() == 90 || rotation->get_rotation_ccw() == 270) {
+    if (property->get_short_type() == fourcc("irot")) {
+      auto rotation = orientation_component(property);
+      if (!rotation) { return rotation.error(); }
+      if (*rotation % 2 != 0) {
         std::swap(width, height);
       }
     }
