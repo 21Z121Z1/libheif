@@ -35,6 +35,12 @@ set(libheif_headers
 set(libheif_sources
         bitstream.cc
         bitstream.h
+        gain_map_color.cc
+        gain_map_color.h
+        gain_map_reconstruction.cc
+        gain_map_reconstruction.h
+        gain_map_math.cc
+        gain_map_math.h
         gain_map_metadata.cc
         gain_map_metadata.h
         box.cc
@@ -276,6 +282,12 @@ endif ()
 if (ZLIB_FOUND)
     target_compile_definitions(heif PRIVATE HAVE_ZLIB=1)
     target_link_libraries(heif PRIVATE ZLIB::ZLIB)
+endif ()
+
+if (WITH_LCMS2 AND LCMS2_FOUND)
+    target_compile_definitions(heif PRIVATE HAVE_LCMS2=1)
+    target_include_directories(heif PRIVATE ${LCMS2_INCLUDE_DIRS})
+    target_link_libraries(heif PRIVATE ${LCMS2_LINK_LIBRARIES})
 endif ()
 
 if (Brotli_FOUND)

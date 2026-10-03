@@ -27,6 +27,7 @@
 #include <bit>
 #include <cassert>
 #include <cstring>
+#include <tuple>
 #include <vector>
 
 
@@ -39,25 +40,40 @@ unc_decoder_bytealign_component_interleave::unc_decoder_bytealign_component_inte
 {
 }
 
+std::pair<uint32_t, uint32_t> unc_decoder_bytealign_component_interleave::component_tile_size(
+    const Box_uncC::Component& component) const
+{
+  uint32_t width = m_tile_width, height = m_tile_height;
+  heif_channel channel;
+  if (map_uncompressed_component_to_channel(m_cmpd, component, &channel) &&
+      (channel == heif_channel_Cb || channel == heif_channel_Cr)) {
+    const auto sampling = m_uncC->get_sampling_type();
+    if (sampling == sampling_mode_422 || sampling == sampling_mode_420) { width = width / 2 + width % 2; }
+    if (sampling == sampling_mode_420) { height = height / 2 + height % 2; }
+  }
+  return {width, height};
+}
+
 
 Result<std::vector<uint64_t>> unc_decoder_bytealign_component_interleave::get_tile_data_sizes() const
 {
   uint64_t total_tile_size = 0;
 
   for (const auto& component : m_uncC->get_components()) {
+    const auto [width, height] = component_tile_size(component);
     uint32_t bytes_per_sample = (component.component_bit_depth + 7) / 8;
     if (component.component_align_size > 0) {
       skip_to_alignment(bytes_per_sample, component.component_align_size);
     }
 
-    if (bytes_per_sample != 0 && m_tile_width > UINT32_MAX / bytes_per_sample) {
+    if (bytes_per_sample != 0 && width > UINT32_MAX / bytes_per_sample) {
       return Error{heif_error_Invalid_input, heif_suberror_Invalid_image_size,
                    "uncompressed tile row size exceeds 32-bit range"};
     }
-    uint32_t bytes_per_row = bytes_per_sample * m_tile_width;
+    uint32_t bytes_per_row = bytes_per_sample * width;
     skip_to_alignment(bytes_per_row, m_uncC->get_row_align_size());
 
-    total_tile_size += static_cast<uint64_t>(bytes_per_row) * m_tile_height;
+    total_tile_size += static_cast<uint64_t>(bytes_per_row) * height;
   }
 
   if (m_uncC->get_tile_align_size() != 0) {
@@ -79,6 +95,7 @@ Error unc_decoder_bytealign_component_interleave::decode_tile(const std::vector<
     bool use;
     uint8_t* dst_plane;
     size_t dst_plane_stride;
+    uint32_t width, height;
   };
 
   const auto& components = m_uncC->get_components();
@@ -88,6 +105,7 @@ Error unc_decoder_bytealign_component_interleave::decode_tile(const std::vector<
   for (uint32_t i = 0; i < num_components; i++) {
     const auto& c = components[i];
     comp[i].bytes_per_sample = (c.component_bit_depth + 7) / 8;
+    std::tie(comp[i].width, comp[i].height) = component_tile_size(c);
 
     comp[i].use = true; // map_uncompressed_component_to_channel(m_cmpd, c, &channel);
 #if 0
@@ -121,13 +139,22 @@ Error unc_decoder_bytealign_component_interleave::decode_tile(const std::vector<
       skip_to_alignment(aligned_bytes_per_sample, components[c].component_align_size);
     }
 
-    uint64_t bytes_per_row = static_cast<uint64_t>(aligned_bytes_per_sample) * m_tile_width;
+    uint64_t bytes_per_row = static_cast<uint64_t>(aligned_bytes_per_sample) * comp[c].width;
     skip_to_alignment(bytes_per_row, m_uncC->get_row_align_size());
 
-    for (uint32_t tile_y = 0; tile_y < m_tile_height; tile_y++) {
+    // Full-image tile origins must be scaled to each component's own grid.
+    const uint64_t channel_x0 = uint64_t{out_x0 / m_tile_width} * comp[c].width;
+    const uint64_t channel_y0 = uint64_t{out_y0 / m_tile_height} * comp[c].height;
+    const auto id = m_uncC_index_to_comp_ids[c];
+    if (channel_x0 + comp[c].width > img->get_component_width(id) ||
+        channel_y0 + comp[c].height > img->get_component_height(id)) {
+      return {heif_error_Invalid_input, heif_suberror_Invalid_image_size,
+              "uncompressed tile exceeds its component dimensions"};
+    }
+    for (uint32_t tile_y = 0; tile_y < comp[c].height; tile_y++) {
       const uint64_t row_start_offset = src_offset;
 
-      for (uint32_t tile_x = 0; tile_x < m_tile_width; tile_x++) {
+      for (uint32_t tile_x = 0; tile_x < comp[c].width; tile_x++) {
         // Subtraction form to avoid any wrap: src_offset may legitimately be
         // larger than src_size after a bytes_per_row row skip.
         if (src_offset > src_size || aligned_bytes_per_sample > src_size - src_offset) {
@@ -138,8 +165,8 @@ Error unc_decoder_bytealign_component_interleave::decode_tile(const std::vector<
         const uint8_t* src = src_base + src_offset;
 
         if (comp[c].use) {
-          uint32_t dst_x = out_x0 + tile_x;
-          uint32_t dst_y = out_y0 + tile_y;
+          uint64_t dst_x = channel_x0 + tile_x;
+          uint64_t dst_y = channel_y0 + tile_y;
           uint64_t dst_offset = static_cast<uint64_t>(dst_y) * comp[c].dst_plane_stride
                                 + static_cast<uint64_t>(dst_x) * comp[c].bytes_per_sample;
           uint8_t* dst = comp[c].dst_plane + dst_offset;
@@ -272,12 +299,15 @@ bool unc_decoder_factory_bytealign_component_interleave::can_decode(const std::s
     return false;
   }
 
-  if (uncC->get_sampling_type() != sampling_mode_no_subsampling) {
+  const auto sampling = uncC->get_sampling_type();
+  if (sampling != sampling_mode_no_subsampling && sampling != sampling_mode_422 && sampling != sampling_mode_420) {
     return false;
   }
 
+  bool wide = false;
   for (const auto& component : uncC->get_components()) {
     uint32_t d = component.component_bit_depth;
+    wide |= d > 16;
     if (d != 8 && d != 16 && d != 32 && d != 64 && d != 128) {
       return false;
     }
@@ -287,7 +317,9 @@ bool unc_decoder_factory_bytealign_component_interleave::can_decode(const std::s
     }
   }
 
-  return true;
+  // Keep the existing subsampled 8/16-bit decoder, including its sequence
+  // edge handling. This factory adds the previously unavailable wide path.
+  return sampling == sampling_mode_no_subsampling || wide;
 }
 
 

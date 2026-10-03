@@ -330,16 +330,16 @@ Error unc_decoder::decode_image(const DataExtent& extent,
 
 // --- unc_decoder_factory ---
 
-bool unc_decoder_factory::check_common_requirements(const std::shared_ptr<const Box_uncC>& uncC)
+bool unc_decoder_factory::check_common_requirements(const std::shared_ptr<const Box_uncC>& uncC, uint16_t maximum_depth)
 {
   for (const auto& component : uncC->get_components()) {
-    if (component.component_bit_depth > 16) {
+    if (component.component_bit_depth > maximum_depth) {
       return false;
     }
     if (component.component_format != component_format_unsigned) {
       return false;
     }
-    if (component.component_align_size > 2) {
+    if (component.component_align_size > (maximum_depth + 7) / 8) {
       return false;
     }
   }

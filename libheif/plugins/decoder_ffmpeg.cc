@@ -20,6 +20,7 @@
 
 #include "libheif/heif.h"
 #include "libheif/heif_plugin.h"
+#include "libheif/heif_properties.h"
 #include "decoder_ffmpeg.h"
 #include "nalu_utils.h"
 #include <string>
@@ -675,6 +676,13 @@ static heif_error ffmpeg_av_decode(ffmpeg_decoder* decoder, AVCodecContext* av_d
                             image);
     if (err.code) {
       return err;
+    }
+
+    const auto location = av_frame->chroma_location;
+    if ((chroma == heif_chroma_420 || chroma == heif_chroma_422) &&
+        location >= AVCHROMA_LOC_LEFT && location <= AVCHROMA_LOC_BOTTOM) {
+      // FFmpeg's six declared positions have the H.273 order, offset by one.
+      heif_image_set_chroma_location(*image, static_cast<uint8_t>(location - AVCHROMA_LOC_LEFT));
     }
 
     heif_channel channel2plane[3] = {

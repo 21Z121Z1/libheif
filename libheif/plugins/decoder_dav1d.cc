@@ -20,6 +20,7 @@
 
 #include "libheif/heif.h"
 #include "libheif/heif_plugin.h"
+#include "libheif/heif_properties.h"
 #include "security_limits.h"
 #include "common_utils.h"
 #include "decoder_dav1d.h"
@@ -337,6 +338,11 @@ heif_error dav1d_decode_next_image2(void* decoder_raw, heif_image** out_img,
   HEIF_WARN_OR_FAIL(decoder->strict_decoding, heif_img, heif_nclx_color_profile_set_matrix_coefficients(&nclx, static_cast<uint16_t>(frame.seq_hdr->mtrx)), {});
   nclx.full_range_flag = (frame.seq_hdr->color_range != 0);
   heif_image_set_nclx_color_profile(heif_img, &nclx);
+
+  if (chroma == heif_chroma_420) {
+    if (frame.seq_hdr->chr == DAV1D_CHR_VERTICAL) { heif_image_set_chroma_location(heif_img, 0); }
+    else if (frame.seq_hdr->chr == DAV1D_CHR_COLOCATED) { heif_image_set_chroma_location(heif_img, 2); }
+  }
 
 
   heif_channel channel2plane[3] = {

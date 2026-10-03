@@ -391,6 +391,12 @@ Result<std::shared_ptr<HeifPixelImage>> UncompressedImageCodec::create_image(con
   if (properties.cloc) {
     img->set_chroma_location(properties.cloc->get_chroma_location());
   }
+  else if (colourspace == heif_colorspace_YCbCr &&
+           (chroma == heif_chroma_420 || chroma == heif_chroma_422)) {
+    // Absent cloc resolves to location 0. With no vertical subsampling,
+    // use the equivalent co-sited horizontal phase with zero vertical offset.
+    img->set_chroma_location(chroma == heif_chroma_420 ? 0 : 2);
+  }
 
   return img;
 }
