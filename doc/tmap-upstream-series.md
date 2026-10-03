@@ -46,6 +46,14 @@ run remain in local evidence. Public Apple and pinned Google exchanges passed
 909,433 joint assertions; Google HEIF/AVIF depends on its bundled libheif and
 is compatibility evidence, not a separate HEIF graph implementation.
 
+The initial exact-SHA Actions exposed a further prerequisite: v1.24.x lacks
+upstream compressed-tile budget fix `585607ac` and its test, which the existing
+sanitizer jobs require. All four unchanged upstream regressions failed before
+the backport; afterwards all 68 assertions, 11 related native tests, five
+ASan/UBSan tests and six exp OFF/CMM OFF tests passed. The production patch
+is reused from upstream, rather than suppressing the missing gate. Three
+missing standard includes in unchanged v1.24.x sources are corrected separately.
+
 The [conformance matrix](tmap-conformance-matrix.md) is the remaining task queue.
 Complete standards conformance remains unclaimed while the requested archives,
 final audit and revision-specific acceptance evidence are incomplete. The separate
