@@ -1690,17 +1690,24 @@ TEST_CASE("Typed interleaved RGB retains floating headroom and wide integer prec
   }
 }
 
-TEST_CASE("Wide limited-range mono normalization uses its own code depth")
+TEST_CASE("Wide limited-range mono RGB and GBR retain their code depths and headroom")
 {
+  const int layout = GENERATE(0, 1, 2); // Mono, RGB, identity GBR.
   const int bits = GENERATE(24, 32, 64);
   auto base = std::make_shared<HeifPixelImage>();
-  base->create(3, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
-  REQUIRE_FALSE(base->add_channel(heif_channel_Y, 3, 1, bits, nullptr));
+  base->create(4, 1, layout == 0 ? heif_colorspace_monochrome : layout == 1 ? heif_colorspace_RGB : heif_colorspace_YCbCr,
+               layout == 0 ? heif_chroma_monochrome : heif_chroma_444);
   const uint64_t shift = uint64_t{1} << (bits - 8);
-  const std::array<uint64_t, 3> codes{16 * shift, 125 * shift, 235 * shift};
-  for (size_t x = 0; x < 3; ++x) {
-    if (bits <= 32) { base->get_channel_memory<uint32_t>(heif_channel_Y, nullptr)[x] = static_cast<uint32_t>(codes[x]); }
-    else { base->get_channel_memory<uint64_t>(heif_channel_Y, nullptr)[x] = codes[x]; }
+  const std::array<uint64_t, 4> codes{16 * shift, 125 * shift, 235 * shift, 255 * shift};
+  const auto channels = layout == 0 ? std::vector<heif_channel>{heif_channel_Y} :
+                        layout == 1 ? std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B} :
+                                      std::vector<heif_channel>{heif_channel_Cr, heif_channel_Y, heif_channel_Cb};
+  for (auto channel : channels) {
+    REQUIRE_FALSE(base->add_channel(channel, 4, 1, bits, nullptr));
+    for (size_t x = 0; x < codes.size(); ++x) {
+      if (bits <= 32) { base->get_channel_memory<uint32_t>(channel, nullptr)[x] = static_cast<uint32_t>(codes[x]); }
+      else { base->get_channel_memory<uint64_t>(channel, nullptr)[x] = codes[x]; }
+    }
   }
   auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
   profile.set_full_range_flag(false);
@@ -1709,11 +1716,19 @@ TEST_CASE("Wide limited-range mono normalization uses its own code depth")
   alternate.set_full_range_flag(true);
   auto* options = heif_decoding_options_alloc();
   REQUIRE(options);
-  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), GainMapMetadata{}, alternate, *options, nullptr);
+  GainMapMetadata metadata;
+  metadata.base_hdr_headroom = {1, 1};
+  metadata.alternate_hdr_headroom = {0, 1};
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), metadata, alternate, *options, nullptr);
   REQUIRE(result);
-  REQUIRE(sample_at(**result, heif_channel_R, 0) == 0);
-  REQUIRE(sample_at(**result, heif_channel_R, 1) == std::round(109.0 / 219 * 65535));
-  REQUIRE(sample_at(**result, heif_channel_R, 2) == 65535);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE(sample_at(**result, channel, 0) == 0);
+    REQUIRE(sample_at(**result, channel, 1) == std::round(109.0 / 219 / 2 * 65535));
+    REQUIRE(sample_at(**result, channel, 2) == std::round(0.5 * 65535));
+    REQUIRE(sample_at(**result, channel, 3) == std::round(239.0 / 219 / 2 * 65535));
+  }
   heif_decoding_options_free(options);
 }
 

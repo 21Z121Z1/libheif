@@ -1052,12 +1052,13 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
 {
   const bool gbr = GENERATE(false, true);
   const bool floating = GENERATE(false, true);
+  const bool full_range = floating ? true : GENERATE(false, true);
   const int bits = GENERATE(32, 64);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
-      heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, full_range);
   heif_image* pixels = nullptr;
   REQUIRE(heif_image_create(3, 2, gbr ? heif_colorspace_YCbCr : heif_colorspace_RGB,
                             heif_chroma_444, &pixels).code == heif_error_Ok);
@@ -1075,8 +1076,12 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
       for (size_t x = 0; x < 3; ++x) {
         if (floating && bits == 32) { reinterpret_cast<float*>(plane + y * stride)[x] = 1.5f; }
         else if (floating) { reinterpret_cast<double*>(plane + y * stride)[x] = 1.5; }
-        else if (bits == 32) { reinterpret_cast<uint32_t*>(plane + y * stride)[x] = uint32_t{1} << 15; }
-        else { reinterpret_cast<uint64_t*>(plane + y * stride)[x] = uint64_t{1} << 47; }
+        else if (bits == 32) {
+          reinterpret_cast<uint32_t*>(plane + y * stride)[x] = (uint32_t{1} << 15) + (full_range ? 0 : uint32_t{16} << 24);
+        }
+        else {
+          reinterpret_cast<uint64_t*>(plane + y * stride)[x] = (uint64_t{1} << 47) + (full_range ? 0 : uint64_t{16} << 56);
+        }
       }
     }
   }
@@ -1139,7 +1144,7 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
   error = heif_decode_image(handle, &output, heif_colorspace_RGB, heif_chroma_444, decoding);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
-  const long double maximum = std::ldexp(1.0L, bits) - 1;
+  const long double maximum = full_range ? std::ldexp(1.0L, bits) - 1 : std::ldexp(219.0L, bits - 8);
   const double expected = floating ? std::round(1.5 * std::exp2(-2 * std::sqrt(normalized_gain)) * 65535) :
       static_cast<double>(std::round(std::ldexp(1.0L, bits - 17) / maximum * 65536 * 65535));
   for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {

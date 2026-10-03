@@ -272,8 +272,7 @@ bool is_direct_rgb(const HeifPixelImage& image)
           (image.get_chroma_format() == heif_chroma_444 ||
            num_interleaved_components_per_plane(image.get_chroma_format()) > 1)) ||
          (image.get_colorspace() == heif_colorspace_YCbCr && image.get_chroma_format() == heif_chroma_444 &&
-          image.get_color_profile_nclx().m_matrix_coefficients == 0 &&
-          image.get_color_profile_nclx().get_full_range_flag()) ||
+          image.get_color_profile_nclx().m_matrix_coefficients == 0) ||
          (image.get_colorspace() == heif_colorspace_monochrome && image.get_chroma_format() == heif_chroma_monochrome);
 }
 
@@ -409,7 +408,7 @@ struct RGBPlanes {
     const bool mono = image.get_colorspace() == heif_colorspace_monochrome;
     const bool interleaved = image.has_channel(heif_channel_interleaved);
     const bool full_range = image.get_color_profile_nclx().get_full_range_flag();
-    // Full-range identity-matrix storage is a GBR plane reorder (H.273 Eq.48-50).
+    // Identity-matrix storage is a GBR plane reorder (H.273 Eq.48-50).
     const auto channels = image.get_colorspace() == heif_colorspace_YCbCr ?
         std::array{heif_channel_Cr, heif_channel_Y, heif_channel_Cb} :
         std::array{heif_channel_R, heif_channel_G, heif_channel_B};

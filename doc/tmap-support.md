@@ -115,10 +115,11 @@ no upscaled full-resolution floating-point gain raster is allocated.
 The reconstructed RGB raster is tagged with identity matrix and full range,
 independently of the alternate item's storage matrix/range. The original item
 description remains available on the image handle.
-RGB, monochrome and full-range 4:4:4 identity-matrix GBR rasters are read at their actual component types:
+RGB, monochrome and 4:4:4 identity-matrix GBR rasters are read at their actual component types:
 unsigned integers of 1-64 bits and full-range IEEE float32/float64. Integer
 limited-range normalization uses each component's own depth and requires at
-least eight bits. Floating baseline values above reference white and signed
+least eight bits. Limited-range integer RGB/GBR values above reference white
+are retained before a reverse gain reduces their headroom. Floating baseline values above reference white and signed
 extended-transfer samples are retained through linear gain application.
 Floating gain values undergo the same logical normalization and inverse gamma
 as integer gains. Opacity must be finite and within [0,1]; its original value
@@ -133,10 +134,9 @@ explicit YCgCo code-domain clipping remains in its required order; extended
 TC 11/12 and non-identity TC 13 signals retain their sign and range until the
 ISO linear operation and final output. Other transfers retain their nominal
 signal range. The original non-identity TC 13 description selects the signed
-sYCC EOTF/OETF rather than unsigned sRGB. Floating limited-range, signed/complex component formats,
-and floating or greater-than-32-bit YCbCr rasters outside the full-range
-4:4:4 identity-matrix case remain explicit
-unsupported cases.
+sYCC EOTF/OETF rather than unsigned sRGB. Floating limited-range and signed/complex component formats
+remain unsupported. YCbCr samples above 32 bits require 4:4:4 identity-matrix
+storage; floating YCbCr also requires full range.
 
 The uncompressed component-interleave decoder supports dense 17-32-bit
 unsigned YCbCr and byte-aligned wide components, including odd image dimensions
