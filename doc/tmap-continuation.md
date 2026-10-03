@@ -338,3 +338,11 @@ component-specific phase instead of guessing one. YCbCr opacity also uses its
 own integer/float datatype independently of the colour-depth restriction;
 eight added typed-alpha cases failed before the correction and now pass,
 including premultiplication, offsets, zero opacity and invalid floating values.
+
+Stock libultrahdr's bundled HEIF workaround now provides a separate container
+oracle, without changing its source or this branch's API. Google-produced
+mono/RGB HEIC and AVIF files and libheif-produced mono/RGB HEIC files pass
+884,844 assertions against Google's half-float decode and their independently
+constructed HDR intentions. The maximum linear difference is 0.001586; the
+existing LUT/half-precision tolerance is unchanged. The Mac Actions job includes
+the same six synthetic-file comparisons and archives only synthetic evidence.

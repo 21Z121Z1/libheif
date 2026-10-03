@@ -294,6 +294,13 @@ RGB888 classification is incomplete, so the oracle uses its RGBA8888 baseline.
 Its HEIF integration still targets the historical PR #1503 API: this proves
 ISO metadata and gain-operation interoperability; that private API still needs
 an adapter for drop-in integration.
+The Mac job also builds stock libultrahdr with its own pinned libheif/PR #1503
+workaround. Its mono/RGB HEIC and AVIF files are decoded through this branch's
+public floating API and compared with independently decoded Google half-float
+pixels. Google also decodes this branch's two synthetic HEIC files. All six
+comparisons check the constructed HDR intentions and use the same pixel
+tolerance as the raw oracle. This verifies bidirectional container compatibility
+without importing the old private API into libheif.
 The published `gainmap_hevc_16x16.heic` fixture declares a 64x64 tmap but crops
 its base to 16x16; canonical decode correctly rejects this inconsistent geometry.
 

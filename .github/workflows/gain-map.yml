@@ -68,6 +68,22 @@ jobs:
           LIBHEIF_TMAP_APPLE_FIXTURE=build-apple/synthetic/apple-mono.heic \
             LIBHEIF_TMAP_INTEROP_DIR=build-apple/synthetic \
             build-apple/tests/tmap_interop
+      - name: Build stock libultrahdr with its bundled HEIF workaround
+        run: |
+          git clone https://github.com/google/libultrahdr.git /tmp/ultrahdr-heif
+          git -C /tmp/ultrahdr-heif checkout 66821e0a261aa3a06c0e7c889f52eced52850be1
+          cmake -S /tmp/ultrahdr-heif -B /tmp/ultrahdr-heif-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DUHDR_ENABLE_HEIF=ON \
+            -DUHDR_BUILD_DEPS=ON -DUHDR_BUILD_TESTS=OFF \
+            -DUHDR_BUILD_EXAMPLES=ON -DUHDR_ENABLE_GLES=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="$(pkg-config --libs aom libde265 x265)"
+          cmake --build /tmp/ultrahdr-heif-build --target ultrahdr_app --parallel 3
+      - name: Verify bidirectional Google HEIF and AVIF containers and HDR pixels
+        run: |
+          python3 scripts/check-tmap-ultrahdr.py \
+            /tmp/ultrahdr-heif-build/ultrahdr_app build-apple/synthetic
+          LIBHEIF_TMAP_ULTRAHDR_DIR=build-apple/synthetic \
+            build-apple/tests/tmap_interop 'Stock libultrahdr*'
       - name: Preserve synthetic interoperability evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
