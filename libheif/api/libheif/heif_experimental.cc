@@ -487,6 +487,7 @@ heif_error heif_context_encode_gain_map_image(
     nclx_profile nclx;
     nclx.set_from_heif_color_profile_nclx(&signalling);
     pixels->set_color_profile_nclx(nclx);
+    if (source->has_chroma_location()) { pixels->set_chroma_location(source->get_chroma_location()); }
 
     std::unique_ptr<heif_encoding_options, decltype(&heif_encoding_options_free)> options(
         heif_encoding_options_alloc(), heif_encoding_options_free);

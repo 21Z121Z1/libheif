@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
       - name: Build HEVC reader and writer
         run: |
-          brew install cmake ninja pkg-config libde265 x265 aom little-cms2
+          brew install cmake ninja pkg-config libde265 x265 aom dav1d little-cms2
           sw_vers
           uname -m
           xcodebuild -version
@@ -61,6 +61,7 @@ jobs:
             -DWITH_LIBDE265=ON -DWITH_LIBDE265_PLUGIN=OFF \
             -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
             -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_DAV1D=ON -DWITH_DAV1D_PLUGIN=OFF \
             -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF
           cmake --build build-apple --target tmap_read tmap_write tmap_interop --parallel 3
       - name: Verify independent Apple HDR pixels and producer round trip
@@ -109,7 +110,7 @@ jobs:
       - name: Build with ASan and UBSan
         run: |
           sudo apt-get update
-          sudo apt-get install -y libaom-dev liblcms2-dev
+          sudo apt-get install -y libaom-dev libdav1d-dev liblcms2-dev
           cmake --preset testing -S . -B build-gain-map \
             -DENABLE_EXPERIMENTAL_FEATURES=${{ matrix.experimental }} \
             -DLIBHEIF_TEST_LCMS=ON \
@@ -117,6 +118,7 @@ jobs:
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
             -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
             -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_DAV1D=ON -DWITH_DAV1D_PLUGIN=OFF \
             -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"

@@ -440,3 +440,23 @@ and six serialized 8/17/32-bit cases fail before the correction; after it, math
 passes 27,031 assertions and writer tests pass 10,489. Native math/reader/writer,
 experimental ON/OFF ASan/UBSan, LLVM 22 tidy and source lint pass. The ordinary
 centered fallback for inputs without a declaration is unchanged.
+
+AV1 sample positions now reach gain reconstruction through both AOM and dav1d.
+Their explicit vertical/colocated declarations map to H.273 locations 0/2;
+unknown remains undeclared. AOM encoding preserves these locations and rejects
+declarations its bitstream field cannot express. The logical gain-raster copy
+also retains this metadata instead of dropping it before the encoder.
+
+Twelve serialized 8/10/12-bit baseline cases fail before decoder propagation,
+including after correcting only the encoder. Seven gain-encoding cases expose
+the separate copy omission. All now pass with unchanged known-value tolerances,
+including raw sample/phase readback and unknown-position fallback. Writer tests
+pass 11,889 assertions in 16 cases. Complete native CTest has 97 passes/six
+capability skips; experimental ON ASan/UBSan passes math/colour/reader/writer,
+and OFF passes math/colour (the general encoder target skips unavailable
+capabilities). AOM 3.13.1 and dav1d 1.5.2 are both exercised on this Mac.
+LLVM 22 tidy, source lint and workflow YAML parsing pass. Fresh Apple consumer/
+producer checks pass 24,635 assertions and stock Google container checks pass
+884,844, with unchanged pixel tolerances. Actions now builds both AV1 decoders;
+at preceding head `120d8a1f`, all six Linux jobs passed while the Intel Mac job
+remained unassigned.

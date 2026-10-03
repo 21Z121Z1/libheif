@@ -139,6 +139,14 @@ The tiled writer preserves explicit colour descriptions using the ordinary
 encoder's ICC/NCLX policy. General colour-conversion operators retain their
 existing supported-depth checks; gain reconstruction reads wide samples directly.
 
+AOM and dav1d retain AV1's declared 4:2:0 sample position on decoded rasters:
+`CSP_VERTICAL` maps to H.273 location 0 and `CSP_COLOCATED` to location 2, following
+[AV1 6.4.2](https://aomediacodec.github.io/av1-spec/av1-spec.pdf).
+An unknown AV1 position remains undeclared. AOM encoding preserves locations
+0 and 2 in the bitstream; other explicit declarations return unsupported because
+AV1 cannot represent them through that field. This does not introduce an
+external-position property or assume the meaning of an unknown AV1 value.
+
 The default root `tmap` output preserves its alternate encoding instead of
 silently tagging PQ pixels as sRGB. Explicit requested-output NCLX uses the
 supported EOTF, linear primaries matrix and requested OETF before the ordinary
@@ -185,6 +193,8 @@ requiring subsampled YCbCr defaults to BT.601; otherwise it uses identity.
 Explicit identity requires a codec configured for 4:4:4. The source image and its
 colour properties are unchanged. Encoder compatibility switches cannot suppress
 the required gain NCLX property.
+The logical gain copy retains an explicitly declared chroma location, so the
+selected encoder can preserve it or report an unsupported declaration.
 
 `heif_tone_map_options_alloc()` returns version-2 options. The caller supplies
 either alternate NCLX or exact `prof`/`rICC` bytes. Defaults hide the existing gain
