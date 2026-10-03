@@ -31,10 +31,8 @@
 using GainMapRGB = std::array<double, 3>;
 using GainMapMatrix = std::array<GainMapRGB, 3>;
 
-// A conservative colour subset. PQ uses BT.2408 HDR reference white
-// (203 cd/m2). ICC profiles are accepted only when they can be mapped
-// losslessly enough to this CICP subset: first through ICC.1:2022 'cicp',
-// then through a recognized RGB matrix/TRC profile.
+// H.273 transfer functions use the default HDR reference white of 203 cd/m2.
+// GainMapColour additionally handles HEIF ndwt and actual ICC transforms.
 bool gain_map_supports_transfer(uint16_t transfer);
 Result<double> gain_map_decode_transfer(double value, uint16_t transfer);
 Result<double> gain_map_encode_transfer(double value, uint16_t transfer);
@@ -57,7 +55,8 @@ Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile);
 
 struct GainMapIccColour;
 
-// A linear RGB application space, independent of codec matrix/range storage.
+// Linear colour independent of codec matrix/range storage. LUT profiles without
+// colourants use PCS only for conversion; they cannot be the application space.
 // ICC matrix/TRC profiles retain their actual colourants and per-channel curves.
 class GainMapColour
 {
@@ -69,6 +68,7 @@ public:
   Result<GainMapRGB> decode(const GainMapRGB& signal) const;
   Result<GainMapRGB> encode(const GainMapRGB& linear) const;
   Result<GainMapMatrix> matrix_to(const GainMapColour& target) const;
+  bool has_application_primaries() const;
   const nclx_profile& raster_profile() const { return m_nclx; }
   const std::shared_ptr<const color_profile_raw>& icc_profile() const { return m_profile; }
   uint32_t nominal_diffuse_white() const { return m_diffuse_white; }

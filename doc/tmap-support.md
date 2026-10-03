@@ -4,7 +4,7 @@ This branch implements final-2025 Annex C metadata parsing/writing, first-class
 `tmap` inspection, gain-raster encoding, construction from existing base/gain items, and canonical
 reconstruction with direct NCLX and RGB ICC colour descriptions. ICC matrix/TRC
 profiles use their actual colourants and per-channel curves for the ISO gain-map
-operation. RGB LUT profiles with explicit colourants use optional Little CMS.
+operation. RGB LUT profiles use optional Little CMS.
 It is not a complete implementation of every colour profile
 allowed by HEIF.
 
@@ -64,8 +64,11 @@ for the supported NCLX spaces.
 When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
 input, display and output LUT profiles use their relative-colorimetric CMM
 transforms through XYZ PCS. The actual `rXYZ`/`gXYZ`/`bXYZ` colourants define
-the linear RGB application space. Both directions must be available, and LUT
-tags take precedence over coexisting shaper tags. The CMM uses per-decode
+the linear RGB application space. A profile without colourants can still convert
+through PCS when the other item supplies the selected application primaries;
+PCS is never used as guessed RGB primaries. Only the transform directions actually
+needed must be available. Missing LUT directions return unsupported instead of
+falling back to coexisting shaper tags. The CMM uses per-decode
 contexts and uncached transforms. Without this dependency, these profiles
 return unsupported; the matrix/TRC and CICP paths remain available.
 
@@ -74,9 +77,8 @@ does not replace the ICC colourimetry. Codec matrix/range handling remains on
 the decoded raster. A matrix/TRC alternate retains its original ICC and uses
 CP=2/TC=2 for the RGB raster instead of inventing a CICP encoding. Unknown-version
 baseline fallback also honours ICC during requested output conversion.
-LUT profiles without explicit RGB colourants, device-link and non-RGB transforms
-are not approximated. A LUT tag does not silently fall back to the matrix/TRC
-model. The original ICC property remains
+Device-link and non-RGB transforms are not approximated. A LUT tag does not
+silently fall back to the matrix/TRC model. The original ICC property remains
 available on the canonical decoded image.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
@@ -175,9 +177,11 @@ full-range samples; bit depth alone does not make a file non-conforming.
 
 ## Remaining limitations
 
-- ICC LUT profiles without explicit RGB colourants, device-link, non-RGB and
-  non-monotone shaper transforms remain unsupported. ISO Annex B requires a
-  resolved linear RGB application space. Supported RGB LUTs use the optional
+- ICC profiles without explicit RGB colourants cannot supply the selected
+  application primaries; RGB LUTs may still convert through PCS to/from the
+  other item's application space. Device-link, non-RGB and non-monotone shaper
+  transforms remain unsupported. ISO Annex B requires a resolved linear RGB
+  application space. Supported RGB LUTs use the optional
   CMM described above; matrix/TRC and CICP profiles need no CMM dependency.
 - HLG is limited to the reference viewing conditions described above.
 - YCbCr raster conversion supports explicit linear matrices 0, 1, 4, 5, 6, 7
@@ -225,7 +229,8 @@ with ICC alternates. Optional `LIBHEIF_TEST_LCMS=ON` compares serialized profile
 in both directions against independent Little CMS. Actions enables this oracle
 for both experimental modes, with the runtime CMM independently enabled and
 disabled. Serialized ICC v2 LUT16 and v4 LUT profiles also have independently
-known gamma, gain and offset expectations, including LUT precedence.
+known gamma, gain and offset expectations, including LUT precedence, conversion
+without optional colourants and input-only transforms.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It

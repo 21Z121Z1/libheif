@@ -390,7 +390,8 @@ TEST_CASE("Sampled ICC curves use interpolation and normative plateau inverses")
 
 #if LIBHEIF_TEST_LCMS
 namespace {
-std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma)
+std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,
+                                                       bool colourants = true, bool encode = true)
 {
   using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
   using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
@@ -424,6 +425,7 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
     from_pcs[c * 3 + c] = pcs_scale / white_xyz[c];
   }
   for (bool inverse : {false, true}) {
+    if (inverse && !encode) { continue; }
     Pipeline pipeline(cmsPipelineAlloc(nullptr, 3, 3), cmsPipelineFree);
     REQUIRE(pipeline);
     cmsToneCurve* input_curves[3] = {inverse ? identity.get() : forward.get(),
@@ -454,6 +456,9 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
     REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, output_curves)));
     REQUIRE(cmsWriteTag(profile.get(), inverse ? cmsSigBToA1Tag : cmsSigAToB1Tag, pipeline.get()));
   }
+  if (!colourants) {
+    for (auto tag : tags) { REQUIRE(cmsWriteTag(profile.get(), tag, nullptr)); }
+  }
   cmsUInt32Number size = 0;
   REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
   std::vector<uint8_t> bytes(size);
@@ -463,6 +468,61 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
 }  // namespace
 
 #if LIBHEIF_HAVE_LCMS2
+TEST_CASE("ICC LUT PCS conversions need primaries only on the selected application space")
+{
+  const double version = GENERATE(2.1, 4.3);
+  const bool missing_base = GENERATE(false, true);
+  const auto profile = rgb_lut_profile(version, 2);
+  // Keep the real LUTs, omitting only the three optional RGB colourant tags.
+  auto pcs = GainMapColour::from_icc(rgb_lut_profile(version, 2, false));
+  auto rgb = GainMapColour::from_icc(profile);
+  INFO((pcs ? "PCS transform supported" : pcs.error().message));
+  REQUIRE(pcs);
+  REQUIRE(rgb);
+  REQUIRE_FALSE(pcs->has_application_primaries());
+  REQUIRE(rgb->has_application_primaries());
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(base->add_channel(channel, 1, 1, 16, nullptr));
+    base->fill_channel(channel, 16384);
+  }
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->fill_channel(heif_channel_Y, 255);
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  metadata.use_base_colour_space = !missing_base;
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].base_offset = {1, 8};
+    metadata.channels[c].alternate_offset = {1, 16};
+  }
+  const auto& baseline = missing_base ? *pcs : *rgb;
+  const auto& alternate = missing_base ? *rgb : *pcs;
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, baseline);
+  REQUIRE(result);
+  for (size_t c = 0; c < 3; ++c) {
+    const double linear = (std::pow(16384.0 / 65535, 2) + 0.125) * std::exp2(double(c)) - 0.0625;
+    const auto channel = static_cast<heif_channel>(heif_channel_R + c);
+    REQUIRE((*result)->get_channel_memory<uint16_t>(channel, nullptr)[0] ==
+            Catch::Approx(std::round(std::sqrt(linear) * 65535)).margin(10));
+  }
+  metadata.use_base_colour_space = missing_base;
+  REQUIRE_FALSE(reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, baseline));
+  heif_decoding_options_free(options);
+  // Decode-only input LUTs must not fall back to their coexisting identity TRCs
+  // when an unavailable reverse transform is requested.
+  auto input_only = GainMapColour::from_icc(rgb_lut_profile(version, 2, false, false));
+  REQUIRE(input_only);
+  REQUIRE(input_only->decode({0.25, 0.5, 0.75}));
+  REQUIRE_FALSE(input_only->encode({0.0625, 0.25, 0.5625}));
+}
+
 TEST_CASE("RGB ICC LUTs retain their application primaries and take precedence over shaper tags")
 {
   const double version = GENERATE(2.1, 4.3);

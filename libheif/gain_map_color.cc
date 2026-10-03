@@ -873,6 +873,8 @@ struct GainMapIccColour
   IccView view;
   std::array<IccTag, 3> curves;
   GainMapMatrix to_pcs;
+  bool lut = false;
+  bool application_primaries = true;
 #if HAVE_LCMS2
   cmsContext context = nullptr;
   cmsHPROFILE lut_profile = nullptr;
@@ -1046,20 +1048,37 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   }
   // Respect ICC LUT precedence even when a matrix/TRC model is also present.
   bool lut = false;
+  bool decode_lut = false, encode_lut = false;
   for (char i : {'0', '1', '2', '3'}) {
     for (uint32_t tag : {icc_sig('A', '2', 'B', i), icc_sig('B', '2', 'A', i),
                          icc_sig('D', '2', 'B', i), icc_sig('B', '2', 'D', i)}) {
       lut |= view->find(tag) != nullptr;
     }
+    if (i == '0' || i == '1') {
+      decode_lut |= view->find(icc_sig('A', '2', 'B', i)) || view->find(icc_sig('D', '2', 'B', i));
+      encode_lut |= view->find(icc_sig('B', '2', 'A', i)) || view->find(icc_sig('B', '2', 'D', i));
+    }
   }
+  if (lut && !decode_lut && !encode_lut) { return unsupported_icc(); }
   auto transform = std::make_shared<GainMapIccColour>();
   transform->view = *view;
+  transform->lut = lut;
+  size_t colourants = 0;
+  for (char name : {'r', 'g', 'b'}) {
+    colourants += view->find(icc_sig(name, 'X', 'Y', 'Z')) != nullptr;
+  }
+  if (colourants == 0 && lut) {
+    // PCS is an intermediate representation, never a guessed RGB application
+    // space. It suffices when the other item supplies the application primaries.
+    transform->to_pcs = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+    transform->application_primaries = false;
+  }
+  else if (colourants != 3) { return unsupported_icc(); }
   for (size_t c = 0; c < 3; ++c) {
+    if (!transform->application_primaries) { break; }
     const char name = "rgb"[c];
     const auto* xyz = view->find(icc_sig(name, 'X', 'Y', 'Z'));
     const auto* curve = view->find(icc_sig(name, 'T', 'R', 'C'));
-    // ISO 21496-1 Annex B needs actual RGB application primaries. PCS XYZ/Lab
-    // alone is not that space; do not substitute sRGB for absent colourants.
     if (!xyz || (!lut && !curve)) { return unsupported_icc(); }
     auto column = parse_xyz_tag(*view, *xyz);
     if (!column) { return column.error(); }
@@ -1083,11 +1102,15 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     transform->xyz_profile = cmsCreateXYZProfileTHR(transform->context);
     if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
     constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
-    transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, TYPE_RGB_DBL,
-        transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
-    transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
-        transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
-    if (!transform->decode_lut || !transform->encode_lut) { return unsupported_icc(); }
+    if (decode_lut) {
+      transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, TYPE_RGB_DBL,
+          transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+    }
+    if (encode_lut) {
+      transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
+          transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+    }
+    if (!transform->decode_lut && !transform->encode_lut) { return unsupported_icc(); }
     transform->from_pcs = inverse(transform->to_pcs);
 #else
     return unsupported_icc();
@@ -1116,7 +1139,8 @@ Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
   }
   GainMapRGB result{};
 #if HAVE_LCMS2
-  if (m_matrix_trc->decode_lut) {
+  if (m_matrix_trc->lut) {
+    if (!m_matrix_trc->decode_lut) { return unsupported_icc(); }
     for (double value : signal) { if (!std::isfinite(value)) { return invalid_value(); } }
     cmsDoTransform(m_matrix_trc->decode_lut, signal.data(), result.data(), 1);
     result = gain_map_transform(m_matrix_trc->from_pcs, result);
@@ -1146,7 +1170,8 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
   }
   GainMapRGB result{};
 #if HAVE_LCMS2
-  if (m_matrix_trc->encode_lut) {
+  if (m_matrix_trc->lut) {
+    if (!m_matrix_trc->encode_lut) { return unsupported_icc(); }
     const auto pcs = gain_map_transform(m_matrix_trc->to_pcs, linear);
     for (double value : pcs) { if (!std::isfinite(value)) { return invalid_value(); } }
     cmsDoTransform(m_matrix_trc->encode_lut, pcs.data(), result.data(), 1);
@@ -1160,6 +1185,11 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     result[c] = *value;
   }
   return result;
+}
+
+bool GainMapColour::has_application_primaries() const
+{
+  return m_matrix_trc ? m_matrix_trc->application_primaries : bool(to_xyz(m_nclx.m_colour_primaries));
 }
 
 Result<GainMapMatrix> GainMapColour::matrix_to(const GainMapColour& target) const

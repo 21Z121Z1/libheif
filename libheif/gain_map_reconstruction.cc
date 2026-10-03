@@ -461,6 +461,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
                  "Premultiplied tone-map baseline has no alpha channel"};
   }
   const auto& application = metadata.use_base_colour_space ? baseline_colour : alternate_colour;
+  if (!application.has_application_primaries()) {
+    return unsupported("Selected tone-map application space has no defined RGB primaries");
+  }
   auto before = baseline_colour.matrix_to(application);
   auto after = application.matrix_to(alternate_colour);
   if (!before) { return before.error(); }
