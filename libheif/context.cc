@@ -50,6 +50,7 @@
 #include "security_limits.h"
 #include "compression.h"
 #include "color-conversion/colorconversion.h"
+#include "gain_map_reconstruction.h"
 #include "plugin_registry.h"
 #include "image-items/hevc.h"
 #include "image-items/vvc.h"
@@ -356,6 +357,77 @@ bool HeifContext::is_image(heif_item_id ID) const
 }
 
 
+Error HeifContext::validate_item_visibility(heif_item_id id, bool hidden) const
+{
+  auto infe = m_heif_file->get_infe_box(id);
+  if (!infe) {
+    return {heif_error_Input_does_not_exist, heif_suberror_Nonexisting_item_referenced,
+            "Item does not exist"};
+  }
+
+  if (hidden && id == m_heif_file->get_primary_image_ID()) {
+    return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+            "The primary image cannot be hidden"};
+  }
+
+  if (auto groups = m_heif_file->get_grpl_box()) {
+    for (const auto& box : groups->get_all_child_boxes()) {
+      auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box);
+      if (!group || group->get_short_type() != fourcc("altr")) { continue; }
+      const auto& ids = group->get_item_ids();
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) { continue; }
+      for (auto member : ids) {
+        auto member_infe = m_heif_file->get_infe_box(member);
+        if (member != id && member_infe && member_infe->is_hidden_item() != hidden) {
+          return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                  "An altr group cannot mix hidden and visible items"};
+        }
+      }
+    }
+  }
+  return Error::Ok;
+}
+
+Error HeifContext::set_item_hidden(heif_item_id id, bool hidden)
+{
+  if (Error error = validate_item_visibility(id, hidden)) { return error; }
+  auto infe = m_heif_file->get_infe_box(id);
+  infe->set_hidden_item(hidden);
+
+  auto image = get_image(id, true);
+  if (!image) {
+    return Error::Ok;
+  }
+
+  if (hidden) {
+    remove_top_level_image(image);
+  }
+  else {
+    bool is_region_mask = false;
+    if (auto iref_box = m_heif_file->get_iref_box()) {
+      for (heif_item_id item_id : m_heif_file->get_item_IDs()) {
+        const auto mask_references = iref_box->get_references(item_id, fourcc("mask"));
+        if (std::find(mask_references.begin(), mask_references.end(), id) !=
+            mask_references.end()) {
+          is_region_mask = true;
+          break;
+        }
+      }
+    }
+
+    if (!image->is_thumbnail() && !image->is_alpha_channel() &&
+        !image->is_depth_channel() && !image->is_aux_image() &&
+        infe->get_item_type_4cc() != fourcc("mski") && !is_region_mask &&
+        std::find(m_top_level_images.begin(), m_top_level_images.end(), image) ==
+            m_top_level_images.end()) {
+      m_top_level_images.push_back(image);
+    }
+  }
+
+  return Error::Ok;
+}
+
+
 Result<std::shared_ptr<RegionItem>> HeifContext::add_region_item(uint32_t reference_width, uint32_t reference_height)
 {
   auto boxResult = m_heif_file->add_new_infe_box(fourcc("rgan"));
@@ -514,6 +586,22 @@ Error HeifContext::write(StreamWriter& writer)
 
   auto ftyp = m_heif_file->get_ftyp_box();
 
+  // HEIF 2025/Amd.1 10.2.6.2: a manually added 'tmap' brand still
+  // requires a tone-map item, including one that is hidden or nested.
+  if (ftyp->has_compatible_brand(fourcc("tmap"))) {
+    bool has_tone_map = false;
+    for (heif_item_id id : m_heif_file->get_item_IDs()) {
+      if (m_heif_file->get_item_type_4cc(id) == fourcc("tmap")) {
+        has_tone_map = true;
+        break;
+      }
+    }
+    if (!has_tone_map) {
+      return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+              "The 'tmap' compatible brand requires a tone-map derived image item"};
+    }
+  }
+
   // set major brand if not set manually yet
   if (ftyp->get_major_brand() == 0) {
     ftyp->set_major_brand(main_brand);
@@ -562,6 +650,7 @@ static bool item_type_is_image(uint32_t item_type, const std::string& content_ty
   return (item_type == fourcc("hvc1") ||
           item_type == fourcc("av01") ||
           item_type == fourcc("grid") ||
+          item_type == fourcc("tmap") ||
           item_type == fourcc("tili") ||
           item_type == fourcc("iden") ||
           item_type == fourcc("iovl") ||
@@ -1478,7 +1567,10 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
                                                                   heif_chroma out_chroma,
                                                                   const heif_decoding_options& options,
                                                                   bool decode_only_tile, uint32_t tx, uint32_t ty,
-                                                                  std::set<heif_item_id> processed_ids) const
+                                                                  std::set<heif_item_id> processed_ids,
+                                                                  std::optional<double> root_tmap_target_headroom,
+                                                                  bool tmap_output_float,
+                                                                  bool centered_gain_samples) const
 {
   std::shared_ptr<ImageItem> imgitem;
   if (m_all_images.contains(ID)) {
@@ -1506,6 +1598,8 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
   // (GHSA-x8xm-cm2c-cfc8)
   DecodeTraversalState decode_state;
   decode_state.processed_ids = std::move(processed_ids);
+  decode_state.root_tmap_target_headroom = root_tmap_target_headroom;
+  decode_state.centered_gain_map_samples = centered_gain_samples;
 
   const heif_security_limits* limits = get_security_limits();
   if (limits && limits->max_items != 0) {
@@ -1540,7 +1634,27 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
 
   // --- convert to output chroma format
 
-  auto img_result = convert_to_output_colorspace(img, out_colorspace, out_chroma, options);
+  auto output_options = options;
+  if (imgitem->get_infe_type() == fourcc("tmap")) {
+    // Canonical tmap decoding describes the alternate, or the baseline for an
+    // unknown minimum metadata version. Do not silently re-tag it as sRGB.
+    if (options.output_image_nclx_profile) {
+      auto converted = convert_tone_map_colour(img, *options.output_image_nclx_profile,
+                                              options, get_security_limits(), tmap_output_float);
+      if (!converted) { return converted.error(); }
+      img = *converted;
+    }
+    if (tmap_output_float || imgitem->use_item_color_profile_for_decoding()) {
+      auto finished = finish_tone_map_output(img, options, get_security_limits(), tmap_output_float);
+      if (!finished) { return finished.error(); }
+      img = *finished;
+    }
+    if (!options.output_image_nclx_profile || tmap_output_float) {
+      output_options.output_image_nclx_profile = nullptr;
+      output_options.output_image_nclx_profile_passthrough = true;
+    }
+  }
+  auto img_result = convert_to_output_colorspace(img, out_colorspace, out_chroma, output_options);
   if (!img_result) {
     return img_result.error();
   }
@@ -1636,9 +1750,15 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::convert_to_output_colorspac
       output_profile.set_sRGB_defaults();
     }
 
-    return convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
-                                         options.color_conversion_options, options.color_conversion_options_ext,
-                                         get_security_limits());
+    auto converted = convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
+                                        options.color_conversion_options, options.color_conversion_options_ext,
+                                        get_security_limits());
+    if (converted && nclx_passthrough) {
+      // Layout-only RGB operators may have an undefined intermediate profile.
+      // Passthrough must retain the original description, including HDR curves.
+      (*converted)->set_color_profile_nclx(img->get_color_profile_nclx());
+    }
+    return converted;
   }
   else {
     return img;
@@ -1795,6 +1915,15 @@ Result<std::shared_ptr<ImageItem>> HeifContext::encode_image(const std::shared_p
     return err;
   }
   output_image_item->set_properties(properties);
+
+  // Newly encoded items must support the same codec-config queries and
+  // in-memory decoding as items read from a file. Merely installing the
+  // properties leaves visual-codec decoder pointers uninitialized.
+  if (Error decoder_error = output_image_item->initialize_decoder()) {
+    return decoder_error;
+  }
+  output_image_item->set_decoder_input_data();
+  output_image_item->populate_component_descriptions();
 
   //m_heif_file->set_brand(encoder->plugin->compression_format,
   //                       output_image_item->is_miaf_compatible());

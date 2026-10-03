@@ -486,6 +486,17 @@ endif ()
 
 # --- Create libheif pkgconfig file
 
+option(WITH_LCMS2 "Use Little CMS for ISO gain-map RGB LUT profiles" ON)
+if (WITH_LCMS2)
+    find_package(PkgConfig QUIET)
+    if (PKG_CONFIG_FOUND)
+        pkg_check_modules(LCMS2 QUIET lcms2>=2.10)
+    endif ()
+endif ()
+if (WITH_LCMS2 AND LCMS2_FOUND)
+    list(APPEND REQUIRES_PRIVATE "lcms2")
+endif ()
+
 set(prefix ${CMAKE_INSTALL_PREFIX})
 set(exec_prefix "\${prefix}")
 if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")

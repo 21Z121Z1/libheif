@@ -30,6 +30,7 @@
 #include "grid.h"
 #include "overlay.h"
 #include "iden.h"
+#include "tmap.h"
 #include "tiled.h"
 #include "codecs/decoder.h"
 #include "color-conversion/colorconversion.h"
@@ -206,6 +207,9 @@ std::shared_ptr<ImageItem> ImageItem::alloc_for_infe_box(HeifContext* ctx, const
   }
   else if (item_type == fourcc("iden")) {
     return std::make_shared<ImageItem_iden>(ctx, id);
+  }
+  else if (item_type == fourcc("tmap")) {
+    return std::make_shared<ImageItem_tmap>(ctx, id);
   }
 #if HEIF_ENABLE_EXPERIMENTAL_FEATURES
   else if (item_type == fourcc("tili")) {
@@ -705,7 +709,7 @@ bool ImageItem::populate_descriptions_from_child(const ImageItem& child,
 
 
 std::vector<std::shared_ptr<Box_colr> >
-ImageItem::add_color_profile(const std::shared_ptr<HeifPixelImage>& image,
+ImageItem::add_color_profile(const std::shared_ptr<const HeifPixelImage>& image,
                              const heif_encoding_options& options,
                              heif_image_input_class input_class,
                              const heif_color_profile_nclx* target_heif_nclx)
@@ -1408,7 +1412,10 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
   // Otherwise, use the profile that is stored in the image stream itself and then set the
   // (non-NCLX) profile later.
   const auto heif_nclx = get_color_profile_nclx();
-  if (heif_nclx.is_defined()) {
+  const bool use_item_colour = use_item_color_profile_for_decoding();
+  // tmap reconstruction already tags its RGB output. The item's colr also
+  // describes alternate storage, whose matrix/range must not overwrite it.
+  if (use_item_colour && heif_nclx.is_defined() && get_infe_type() != fourcc("tmap")) {
 
     // Since we have a HEIF colr box, we overwrite the bitstream's CICP parameter
     // with that parameter from the colr box.
@@ -1475,7 +1482,7 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
   }
 
   auto icc = get_color_profile_icc();
-  if (icc) {
+  if (use_item_colour && icc) {
     img->set_color_profile_icc(icc);
   }
 
@@ -1489,28 +1496,28 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
     // CLLI
 
     auto clli = get_property<Box_clli>();
-    if (clli) {
+    if (clli && use_item_colour) {
       img->set_clli(clli->clli);
     }
 
     // MDCV
 
     auto mdcv = get_property<Box_mdcv>();
-    if (mdcv) {
+    if (mdcv && use_item_colour) {
       img->set_mdcv(mdcv->mdcv);
     }
 
     // AMVE
 
     auto amve = get_property<Box_amve>();
-    if (amve) {
+    if (amve && use_item_colour) {
       img->set_amve(amve->amve);
     }
 
     // NDWT
 
     auto ndwt = get_property<Box_ndwt>();
-    if (ndwt) {
+    if (ndwt && use_item_colour) {
       img->set_nominal_diffuse_white_luminance(ndwt->get_diffuse_white_luminance());
     }
 
