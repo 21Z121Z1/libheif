@@ -178,7 +178,12 @@ fi
 if [ -z "$EMSCRIPTEN_VERSION" ] && [ -z "$CHECK_LICENSES" ] && [ -z "$TARBALL" ] ; then
     echo "Building libheif ..."
     cmake . $CMAKE_OPTIONS
-    make VERBOSE=1 -j $(nproc)
+    if [ "$CURRENT_OS" = "osx" ]; then
+        LIBHEIF_BUILD_JOBS=$(sysctl -n hw.ncpu)
+    else
+        LIBHEIF_BUILD_JOBS=$(nproc)
+    fi
+    make VERBOSE=1 -j "$LIBHEIF_BUILD_JOBS"
     if [ "$CURRENT_OS" = "linux" ] && [ -z "$MINGW" ] && [ -z "$FUZZER" ] && [ ! -z "$TESTS" ] ; then
         echo "Running tests ..."
         make test
