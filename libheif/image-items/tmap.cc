@@ -418,11 +418,16 @@ ImageItem_tmap::add_new_tone_map_item(
 Result<std::shared_ptr<HeifPixelImage>>
 ImageItem_tmap::decode_compressed_image(
     const heif_decoding_options& options,
-    bool /*decode_tile_only*/,
-    uint32_t /*tile_x0*/,
-    uint32_t /*tile_y0*/,
+    bool decode_tile_only,
+    uint32_t tile_x0,
+    uint32_t tile_y0,
     DecodeTraversalState decode_state) const
 {
+  if (decode_tile_only && (tile_x0 != 0 || tile_y0 != 0)) {
+    return Error{heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
+                 "Tone-map derived images expose a single whole-image tile"};
+  }
+
   if (decode_state.processed_ids.contains(get_id())) {
     return Error{
         heif_error_Invalid_input,
