@@ -905,6 +905,71 @@ TEST_CASE("Tone maps normalize and interpolate Cb and Cr at independent depths")
   heif_decoding_options_free(options);
 }
 
+TEST_CASE("Tone-map inputs honour declared H273 chroma positions")
+{
+  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5});
+  const bool as_gain = GENERATE(false, true);
+  auto raster = std::make_shared<HeifPixelImage>();
+  raster->create(4, 4, heif_colorspace_YCbCr, heif_chroma_420);
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  profile.set_matrix_coefficients(6);
+  raster->set_color_profile_nclx(profile);
+  raster->set_chroma_location(location);
+  REQUIRE_FALSE(raster->add_channel(heif_channel_Y, 4, 4, 8, nullptr));
+  raster->fill_channel(heif_channel_Y, 128);
+  for (auto channel : {heif_channel_Cb, heif_channel_Cr}) {
+    REQUIRE_FALSE(raster->add_channel(channel, 2, 2, 8, nullptr));
+    size_t stride = 0;
+    auto* plane = raster->get_channel_memory(channel, &stride);
+    for (uint32_t y = 0; y < 2; ++y) {
+      for (uint32_t x = 0; x < 2; ++x) {
+        plane[size_t(y) * stride + x] = static_cast<uint8_t>((channel == heif_channel_Cb ? 112 : 128) + 16 * x + 32 * y);
+      }
+    }
+  }
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+  options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {as_gain ? 1 : 0, 1};
+  auto base = make_pixels(4, false, 8192, 8);
+  // Full baseline geometry matches the 4:2:0 raster in either input role.
+  if (as_gain) {
+    const auto rgb_profile = base->get_color_profile_nclx();
+    base = std::make_shared<HeifPixelImage>();
+    base->create(4, 4, heif_colorspace_RGB, heif_chroma_444);
+    base->set_color_profile_nclx(rgb_profile);
+    for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+      REQUIRE_FALSE(base->add_channel(channel, 4, 4, 16, nullptr));
+      base->fill_channel(channel, 8192);
+    }
+  }
+  auto result = reconstruct_tone_map(as_gain ? base : raster, as_gain ? raster : make_pixels(1, true, 0, 2),
+                                     metadata, base->get_color_profile_nclx(), *options, nullptr,
+                                     std::nullopt, std::nullopt, true);
+  INFO("location=" << int(location));
+  REQUIRE(result);
+  // H.273 (2024) Table 8: the known ramps at luma position (1,1).
+  // Both chroma planes increment by 16 horizontally and 32 vertically.
+  const std::array<int, 6> cb_code{128, 124, 136, 132, 120, 116};
+  const double cb = (cb_code[location] - 128.0) / 255;
+  const double cr = cb_code[location] / 255.0 - 112.0 / 255;
+  constexpr double kr = 0.299, kb = 0.114;
+  const double ey = 128.0 / 255;
+  const double r = ey + 2 * (1 - kr) * cr;
+  const double b = ey + 2 * (1 - kb) * cb;
+  const std::array<double, 3> rgb{r, (ey - kr * r - kb * b) / (1 - kr - kb), b};
+  for (size_t c = 0; c < 3; ++c) {
+    size_t stride = 0;
+    const auto* output = (*result)->get_channel_memory<float>(static_cast<heif_channel>(heif_channel_R + c), &stride);
+    const double expected = as_gain ? (8192.0 / 65535) * std::exp2(rgb[c]) : rgb[c];
+    REQUIRE(output[stride / sizeof(float) + 1] == Catch::Approx(expected).margin(1e-7));
+  }
+  REQUIRE(raster->get_chroma_location() == location);
+  heif_decoding_options_free(options);
+}
+
 TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
 {
   auto base = make_pixels(4, false, 8192, 8);
@@ -1219,15 +1284,32 @@ TEST_CASE("Floating gain samples are unnormalized before interpolation")
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Floating alpha is used before final quantization and rejects invalid opacity")
+TEST_CASE("Typed alpha is used before final quantization and rejects invalid opacity")
 {
+  const bool ycbcr = GENERATE(false, true);
+  const bool floating = GENERATE(false, true);
   const bool premultiplied = GENERATE(false, true);
   const int bits = GENERATE(32, 64);
   auto base = make_pixels(3, false, 13107, 8);
-  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 3, 1, bits, nullptr, heif_component_datatype_floating_point));
+  if (ycbcr) {
+    auto profile = base->get_color_profile_nclx();
+    profile.set_matrix_coefficients(6);
+    base = std::make_shared<HeifPixelImage>();
+    base->create(3, 1, heif_colorspace_YCbCr, heif_chroma_444);
+    base->set_color_profile_nclx(profile);
+    for (auto channel : {heif_channel_Y, heif_channel_Cb, heif_channel_Cr}) {
+      REQUIRE_FALSE(base->add_channel(channel, 3, 1, 16, nullptr));
+      base->fill_channel(channel, channel == heif_channel_Y ? 13107 : 32768);
+    }
+  }
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 3, 1, bits, nullptr,
+      floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer));
   auto set_alpha = [&](size_t x, double value) {
-    if (bits == 32) { base->get_channel_memory<float>(heif_channel_Alpha, nullptr)[x] = static_cast<float>(value); }
-    else { base->get_channel_memory<double>(heif_channel_Alpha, nullptr)[x] = value; }
+    if (floating && bits == 32) { base->get_channel_memory<float>(heif_channel_Alpha, nullptr)[x] = static_cast<float>(value); }
+    else if (floating) { base->get_channel_memory<double>(heif_channel_Alpha, nullptr)[x] = value; }
+    else if (bits == 32) { base->get_channel_memory<uint32_t>(heif_channel_Alpha, nullptr)[x] = static_cast<uint32_t>(value * UINT32_MAX); }
+    else { base->get_channel_memory<uint64_t>(heif_channel_Alpha, nullptr)[x] = value == 1 ? UINT64_MAX :
+            static_cast<uint64_t>(value * static_cast<double>(UINT64_MAX)); }
   };
   set_alpha(0, 0); set_alpha(1, 0.25); set_alpha(2, 1);
   base->set_premultiplied_alpha(premultiplied);
@@ -1247,11 +1329,13 @@ TEST_CASE("Floating alpha is used before final quantization and rejects invalid 
                      (premultiplied ? 0.25 : 1) * 65535));
   // Zero opacity yields zero premultiplied output even with nonzero offsets.
   if (premultiplied) { REQUIRE(sample_at(**result, heif_channel_R, 0) == 0); }
-  for (double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
-    set_alpha(1, invalid);
-    result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
-    REQUIRE_FALSE(result);
-    REQUIRE(result.error().error_code == heif_error_Invalid_input);
+  if (floating) {
+    for (double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+      set_alpha(1, invalid);
+      result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(), *options, nullptr);
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().error_code == heif_error_Invalid_input);
+    }
   }
   heif_decoding_options_free(options);
 }

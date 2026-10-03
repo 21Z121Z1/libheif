@@ -144,6 +144,8 @@ to straight colours, and premultiplies the alternate encoded output again.
 Alpha values are retained (with depth expansion if needed), zero-alpha output
 is black, and the source pixels are unchanged. Requested output conversion
 likewise operates on straight colours before restoring premultiplication.
+YCbCr input opacity may independently use unsigned 1-64-bit or float32/64
+storage; the colour matrix's depth limits do not restrict its alpha plane.
 Monochrome baseline samples expand directly to neutral RGB, including when
 alpha is present, without introducing a rounded YCbCr neutral-chroma bias.
 
@@ -216,8 +218,12 @@ full-range samples; bit depth alone does not make a file non-conforming.
   its PQ matrix; display linearization follows storage inversion. These
   additional paths use nearest-neighbor sampling by default and support
   mandatory bilinear upsampling with separate Y, Cb and Cr coded depths and
-  storage widths. Chroma is sampled directly at its own depth with centred
-  phase, edge extension and one rounding; Y/alpha codewords are unchanged.
+  storage widths. Chroma is sampled directly at its own depth, with edge
+  extension and one rounding; Y/alpha codewords are unchanged. An available
+  4:2:0 location 0-5 follows [H.273 (2024), Table 8](https://www.itu.int/rec/T-REC-H.273-202407-I/en).
+  Without a decoder declaration, the existing centered phase is retained.
+  Component-specific location 6 is explicitly unsupported until its separate
+  Cb/Cr phases are resolved; it is not interpreted as a shared centered phase.
   Reversible YCgCo retains its matching chroma-depth requirement. Unknown
   algorithms remain explicit errors. Both
   baseline and gain inputs reject unsupported or

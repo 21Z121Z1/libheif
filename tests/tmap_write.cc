@@ -1161,6 +1161,77 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
   heif_context_free(ctx);
 }
 
+TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma phase")
+{
+  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5});
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
+  auto* pixels = make_ycbcr_image(baseline);
+  REQUIRE(heif_image_set_chroma_location(pixels, location).code == heif_error_Ok);
+  int stride = 0;
+  auto* y_plane = heif_image_get_plane(pixels, heif_channel_Y, &stride);
+  for (size_t y = 0; y < 4; ++y) { std::memset(y_plane + y * stride, 128, 4); }
+  for (auto channel : {heif_channel_Cb, heif_channel_Cr}) {
+    auto* plane = heif_image_get_plane(pixels, channel, &stride);
+    for (uint32_t y = 0; y < 2; ++y) {
+      for (uint32_t x = 0; x < 2; ++x) {
+        plane[size_t(y) * stride + x] = static_cast<uint8_t>((channel == heif_channel_Cb ? 112 : 128) + 16 * x + 32 * y);
+      }
+    }
+  }
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_encode_image(ctx, pixels, encoder, encoding, &base).code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
+  heif_image_release(pixels);
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  heif_image_get_plane(pixels, heif_channel_Y, &stride)[0] = 0;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(pixels);
+  auto metadata = make_metadata();
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {0, 1};
+  auto alternate = baseline;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  auto options = make_options(&alternate);
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap).code == heif_error_Ok);
+  const auto bytes = write_context(ctx);
+  auto* read = reopen(bytes);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  auto* decoding = heif_decoding_options_alloc();
+  REQUIRE(decoding);
+  decoding->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+  decoding->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  heif_image* output = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(handle, &output, decoding, 4,
+                                                       heif_gain_map_resampling_phase_co_sited);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const std::array<int, 6> cr_code{144, 140, 152, 148, 136, 132};
+  const double expected_red = 128.0 / 255 + 2 * (1 - 0.299) * (cr_code[location] - 128.0) / 255;
+  const auto* red = reinterpret_cast<const float*>(heif_image_get_plane_readonly(output, heif_channel_R, &stride));
+  REQUIRE(red);
+  REQUIRE(red[stride / sizeof(float) + 1] == Catch::Approx(expected_red).margin(1e-7));
+  heif_image_release(output);
+  heif_decoding_options_free(decoding);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("Serialized sYCC baseline preserves negative RGB until tone-map offsets")
 {
   auto* ctx = heif_context_alloc();

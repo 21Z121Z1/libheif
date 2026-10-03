@@ -63,6 +63,18 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
     return unsupported("Unsupported tone-map matrix bit depths");
   }
   const auto chroma = image->get_chroma_format();
+  // Respect an available H.273 location instead of imposing centered chroma.
+  // Keep the existing centered fallback when the decoder has no declaration.
+  double horizontal_offset = 0.5, vertical_offset = 0.5;
+  if (chroma == heif_chroma_420 && image->has_chroma_location()) {
+    const auto location = image->get_chroma_location();
+    if (location > 5) {
+      return unsupported("Unsupported component-specific tone-map chroma location");
+    }
+    // H.273 (2024) 8.7 Table 8, in luma-sample units.
+    horizontal_offset = location % 2 == 0 ? 0.0 : 0.5;
+    vertical_offset = location < 2 ? 0.5 : location < 4 ? 0.0 : 1.0;
+  }
   if (chroma != heif_chroma_444 &&
       options.color_conversion_options.only_use_preferred_chroma_algorithm &&
       options.color_conversion_options.preferred_chroma_upsampling_algorithm !=
@@ -135,11 +147,11 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
     if (!bilinear) {
       return static_cast<int32_t>(raw_sample(c, x / 2, chroma == heif_chroma_420 ? y / 2 : y));
     }
-    // Centred chroma, with edge extension and a single rounding at its own
+    // Declared chroma phase, with edge extension and a single rounding at its own
     // coded depth. Cb and Cr may have different storage widths (H.273 5.4).
-    const double sx = std::clamp((double(x) - 0.5) / 2, 0.0, double((width - 1) / 2));
+    const double sx = std::clamp((double(x) - horizontal_offset) / 2, 0.0, double((width - 1) / 2));
     const double sy = chroma == heif_chroma_420 ?
-        std::clamp((double(y) - 0.5) / 2, 0.0, double((height - 1) / 2)) : y;
+        std::clamp((double(y) - vertical_offset) / 2, 0.0, double((height - 1) / 2)) : y;
     const auto x0 = static_cast<uint32_t>(sx), y0 = static_cast<uint32_t>(sy);
     const auto x1 = std::min(x0 + 1, (width - 1) / 2);
     const auto y1 = std::min(y0 + 1, chroma == heif_chroma_420 ? (height - 1) / 2 : height - 1);
@@ -265,8 +277,10 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
   for (auto channel : image->get_channel_set()) {
     const uint16_t bits = image->get_bits_per_pixel(channel);
     const auto type = image->get_datatype(channel);
-    const bool integer = type == heif_component_datatype_unsigned_integer && bits >= 1 && bits <= (direct ? 64 : 16);
-    const bool floating = direct && type == heif_component_datatype_floating_point && (bits == 32 || bits == 64);
+    // Opacity is normalized independently of the colour matrix's code depths.
+    const bool typed = direct || channel == heif_channel_Alpha;
+    const bool integer = type == heif_component_datatype_unsigned_integer && bits >= 1 && bits <= (typed ? 64 : 16);
+    const bool floating = typed && type == heif_component_datatype_floating_point && (bits == 32 || bits == 64);
     if (!integer && !floating) {
       return unsupported("Unsupported tone-map sample datatype or depth");
     }

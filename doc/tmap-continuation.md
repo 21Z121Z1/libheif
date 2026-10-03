@@ -326,3 +326,13 @@ ImageIO still returned SDR-range pixels for both synthetic files and the Apple
 producer, while the direct Core Image HDR load gave errors of 0.000000639 and
 0.012865. A request-options A/B now records minimal, floating, nested-options
 and uncached ImageIO requests on failure; the original strict gate is unchanged.
+
+The reconstruction path now observes declared 4:2:0 chroma locations 0-5
+according to H.273 Table 8. A known two-dimensional chroma ramp failed ten
+input-role cases before this correction; it now passes for baseline and gain
+inputs. Serialization through an uncompressed baseline/tmap graph passes 132
+assertions. Location 6 remains explicit unsupported, requiring a resolved
+component-specific phase instead of guessing one. YCbCr opacity also uses its
+own integer/float datatype independently of the colour-depth restriction;
+eight added typed-alpha cases failed before the correction and now pass,
+including premultiplication, offsets, zero opacity and invalid floating values.
