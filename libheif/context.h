@@ -118,6 +118,9 @@ public:
 
   bool is_image(heif_item_id ID) const;
 
+  Error set_item_hidden(heif_item_id id, bool hidden);
+  Error validate_item_visibility(heif_item_id id, bool hidden) const;
+
   bool has_alpha(heif_item_id ID) const;
 
   Result<std::shared_ptr<HeifPixelImage>> decode_image(heif_item_id ID,
