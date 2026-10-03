@@ -113,7 +113,9 @@ std::vector<uint8_t> build_tmap_file(
     const std::vector<uint8_t>* baseline_icc = nullptr,
     const std::vector<uint8_t>* alternate_icc = nullptr,
     uint16_t baseline_transfer = 13,
-    const std::array<uint32_t, 2>* diffuse_whites = nullptr)
+    const std::array<uint32_t, 2>* diffuse_whites = nullptr,
+    uint16_t alternate_matrix = 9,
+    bool alternate_full_range = true)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -164,7 +166,8 @@ std::vector<uint8_t> build_tmap_file(
   auto base_colr = baseline_icc ? make_nclx(2, 2, 1, true) : make_nclx(1, baseline_transfer, 1, true);
   auto gain_colr =
       make_nclx(gain_primaries, gain_transfer, 2, true);
-  auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, true) : make_nclx(9, 16, 9, true);
+  auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, alternate_full_range) :
+                                  make_nclx(9, 16, alternate_matrix, alternate_full_range);
 
   std::vector<uint8_t> ipco_payload;
   append(ipco_payload, ispe);
@@ -883,6 +886,57 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   heif_nclx_color_profile_free(requested);
   options->output_image_nclx_profile = nullptr;
   heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Canonical RGB describes its actual layout independently of alternate storage range")
+{
+  const uint16_t matrix = GENERATE(uint16_t{0}, uint16_t{6}, uint16_t{9});
+  const bool full_range = GENERATE(false, true);
+  const bool convert = GENERATE(false, true);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {0, 1};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata, false,
+                                    nullptr, nullptr, 13, nullptr, matrix, full_range);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  heif_color_profile_nclx* item_profile = nullptr;
+  REQUIRE(heif_image_handle_get_nclx_color_profile(tmap, &item_profile).code == heif_error_Ok);
+  REQUIRE(item_profile->matrix_coefficients == matrix);
+  REQUIRE(item_profile->full_range_flag == full_range);
+  heif_nclx_color_profile_free(item_profile);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  if (convert) { options->output_image_nclx_profile = requested; }
+  heif_image* image = nullptr;
+  REQUIRE(heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options).code == heif_error_Ok);
+  heif_color_profile_nclx* decoded_profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &decoded_profile).code == heif_error_Ok);
+  REQUIRE(decoded_profile->matrix_coefficients == 0);
+  REQUIRE(decoded_profile->full_range_flag == 1);
+  // Independent neutral sRGB EOTF and ST 2084 expectation, with zero gain.
+  const double linear = 0.2122307574140550956;
+  const double p = std::pow(linear * 203 / 10000, 2610.0 / 16384);
+  const double pq = std::pow((3424.0 / 4096 + (2413.0 / 128) * p) /
+                              (1 + (2392.0 / 128) * p), 2523.0 / 32);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int stride = 0;
+    const auto* plane = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly(image, channel, &stride));
+    REQUIRE(plane[0] == Catch::Approx(std::round((convert ? linear : pq) * 65535)).margin(4));
+  }
+  heif_nclx_color_profile_free(decoded_profile);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_release(image);
   heif_image_handle_release(tmap);
   heif_context_free(context);
 }

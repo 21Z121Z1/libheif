@@ -548,7 +548,10 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   }
   if (auto error = copy_alpha(output, *base_rgb, limits, base->get_colorspace() == heif_colorspace_RGB)) { return error; }
   output->set_premultiplied_alpha(premultiplied);
-  output->set_color_profile_nclx(alternate_colour.raster_profile());
+  auto raster_profile = alternate_colour.raster_profile();
+  raster_profile.set_matrix_coefficients(0);
+  raster_profile.set_full_range_flag(true);
+  output->set_color_profile_nclx(raster_profile);
   output->set_color_profile_icc(alternate_colour.icc_profile());
   if (alternate_colour.nominal_diffuse_white()) {
     output->set_nominal_diffuse_white_luminance(alternate_colour.nominal_diffuse_white());

@@ -90,6 +90,9 @@ output encoding. Results are quantized to planar 16-bit RGB in alternate colour
 encoding. This decoded pixel depth is independent of the writer's caller-supplied
 `pixi` hint. All raster allocations use existing pixel-image security accounting;
 no upscaled full-resolution floating-point gain raster is allocated.
+The reconstructed RGB raster is tagged with identity matrix and full range,
+independently of the alternate item's storage matrix/range. The original item
+description remains available on the image handle.
 RGB and monochrome rasters are read at their actual component types:
 unsigned integers of 1-64 bits and full-range IEEE float32/float64. Integer
 limited-range normalization uses each component's own depth and requires at

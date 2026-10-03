@@ -1413,7 +1413,9 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
   // (non-NCLX) profile later.
   const auto heif_nclx = get_color_profile_nclx();
   const bool use_item_colour = use_item_color_profile_for_decoding();
-  if (use_item_colour && heif_nclx.is_defined()) {
+  // tmap reconstruction already tags its RGB output. The item's colr also
+  // describes alternate storage, whose matrix/range must not overwrite it.
+  if (use_item_colour && heif_nclx.is_defined() && get_infe_type() != fourcc("tmap")) {
 
     // Since we have a HEIF colr box, we overwrite the bitstream's CICP parameter
     // with that parameter from the colr box.
