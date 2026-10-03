@@ -250,8 +250,17 @@ opt-in interoperability gate rather than part of the repository test corpus.
 The workflow independently builds libultrahdr at
 `66821e0a261aa3a06c0e7c889f52eced52850be1` and compares bidirectional mono/RGB
 Annex C bytes, including signed offsets and both application colour spaces.
+It also compares reconstructed linear HDR pixels for mono/RGB maps, BT.709,
+BT.2020 and Display P3, both application spaces and 1:1, 2:1 and 4:1 display
+headroom. The independent output is RGBA half-float; the pixel tolerance is
+0.0015 of reference white plus 0.003 times the pixel value, accounting for
+upstream's rounded 10-bit sRGB/gain LUTs and half quantization. Equal-size maps
+isolate the gain operation from upstream's IDW resampling. Monochrome inputs
+use common gain parameters, matching that upstream path. The pinned version's
+RGB888 classification is incomplete, so the oracle uses its RGBA8888 baseline.
 Its HEIF integration still targets the historical PR #1503 API: this proves
-metadata interoperability, not drop-in compatibility with that private API.
+ISO metadata and gain-operation interoperability; that private API still needs
+an adapter for drop-in integration.
 The published `gainmap_hevc_16x16.heic` fixture declares a 64x64 tmap but crops
 its base to 16x16; canonical decode correctly rejects this inconsistent geometry.
 

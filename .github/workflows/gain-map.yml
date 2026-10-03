@@ -30,7 +30,7 @@ jobs:
             -DUHDR_ENABLE_HEIF=OFF -DUHDR_BUILD_TESTS=OFF \
             -DUHDR_BUILD_EXAMPLES=OFF -DUHDR_BUILD_DEPS=OFF
           cmake --build /tmp/ultrahdr-build --parallel 2
-      - name: Check bidirectional Annex C bytes
+      - name: Check bidirectional Annex C bytes and reconstructed HDR pixels
         run: |
           cmake --preset testing -S . -B build-ultrahdr \
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
