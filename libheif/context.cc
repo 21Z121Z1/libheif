@@ -1796,6 +1796,13 @@ Result<std::shared_ptr<ImageItem>> HeifContext::encode_image(const std::shared_p
   }
   output_image_item->set_properties(properties);
 
+  err = output_image_item->initialize_decoder();
+  if (err) {
+    return err;
+  }
+
+  output_image_item->set_decoder_input_data();
+
   //m_heif_file->set_brand(encoder->plugin->compression_format,
   //                       output_image_item->is_miaf_compatible());
 

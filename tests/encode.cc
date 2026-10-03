@@ -254,3 +254,49 @@ TEST_CASE("kvazaar encodes monochrome images", "[heif_encoder]") {
   heif_encoder_release(enc);
   heif_context_free(ctx);
 }
+
+
+TEST_CASE("Encoded image handles can be queried and decoded before writing", "[heif_encoder]") {
+  heif_compression_format format = heif_compression_undefined;
+  for (heif_compression_format candidate : {heif_compression_JPEG,
+                                             heif_compression_AV1,
+                                             heif_compression_HEVC}) {
+    if (heif_have_encoder_for_format(candidate) && heif_have_decoder_for_format(candidate)) {
+      format = candidate;
+      break;
+    }
+  }
+  if (format == heif_compression_undefined) {
+    SKIP("No codec with both encoder and decoder available, skipping test");
+  }
+
+  heif_image* image = nullptr;
+  heif_error err = heif_image_create(16, 16, heif_colorspace_YCbCr, heif_chroma_420, &image);
+  REQUIRE(err.code == heif_error_Ok);
+  fill_new_plane(image, heif_channel_Y, 16, 16);
+  fill_new_plane(image, heif_channel_Cb, 8, 8);
+  fill_new_plane(image, heif_channel_Cr, 8, 8);
+
+  heif_context* ctx = heif_context_alloc();
+  heif_encoder* encoder = nullptr;
+  err = heif_context_get_encoder_for_format(ctx, format, &encoder);
+  REQUIRE(err.code == heif_error_Ok);
+
+  heif_image_handle* handle = nullptr;
+  err = heif_context_encode_image(ctx, image, encoder, nullptr, &handle);
+  REQUIRE(err.code == heif_error_Ok);
+  REQUIRE(handle != nullptr);
+  REQUIRE(heif_image_handle_get_luma_bits_per_pixel(handle) == 8);
+
+  heif_image* decoded = nullptr;
+  err = heif_decode_image(handle, &decoded, heif_colorspace_undefined,
+                          heif_chroma_undefined, nullptr);
+  REQUIRE(err.code == heif_error_Ok);
+  REQUIRE(decoded != nullptr);
+
+  heif_image_release(decoded);
+  heif_image_handle_release(handle);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+  heif_image_release(image);
+}
