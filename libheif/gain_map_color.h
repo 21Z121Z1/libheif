@@ -62,16 +62,20 @@ struct GainMapIccColour;
 class GainMapColour
 {
 public:
-  GainMapColour(const nclx_profile& profile) : m_nclx(profile) {}
-  static Result<GainMapColour> from_icc(const std::shared_ptr<const color_profile_raw>& profile);
+  GainMapColour(const nclx_profile& profile, uint32_t diffuse_white = 0)
+      : m_nclx(profile), m_diffuse_white(diffuse_white) {}
+  static Result<GainMapColour> from_icc(const std::shared_ptr<const color_profile_raw>& profile,
+                                      uint32_t diffuse_white = 0);
   Result<GainMapRGB> decode(const GainMapRGB& signal) const;
   Result<GainMapRGB> encode(const GainMapRGB& linear) const;
   Result<GainMapMatrix> matrix_to(const GainMapColour& target) const;
   const nclx_profile& raster_profile() const { return m_nclx; }
   const std::shared_ptr<const color_profile_raw>& icc_profile() const { return m_profile; }
+  uint32_t nominal_diffuse_white() const { return m_diffuse_white; }
 
 private:
   nclx_profile m_nclx;
+  uint32_t m_diffuse_white = 0; // HEIF ndwt units: 0.0001 cd/m2; zero selects the default.
   std::shared_ptr<const color_profile_raw> m_profile;
   std::shared_ptr<const GainMapIccColour> m_matrix_trc;
 };

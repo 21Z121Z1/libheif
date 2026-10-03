@@ -1725,9 +1725,15 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::convert_to_output_colorspac
       output_profile.set_sRGB_defaults();
     }
 
-    return convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
-                                         options.color_conversion_options, options.color_conversion_options_ext,
-                                         get_security_limits());
+    auto converted = convert_colorspace(img, target_colorspace, target_chroma, output_profile, converted_output_bpp,
+                                        options.color_conversion_options, options.color_conversion_options_ext,
+                                        get_security_limits());
+    if (converted && nclx_passthrough) {
+      // Layout-only RGB operators may have an undefined intermediate profile.
+      // Passthrough must retain the original description, including HDR curves.
+      (*converted)->set_color_profile_nclx(img->get_color_profile_nclx());
+    }
+    return converted;
   }
   else {
     return img;

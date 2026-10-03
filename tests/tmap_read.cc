@@ -30,6 +30,7 @@
 #include "libheif/heif.h"
 #include "libheif/heif_experimental.h"
 #include "libheif/heif_tiling.h"
+#include "libheif/heif_color.h"
 #include "test_utils.h"
 
 #include <algorithm>
@@ -110,7 +111,9 @@ std::vector<uint8_t> build_tmap_file(
     const GainMapMetadata* override_metadata = nullptr,
     bool premultiplied_base = false,
     const std::vector<uint8_t>* baseline_icc = nullptr,
-    const std::vector<uint8_t>* alternate_icc = nullptr)
+    const std::vector<uint8_t>* alternate_icc = nullptr,
+    uint16_t baseline_transfer = 13,
+    const std::array<uint32_t, 2>* diffuse_whites = nullptr)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -158,7 +161,7 @@ std::vector<uint8_t> build_tmap_file(
   auto ispe = make_box("ispe", ispe_payload, true);
 
   auto mskC = make_box("mskC", std::vector<uint8_t>{8}, true);
-  auto base_colr = baseline_icc ? make_nclx(2, 2, 1, true) : make_nclx(1, 13, 1, true);
+  auto base_colr = baseline_icc ? make_nclx(2, 2, 1, true) : make_nclx(1, baseline_transfer, 1, true);
   auto gain_colr =
       make_nclx(gain_primaries, gain_transfer, 2, true);
   auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, true) : make_nclx(9, 16, 9, true);
@@ -189,13 +192,22 @@ std::vector<uint8_t> build_tmap_file(
     else { alternate_icc_property = next_property; }
     ++next_property;
   }
+  std::array<uint8_t, 2> diffuse_white_properties{};
+  if (diffuse_whites) {
+    for (size_t c = 0; c < 2; ++c) {
+      std::vector<uint8_t> payload;
+      put_u32_be(payload, (*diffuse_whites)[c]);
+      append(ipco_payload, make_box("ndwt", payload, true));
+      diffuse_white_properties[c] = next_property++;
+    }
+  }
   auto ipco = make_box("ipco", ipco_payload);
 
   std::vector<uint8_t> ipma_payload;
   put_u32_be(ipma_payload, item_count);
 
   put_u16_be(ipma_payload, 1);
-  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_base ? 1 : 0) + (baseline_icc ? 1 : 0)));
+  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_base ? 1 : 0) + (baseline_icc ? 1 : 0) + (diffuse_whites ? 1 : 0)));
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(3);
@@ -203,6 +215,7 @@ std::vector<uint8_t> build_tmap_file(
     ipma_payload.push_back(0x80 | 6);
   }
   if (baseline_icc) { ipma_payload.push_back(baseline_icc_property); }
+  if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[0]); }
 
   put_u16_be(ipma_payload, 2);
   ipma_payload.push_back(3);
@@ -211,10 +224,11 @@ std::vector<uint8_t> build_tmap_file(
   ipma_payload.push_back(4);
 
   put_u16_be(ipma_payload, 3);
-  ipma_payload.push_back(alternate_icc ? 3 : 2);
+  ipma_payload.push_back(static_cast<uint8_t>((alternate_icc ? 3 : 2) + (diffuse_whites ? 1 : 0)));
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(5);
   if (alternate_icc) { ipma_payload.push_back(alternate_icc_property); }
+  if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[1]); }
   if (premultiplied_base) {
     put_u16_be(ipma_payload, 4);
     ipma_payload.push_back(3);
@@ -870,6 +884,76 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   options->output_image_nclx_profile = nullptr;
   heif_decoding_options_free(options);
   heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Nominal diffuse white file properties control ISO normalization and baseline fallback")
+{
+  const uint16_t baseline_transfer = GENERATE(uint16_t{13}, uint16_t{16});
+  const uint32_t alternate_white = GENERATE(uint32_t{0}, uint32_t{1000000}, uint32_t{4000000});
+  const uint16_t minimum_version = GENERATE(uint16_t{0}, uint16_t{1});
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {0, 1};
+  const std::array<uint32_t, 2> whites{1000000, alternate_white};
+  auto file = build_tmap_file(2, 0, minimum_version, 2, 2, 1, false, false,
+                               &metadata, false, nullptr, nullptr, baseline_transfer, &whites);
+  auto* context = heif_context_alloc();
+  REQUIRE(heif_context_read_from_memory_without_copy(context, file.data(), file.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* base = nullptr;
+  heif_image_handle* alternate = nullptr;
+  REQUIRE(heif_context_get_image_handle(context, 1, &base).code == heif_error_Ok);
+  REQUIRE(heif_context_get_image_handle(context, 3, &alternate).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_nominal_diffuse_white_luminance(base) == 1000000);
+  heif_image_handle_release(base);
+  REQUIRE(heif_image_handle_get_nominal_diffuse_white_luminance(alternate) == alternate_white);
+  const bool convert = GENERATE(false, true);
+  INFO("baseline TC=" << baseline_transfer << " min_version=" << minimum_version << " convert=" << convert);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  if (convert) { options->output_image_nclx_profile = requested; }
+  heif_image* decoded = nullptr;
+  const auto error = heif_decode_image(alternate, &decoded, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO((error.message ? error.message : ""));
+  REQUIRE(error.code == heif_error_Ok);
+  // Independent 70-digit Decimal reference for the file's 127/255 signal.
+  const double linear = baseline_transfer == 13 ? 0.2122307574140550956 : 90.4499268476489139 / 100;
+  const uint32_t output_white = minimum_version ? 1000000 : alternate_white;
+  REQUIRE(heif_image_get_nominal_diffuse_white_luminance(decoded) == output_white);
+  const uint16_t output_transfer = convert ? 8 : minimum_version ? baseline_transfer : 16;
+  double expected = linear;
+  if (!convert) {
+    if (minimum_version) { expected = 127.0 / 255; }
+    else {
+      const double nits = linear * (alternate_white ? alternate_white / 10000.0 : 203);
+      const double power = std::pow(nits / 10000, 2610.0 / 16384);
+      expected = std::pow((3424.0 / 4096 + (2413.0 / 128) * power) /
+                          (1 + (2392.0 / 128) * power), 2523.0 / 32);
+    }
+  }
+  heif_color_profile_nclx* output_profile = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(decoded, &output_profile).code == heif_error_Ok);
+  REQUIRE(output_profile->transfer_characteristics == output_transfer);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int stride = 0;
+    const auto* plane = heif_image_get_plane_readonly(decoded, channel, &stride);
+    const auto depth = heif_image_get_bits_per_pixel_range(decoded, channel);
+    const double max = std::ldexp(1.0, depth) - 1;
+    const uint16_t value = depth <= 8 ? plane[0] : reinterpret_cast<const uint16_t*>(plane)[0];
+    REQUIRE(value == Catch::Approx(std::round(expected * max)).margin(4));
+  }
+  heif_nclx_color_profile_free(output_profile);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_release(decoded);
+  heif_image_handle_release(alternate);
   heif_context_free(context);
 }
 

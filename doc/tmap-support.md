@@ -38,17 +38,19 @@ before the unsigned output raster clips to its representable range.
 For a logarithmic zero signal, the non-invertible low interval is decoded as
 black; levels below its cutoff cannot be recovered from that signal.
 The four equivalent SDR code points (1, 6, 14, 15) use H.273's continuous
-alpha/beta constants. PQ uses the BT.2408 reference-white
-convention of 203 cd/m2. This is an explicit implementation convention, not an
-additional ISO 21496 metadata field.
+alpha/beta constants. Absolute-luminance transfers use the associated HEIF
+`ndwt` nominal diffuse white, in units of 0.0001 cd/m2, to normalize reference
+white to one. Absent or zero `ndwt` uses the BT.2408 convention of 203 cd/m2.
+Baseline and alternate descriptions use their own white values; relative SDR
+and ICC PCS transforms remain relative to their encoded reference white.
 
-SMPTE ST 428's display-referred intensity uses the same physical 203 cd/m2
-reference normalization: a unit encoded signal decodes to 52.37/203 and the
+SMPTE ST 428's display-referred intensity uses the same reference normalization:
+with the default white, a unit encoded signal decodes to 52.37/203 and the
 nominal 48 cd/m2 white decodes to 48/203, following H.273 Table 3.
 
 HLG uses the BT.2100 reference display (1000 cd/m2, zero black, system gamma
 1.2), including its RGB-luminance-dependent OOTF, with the same 203 cd/m2
-reference white. Other HLG viewing conditions are not configurable yet.
+default reference white. Other HLG viewing conditions are not configurable yet.
 
 For ICC-described base or alternate items, an ICC `cicp` tag uses the supported
 CICP subset and HDR reference-white convention above. RGB input/display
@@ -210,7 +212,10 @@ full-range samples; bit depth alone does not make a file non-conforming.
 `gain_map_math` checks independently known scalar/colour values, channel
 reconciliation, limited-range endpoints and resampling order/phase. `tmap_read`
 checks canonical decode, nested reconstruction, baseline fallback and existing
-container error isolation. Existing `tmap_write` checks writer round trips.
+container error isolation, including distinct baseline/alternate `ndwt` values
+and independently known physical PQ luminance. Existing `tmap_write` checks
+writer round trips. Unknown-version fallback retains baseline HDR properties
+and its colour profile through output layout conversion.
 
 `gain_map_color` also checks custom ICC colourants, unequal channel curves,
 sampled-curve interpolation and plateau inverses, and actual reconstruction

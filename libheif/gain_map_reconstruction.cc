@@ -416,7 +416,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   }
   // Codec matrix/range stays on the raster; the item colour description is
   // used only after conversion to RGB sample values.
-  const auto baseline_colour = baseline_colour_override.value_or(GainMapColour(base->get_color_profile_nclx()));
+  const auto baseline_colour = baseline_colour_override.value_or(
+      GainMapColour(base->get_color_profile_nclx(), base->get_nominal_diffuse_white_luminance()));
   if (base->is_premultiplied_alpha() && !base->has_alpha()) {
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map baseline has no alpha channel"};
@@ -508,6 +509,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   output->set_premultiplied_alpha(premultiplied);
   output->set_color_profile_nclx(alternate_colour.raster_profile());
   output->set_color_profile_icc(alternate_colour.icc_profile());
+  if (alternate_colour.nominal_diffuse_white()) {
+    output->set_nominal_diffuse_white_luminance(alternate_colour.nominal_diffuse_white());
+  }
   return output;
 }
 
@@ -519,9 +523,10 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
 {
   if (!limits) { limits = &global_security_limits; }
   auto source = image->get_color_profile_nclx();
-  GainMapColour source_colour(source);
+  GainMapColour source_colour(source, image->get_nominal_diffuse_white_luminance());
   if (image->get_color_profile_icc()) {
-    auto resolved = GainMapColour::from_icc(image->get_color_profile_icc());
+    auto resolved = GainMapColour::from_icc(image->get_color_profile_icc(),
+                                          image->get_nominal_diffuse_white_luminance());
     if (!resolved) { return resolved.error(); }
     source_colour = *resolved;
   }
@@ -540,7 +545,7 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   if (!gain_map_supports_transfer(target.m_transfer_characteristics)) {
     return unsupported("Unsupported tone-map requested-output transfer function");
   }
-  const GainMapColour target_colour(target);
+  const GainMapColour target_colour(target, image->get_nominal_diffuse_white_luminance());
   auto matrix = source_colour.matrix_to(target_colour);
   if (!matrix) { return matrix.error(); }
   if (image->is_premultiplied_alpha() && !image->has_alpha()) {

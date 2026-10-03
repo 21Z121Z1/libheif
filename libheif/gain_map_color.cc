@@ -1020,7 +1020,8 @@ Result<GainMapMatrix> nclx_to_pcs(const nclx_profile& profile)
 }
 }  // namespace
 
-Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_profile_raw>& profile)
+Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_profile_raw>& profile,
+                                           uint32_t diffuse_white)
 {
   if (!profile) { return unsupported_icc(); }
   auto view = parse_icc(*profile);
@@ -1032,7 +1033,7 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   if (const auto* cicp = view->find(icc_sig('c', 'i', 'c', 'p'))) {
     auto nclx = nclx_from_cicp(*view, *cicp);
     if (!nclx) { return nclx.error(); }
-    GainMapColour result(*nclx);
+    GainMapColour result(*nclx, diffuse_white);
     result.m_profile = profile;
     return result;
   }
@@ -1096,7 +1097,7 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   nclx_profile raster = nclx_profile::undefined();
   raster.set_matrix_coefficients(0);
   raster.set_full_range_flag(true);
-  GainMapColour result(raster);
+  GainMapColour result(raster, diffuse_white);
   result.m_profile = profile;
   result.m_matrix_trc = std::move(transform);
   return result;
@@ -1104,7 +1105,15 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
 
 Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
 {
-  if (!m_matrix_trc) { return gain_map_decode_rgb(signal, m_nclx); }
+  if (!m_matrix_trc) {
+    auto result = gain_map_decode_rgb(signal, m_nclx);
+    if (!result) { return result.error(); }
+    const auto transfer = m_nclx.m_transfer_characteristics;
+    if (m_diffuse_white && (transfer == 16 || transfer == 17 || transfer == 18)) {
+      for (auto& value : *result) { value *= 2030000.0 / m_diffuse_white; }
+    }
+    return result;
+  }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->decode_lut) {
@@ -1127,7 +1136,14 @@ Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
 
 Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
 {
-  if (!m_matrix_trc) { return gain_map_encode_rgb(linear, m_nclx); }
+  if (!m_matrix_trc) {
+    auto normalized = linear;
+    const auto transfer = m_nclx.m_transfer_characteristics;
+    if (m_diffuse_white && (transfer == 16 || transfer == 17 || transfer == 18)) {
+      for (auto& value : normalized) { value *= m_diffuse_white / 2030000.0; }
+    }
+    return gain_map_encode_rgb(normalized, m_nclx);
+  }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->encode_lut) {

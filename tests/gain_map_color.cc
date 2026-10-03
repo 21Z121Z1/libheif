@@ -200,6 +200,38 @@ TEST_CASE("ICC CICP tag maps Display-P3 PQ directly")
   REQUIRE(result->m_full_range_flag);
 }
 
+TEST_CASE("Nominal diffuse white sets the HDR reference normalization")
+{
+  nclx_profile pq;
+  pq.set_colour_primaries(1);
+  pq.set_transfer_characteristics(16);
+  const GainMapColour colour(pq, 1000000); // 100 cd/m2, so 100 cd/m2 is unity.
+  auto linear = colour.decode({0.508078421517399, 0.508078421517399, 0.508078421517399});
+  REQUIRE(linear);
+  auto encoded = colour.encode({1, 1, 1});
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE((*linear)[c] == Catch::Approx(1).margin(1e-10));
+    REQUIRE((*encoded)[c] == Catch::Approx(0.508078421517399).margin(1e-10));
+  }
+  const auto transfer = GENERATE(uint16_t{13}, uint16_t{16}, uint16_t{17}, uint16_t{18});
+  pq.set_transfer_characteristics(transfer);
+  const GainMapRGB signal{0.25, 0.5, 0.75};
+  auto original = GainMapColour(pq).decode(signal);
+  auto explicit_default = GainMapColour(pq, 2030000).decode(signal);
+  auto changed = GainMapColour(pq, 1000000).decode(signal);
+  REQUIRE(original);
+  REQUIRE(explicit_default);
+  REQUIRE(changed);
+  auto round_trip = GainMapColour(pq, 1000000).encode(*changed);
+  REQUIRE(round_trip);
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE((*original)[c] == (*explicit_default)[c]);
+    REQUIRE((*changed)[c] == Catch::Approx((*original)[c] * (transfer == 13 ? 1 : 2.03)).margin(1e-10));
+    REQUIRE((*round_trip)[c] == Catch::Approx(signal[c]).margin(1e-10));
+  }
+}
+
 TEST_CASE("ICC matrix-shaper Display-P3 with sRGB TRC maps to CICP")
 {
   const std::array<std::array<double, 3>, 3> p3{{
