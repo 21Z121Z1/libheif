@@ -1280,6 +1280,80 @@ TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline 
   heif_context_free(context);
 }
 
+TEST_CASE("Gray ICC baseline files use the declared alternate RGB primaries")
+{
+  const bool lab = GENERATE(false, true);
+  const bool fallback = GENERATE(false, true);
+  const bool floating = GENERATE(false, true);
+  std::vector<uint8_t> icc(144, 0);
+  const auto patch = [&icc](size_t offset, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) { icc[offset + i] = static_cast<uint8_t>(value >> ((3 - i) * 8)); }
+  };
+  patch(8, 0x04400000);
+  patch(12, fourcc("mntr"));
+  patch(16, fourcc("GRAY"));
+  patch(20, fourcc(lab ? "Lab " : "XYZ "));
+  patch(36, fourcc("acsp"));
+  patch(128, 1);
+  patch(132, fourcc("kTRC"));
+  patch(136, 144);
+  patch(140, 14);
+  append_fourcc(icc, "curv");
+  put_u32_be(icc, 0);
+  put_u32_be(icc, 1);
+  put_u16_be(icc, 512); // Gamma 2.
+  patch(0, static_cast<uint32_t>(icc.size()));
+  GainMapMetadata metadata;
+  metadata.use_base_colour_space = false;
+  metadata.channel_count = 3;
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1};
+  }
+  const auto file = build_tmap_file(2, 0, fallback ? 1 : 0, 2, 2, 1, false, false,
+                                   &metadata, false, &icc, nullptr, 13, nullptr, 0, true, 8);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = floating ? heif_decode_tone_map_image_float32(tmap, &image, options, 2,
+                                    heif_gain_map_resampling_phase_co_sited) :
+                                heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  const double connection = std::pow(127.0 / 255, 2);
+  const double luminance = lab ? std::pow((connection * 100 + 16) / 116, 3) : connection;
+  for (size_t c = 0; c < 3; ++c) {
+    size_t stride = 0;
+    const auto* plane = heif_image_get_plane_readonly2(image, static_cast<heif_channel>(heif_channel_R + c), &stride);
+    REQUIRE(plane);
+    const double expected = luminance * (fallback ? 1 : std::exp2(double(c)));
+    if (floating) {
+      REQUIRE(reinterpret_cast<const float*>(plane)[0] == Catch::Approx(expected).margin(1e-6));
+    }
+    else {
+      REQUIRE(reinterpret_cast<const uint16_t*>(plane)[0] == Catch::Approx(expected * 65535).margin(2));
+    }
+  }
+  REQUIRE(heif_image_get_raw_color_profile_size(image) == 0);
+  heif_image_release(image);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 
 TEST_CASE("Floating linear tmap output retains out-of-gamut values")
 {

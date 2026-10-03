@@ -186,6 +186,79 @@ std::array<std::array<double, 3>, 3> multiply(
 
 }  // namespace
 
+TEST_CASE("Gray ICC shapers convert through PCS into the alternate RGB application space")
+{
+  const bool lab = GENERATE(false, true);
+  auto bytes = make_icc({{signature("kTRC"), sampled_trc_tag({512})}});
+  set_u32(bytes, 16, signature("GRAY"));
+  set_u32(bytes, 20, signature(lab ? "Lab " : "XYZ "));
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto gray = GainMapColour::from_icc(profile);
+  REQUIRE(gray);
+  REQUIRE_FALSE(gray->has_application_primaries());
+  REQUIRE(gray->icc_profile() == profile);
+  nclx_profile nclx;
+  nclx.set_colour_primaries(9);
+  nclx.set_transfer_characteristics(8);
+  const GainMapColour alternate(nclx);
+  auto matrix = gray->matrix_to(alternate);
+  REQUIRE(matrix);
+  for (double sample : {0.0, 0.1, 0.5, 1.0}) {
+    auto pcs = gray->decode({sample, sample, sample});
+    REQUIRE(pcs);
+    // ICC.1:2022 F.2: kTRC gives relative Y or normalized L*. Invert
+    // neutral Lab independently before applying the known PCS white.
+    const double connection = sample * sample;
+    const double luminance = !lab ? connection : connection <= 0.08 ?
+        connection * 2700 / 24389 : std::pow((100 * connection + 16) / 116, 3);
+    const std::array<double, 3> white{0.9642, 1, 0.8249};
+    const auto rgb = gain_map_transform(*matrix, *pcs);
+    for (size_t c = 0; c < 3; ++c) {
+      REQUIRE((*pcs)[c] == Catch::Approx(luminance * white[c]).margin(1e-12));
+      REQUIRE(rgb[c] == Catch::Approx(luminance).margin(1e-10));
+    }
+  }
+  REQUIRE_FALSE(gray->decode({0.2, 0.3, 0.2}));
+  REQUIRE_FALSE(gray->decode({NAN, NAN, NAN}));
+  REQUIRE_FALSE(gray->encode({0.1, 0.1, 0.1}));
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  base->fill_channel(heif_channel_Y, 127);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->fill_channel(heif_channel_Y, 255);
+  GainMapMetadata metadata;
+  metadata.use_base_colour_space = false;
+  metadata.channel_count = 3;
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1};
+  }
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, *gray,
+                                    std::nullopt, true);
+  REQUIRE(result);
+  const double connection = std::pow(127.0 / 255, 2);
+  const double luminance = lab ? std::pow((connection * 100 + 16) / 116, 3) : connection;
+  for (size_t c = 0; c < 3; ++c) {
+    const auto channel = static_cast<heif_channel>(heif_channel_R + c);
+    REQUIRE((*result)->get_channel_memory<float>(channel, nullptr)[0] ==
+            Catch::Approx(luminance * std::exp2(double(c))).margin(1e-6));
+  }
+  metadata.use_base_colour_space = true;
+  REQUIRE_FALSE(reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, *gray));
+  heif_decoding_options_free(options);
+  auto missing = make_icc({});
+  set_u32(missing, 16, signature("GRAY"));
+  REQUIRE_FALSE(GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), missing)));
+  auto bad = make_icc({{signature("kTRC"), sampled_trc_tag({0, 32768, 16384, 65535})}});
+  set_u32(bad, 16, signature("GRAY"));
+  REQUIRE_FALSE(GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bad)));
+}
+
 TEST_CASE("ICC CICP tag maps Display-P3 PQ directly")
 {
   const auto bytes = make_icc({
@@ -471,6 +544,108 @@ TEST_CASE("ICC storage NCLX does not clip relative RGB before its actual transfe
 }
 
 #if LIBHEIF_TEST_LCMS
+TEST_CASE("Serialized gray ICC XYZ and Lab shapers match independent Little CMS")
+{
+  const bool lab = GENERATE(false, true);
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  Curve gamma(cmsBuildGamma(nullptr, 2), cmsFreeToneCurve);
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(gamma);
+  REQUIRE(identity);
+  Profile profile(cmsCreateGrayProfile(cmsD50_xyY(), gamma.get()), cmsCloseProfile);
+  REQUIRE(profile);
+  cmsSetProfileVersion(profile.get(), 4.4);
+  if (lab) { cmsSetPCS(profile.get(), cmsSigLabData); }
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  auto gray = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+  REQUIRE(gray);
+  const cmsCIExyY white{0.3127, 0.3290, 1};
+  const cmsCIExyYTRIPLE rgb{{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  Profile output(cmsCreateRGBProfile(&white, &rgb, curves), cmsCloseProfile);
+  REQUIRE(output);
+  Transform cmm(cmsCreateTransform(profile.get(), TYPE_GRAY_DBL, output.get(), TYPE_RGB_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE), cmsDeleteTransform);
+  REQUIRE(cmm);
+  nclx_profile nclx;
+  nclx.set_colour_primaries(9);
+  nclx.set_transfer_characteristics(8);
+  auto matrix = gray->matrix_to(GainMapColour(nclx));
+  REQUIRE(matrix);
+  for (double sample : {0.0, 0.01, 0.1, 0.5, 0.9, 1.0}) {
+    GainMapRGB reference{};
+    cmsDoTransform(cmm.get(), &sample, reference.data(), 1);
+    auto pcs = gray->decode({sample, sample, sample});
+    REQUIRE(pcs);
+    const auto actual = gain_map_transform(*matrix, *pcs);
+    for (size_t c = 0; c < 3; ++c) {
+      REQUIRE(actual[c] == Catch::Approx(reference[c]).margin(0.0001));
+    }
+  }
+}
+
+TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
+{
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Pipeline = std::unique_ptr<cmsPipeline, decltype(&cmsPipelineFree)>;
+  Curve gamma(cmsBuildGamma(nullptr, 2), cmsFreeToneCurve);
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(gamma);
+  REQUIRE(identity);
+  Profile profile(cmsCreateGrayProfile(cmsD50_xyY(), gamma.get()), cmsCloseProfile);
+  REQUIRE(profile);
+  cmsSetProfileVersion(profile.get(), 4.3);
+  Pipeline pipeline(cmsPipelineAlloc(nullptr, 1, 3), cmsPipelineFree);
+  REQUIRE(pipeline);
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 1, curves)));
+  auto* clut = cmsStageAllocCLut16bit(nullptr, 33, 1, 3, nullptr);
+  REQUIRE(clut);
+  REQUIRE(cmsStageSampleCLut16bit(clut,
+      [](const cmsUInt16Number in[], cmsUInt16Number out[], void*) -> int {
+        const std::array<double, 3> white{0.9642, 1, 0.8249};
+        // XYZ PCS LUT values encode 1.0 as 32768, not 65535. This input
+        // transform is deliberately linear rather than the coexisting gamma 2.
+        for (size_t c = 0; c < 3; ++c) {
+          out[c] = static_cast<uint16_t>(std::round(in[0] * white[c] * 32768 / 65535));
+        }
+        return 1;
+      }, nullptr, 0));
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, clut));
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, curves)));
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB1Tag, pipeline.get()));
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  auto gray = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+#if LIBHEIF_HAVE_LCMS2
+  REQUIRE(gray);
+  REQUIRE_FALSE(gray->has_application_primaries());
+  nclx_profile nclx;
+  nclx.set_colour_primaries(1);
+  nclx.set_transfer_characteristics(8);
+  auto matrix = gray->matrix_to(GainMapColour(nclx));
+  REQUIRE(matrix);
+  for (double sample : {0.0, 0.25, 0.5, 1.0}) {
+    auto pcs = gray->decode({sample, sample, sample});
+    REQUIRE(pcs);
+    const auto actual = gain_map_transform(*matrix, *pcs);
+    for (double value : actual) { REQUIRE(value == Catch::Approx(sample).margin(0.0001)); }
+  }
+  REQUIRE_FALSE(gray->encode({0.25, 0.25, 0.25}));
+#else
+  REQUIRE_FALSE(gray);
+  REQUIRE(gray.error().error_code == heif_error_Unsupported_feature);
+#endif
+}
+
 namespace {
 std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,
                                                        bool colourants = true, bool encode = true)

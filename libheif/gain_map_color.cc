@@ -876,6 +876,7 @@ struct GainMapIccColour
   std::array<IccTag, 3> curves;
   GainMapMatrix to_pcs;
   bool lut = false;
+  bool gray = false;
   bool application_primaries = true;
 #if HAVE_LCMS2
   cmsContext context = nullptr;
@@ -1042,7 +1043,8 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     result.m_profile = profile;
     return result;
   }
-  if (view->data_space != icc_sig('R', 'G', 'B', ' ') ||
+  const bool gray = view->data_space == icc_sig('G', 'R', 'A', 'Y');
+  if ((!gray && view->data_space != icc_sig('R', 'G', 'B', ' ')) ||
       (view->pcs != icc_sig('X', 'Y', 'Z', ' ') && view->pcs != icc_sig('L', 'a', 'b', ' ')) ||
       (view->profile_class != icc_sig('m', 'n', 't', 'r') &&
        view->profile_class != icc_sig('s', 'c', 'n', 'r') &&
@@ -1066,15 +1068,22 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   auto transform = std::make_shared<GainMapIccColour>();
   transform->view = *view;
   transform->lut = lut;
+  transform->gray = gray;
   size_t colourants = 0;
   for (char name : {'r', 'g', 'b'}) {
     colourants += view->find(icc_sig(name, 'X', 'Y', 'Z')) != nullptr;
   }
-  if (colourants == 0 && lut) {
+  if (gray || (colourants == 0 && lut)) {
     // PCS is an intermediate representation, never a guessed RGB application
     // space. It suffices when the other item supplies the application primaries.
     transform->to_pcs = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
     transform->application_primaries = false;
+    if (gray && !lut) {
+      const auto* curve = view->find(icc_sig('k', 'T', 'R', 'C'));
+      if (!curve) { return unsupported_icc(); }
+      if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
+      transform->curves[0] = *curve;
+    }
   }
   else if (colourants != 3) { return unsupported_icc(); }
   for (size_t c = 0; c < 3; ++c) {
@@ -1105,11 +1114,12 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     transform->xyz_profile = cmsCreateXYZProfileTHR(transform->context);
     if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
     constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
+    const auto format = gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL;
     if (decode_lut) {
-      transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, TYPE_RGB_DBL,
+      transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, format,
           transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
-    if (encode_lut) {
+    if (encode_lut && !gray) {
       transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
           transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
@@ -1119,7 +1129,7 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     return unsupported_icc();
 #endif
   }
-  else if (view->pcs != icc_sig('X', 'Y', 'Z', ' ')) { return unsupported_icc(); }
+  else if (!gray && view->pcs != icc_sig('X', 'Y', 'Z', ' ')) { return unsupported_icc(); }
   nclx_profile raster = nclx_profile::undefined();
   raster.set_matrix_coefficients(0);
   raster.set_full_range_flag(true);
@@ -1141,6 +1151,25 @@ Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
     return result;
   }
   GainMapRGB result{};
+  if (m_matrix_trc->gray) {
+    for (double value : signal) { if (!std::isfinite(value)) { return invalid_value(); } }
+    // prepare_rgb replicates monochrome samples. A gray profile must not
+    // silently discard unequal channels of an incorrectly described RGB raster.
+    if (signal[0] != signal[1] || signal[0] != signal[2]) { return unsupported_icc(); }
+    if (!m_matrix_trc->lut) {
+      auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[0],
+                                      std::max(signal[0], 0.0), true);
+      if (!value) { return value.error(); }
+      double y = *value;
+      // ICC.1:2022 F.2: grayTRC is relative Y for XYZ PCS, or normalized
+      // L* for Lab PCS. Neutral Lab has a*=b*=0; invert L* before XYZ.
+      if (m_matrix_trc->view.pcs == icc_sig('L', 'a', 'b', ' ')) {
+        y = y <= 0.08 ? y * 2700 / 24389 : std::pow((100 * y + 16) / 116, 3);
+      }
+      if (!std::isfinite(y)) { return invalid_value(); }
+      return GainMapRGB{0.9642 * y, y, 0.8249 * y};
+    }
+  }
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {
     if (!m_matrix_trc->decode_lut) { return unsupported_icc(); }
@@ -1171,6 +1200,9 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     }
     return gain_map_encode_rgb(normalized, m_nclx);
   }
+  // Canonical tone-map output is RGB. A gray ICC cannot describe those
+  // samples or supply ISO's application primaries, even for achromatic gain.
+  if (m_matrix_trc->gray) { return unsupported_icc(); }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {

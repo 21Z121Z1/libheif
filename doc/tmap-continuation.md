@@ -78,7 +78,7 @@ not labelled non-conforming solely for that reason.
 | HEIF writer and alternative selection | Gain NCLX, hidden-item policy, exact alternate ICC/NCLX preservation and noncolliding ordered `altr` groups | Tested with synthetic Apple consumers |
 | Alpha and requested output colour | Encoded RGB unpremultiplication, straight-colour ISO reconstruction, restored alpha, and root EOTF/matrix/OETF output conversion | Implemented and tested, including a real `prem` container graph |
 | ICC colour pipeline | Exact RGB matrix/TRC colourants, per-channel parametric/sampled curves and D50 PCS conversion; independent Little CMS oracle in ON/OFF CI | Implemented for this profile model |
-| All permitted colour descriptions and raster paths | ICC LUT/device-link/non-RGB, other HLG viewing conditions and unsupported matrices remain limited | Partial |
+| All permitted colour descriptions and raster paths | ICC LUTs and gray baselines are supported as documented; other non-RGB models, HLG viewing conditions and raster limits remain | Partial |
 | External consumers | Apple public-framework pixels and producer round trip; libultrahdr metadata round trip | Tested cases only; no universal consumer claim |
 
 There is no defensible “100% adapted” claim for the whole standards. HEIF
@@ -370,3 +370,20 @@ sampled maximum difference. This is a runtime dependency comparison; no installe
 codec or libheif decoder implementation was replaced. Hosted Mac checks use
 the standard `macos-15-intel` runner alongside the local arm64 evidence and log
 the actual OS, compiler and codec versions.
+
+Gray ICC baselines now use their actual `kTRC` and XYZ or Lab PCS, with the
+alternate RGB description supplying the ISO application primaries. The shaper
+uses ICC.1:2022 Annex F.2 without a new dependency; optional Little CMS handles
+gray input LUTs with normal tag precedence. Gray descriptions cannot supply
+RGB application primaries or describe the canonical RGB output, and unequal
+RGB input is rejected instead of silently reading one channel.
+
+The gray regressions have 372 assertions covering independent PCS values,
+serialized profiles against Little CMS, input-only LUT precedence, unequal RGB
+rejection and public integer/float reconstruction with unknown-version baseline
+fallback. The first gray cases fail before the change. Native math/colour/reader/
+writer and experimental ON/OFF ASan/UBSan pass, including runtime CMM ON/OFF.
+Fresh local Apple consumer/producer checks again pass 24,635 assertions, and
+stock Google container checks pass 884,844 assertions with unchanged tolerances.
+At preceding head `f77db169`, all six Linux Actions jobs passed while the Intel
+Mac job remained queued. Hosted acceptance is still pending actual completion.
