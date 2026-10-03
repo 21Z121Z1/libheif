@@ -138,6 +138,13 @@ ceil-sized chroma tiles cannot extend beyond the full component grid.
 The tiled writer preserves explicit colour descriptions using the ordinary
 encoder's ICC/NCLX policy. General colour-conversion operators retain their
 existing supported-depth checks; gain reconstruction reads wide samples directly.
+Uncompressed YCbCr without `cloc` resolves the format's default location 0
+rather than inheriting the unknown-codec centered fallback. For 4:2:2 the decoded
+raster stores the equivalent horizontal co-sited phase as location 2, since
+every chroma row coincides with a luma row. Explicit `cloc` values take precedence.
+The same default appears in both public MPEG texts linked below; it does not
+introduce a file property or change the encoder's source raster. Serialized
+8/17/32-bit baselines check the default's independently known RGB values.
 
 AOM and dav1d retain AV1's declared 4:2:0 sample position on decoded rasters:
 `CSP_VERTICAL` maps to H.273 location 0 and `CSP_COLOCATED` to location 2, following

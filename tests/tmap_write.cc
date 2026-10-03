@@ -1188,7 +1188,8 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
       Phase{heif_chroma_420, 2, 136, 152}, Phase{heif_chroma_420, 3, 132, 148},
       Phase{heif_chroma_420, 4, 120, 136}, Phase{heif_chroma_420, 5, 116, 132},
       Phase{heif_chroma_420, 6, 128, 152}, Phase{heif_chroma_422, 2, 152, 168},
-      Phase{heif_chroma_422, 3, 148, 164}, Phase{heif_chroma_422, 6, 144, 168});
+      Phase{heif_chroma_422, 3, 148, 164}, Phase{heif_chroma_422, 6, 144, 168},
+      Phase{heif_chroma_420, 0, 128, 144, false}, Phase{heif_chroma_422, 2, 152, 168, false});
   std::vector<std::string> decoder_ids;
   if (format != heif_compression_uncompressed) {
     const int count = heif_get_decoder_descriptors(format, nullptr, 0);
@@ -1205,7 +1206,8 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   }
   else { decoder_ids.emplace_back(); }
   const auto decoder_id = GENERATE_REF(Catch::Generators::from_range(decoder_ids));
-  INFO("bits=" << bits << ", location=" << int(phase.location) << ", decoder=" << decoder_id);
+  INFO("bits=" << bits << ", location=" << int(phase.location) << ", declared=" << phase.declared
+               << ", decoder=" << decoder_id);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(format);
@@ -1251,6 +1253,9 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
   heif_image_handle* base = nullptr;
   REQUIRE(heif_context_encode_image(ctx, pixels, encoder, encoding, &base).code == heif_error_Ok);
+  REQUIRE(heif_image_has_chroma_location(pixels) == phase.declared);
+  REQUIRE(item_has_property(ctx, heif_image_handle_get_item_id(base), heif_fourcc('c','l','o','c')) ==
+      (format == heif_compression_uncompressed && phase.declared));
   heif_encoding_options_free(encoding);
   heif_image_release(pixels);
   const int gain_size = format == heif_compression_HEVC ? 16 : 1;
@@ -1311,8 +1316,9 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   heif_image* raw = nullptr;
   REQUIRE(heif_decode_image(raw_handle, &raw, heif_colorspace_undefined,
                             heif_chroma_undefined, decoding).code == heif_error_Ok);
-  REQUIRE(heif_image_has_chroma_location(raw) == phase.declared);
-  if (phase.declared) { REQUIRE(heif_image_get_chroma_location(raw) == phase.location); }
+  const bool resolved = phase.declared || format == heif_compression_uncompressed;
+  REQUIRE(heif_image_has_chroma_location(raw) == resolved);
+  if (resolved) { REQUIRE(heif_image_get_chroma_location(raw) == phase.location); }
   for (size_t c = 0; c < 3; ++c) {
     const auto channel = static_cast<heif_channel>(heif_channel_Y + c);
     const uint32_t cw = c == 0 ? width : (width + 1) / 2;
