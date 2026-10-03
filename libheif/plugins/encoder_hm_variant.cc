@@ -41,6 +41,8 @@
 
 #include "encoder_hm_variant.h"
 
+#include <algorithm>
+#include <list>
 #include <new>
 
 // HM is compiled for high bit depths, which changes the data types in its headers. All
