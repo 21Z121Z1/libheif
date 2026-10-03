@@ -1,5 +1,9 @@
 # ISO gain-map continuation from PR #1
 
+Current acceptance and remaining tasks are tracked only in
+[the clause-level conformance matrix](tmap-conformance-matrix.md).
+The implementation notes and dated receipts below are historical evidence.
+
 Baseline: `f4679fa14ad36e57aee60190a61650030c32659e` on
 `iso21496-gain-map-metadata-core`. Work continues on that PR branch.
 
