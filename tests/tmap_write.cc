@@ -35,6 +35,7 @@
 #include "test_utils.h"
 #include "gain_map_color.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cmath>
@@ -866,6 +867,146 @@ TEST_CASE("tmap writer round-trips graph metadata colour and brand")
       ctx, tmap_id, heif_fourcc('c', 'o', 'l', 'r')));
 
   heif_image_handle_release(read_tmap);
+  heif_context_free(ctx);
+}
+
+
+TEST_CASE("Two tiled inputs round-trip the Figure J.5 tone-map graph and pixels")
+{
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto alternate = make_nclx(heif_color_primaries_ITU_R_BT_2020_2_and_2100_0,
+      heif_transfer_characteristic_ITU_R_BT_2100_0_PQ,
+      heif_matrix_coefficients_ITU_R_BT_2020_2_non_constant_luminance, true);
+  const std::array<uint8_t, 4> base_samples{64, 96, 128, 160}, gain_samples{0, 85, 170, 255};
+  auto make_grid = [&](uint32_t tile_side, bool gain_raster) {
+    const auto& colour = gain_raster ? gain_colour : baseline;
+    const auto& samples = gain_raster ? gain_samples : base_samples;
+    auto* encoding = heif_encoding_options_alloc();
+    REQUIRE(encoding);
+    encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&colour);
+    heif_image_handle* grid = nullptr;
+    REQUIRE(heif_context_add_grid_image(ctx, tile_side * 2, tile_side * 2,
+                                        2, 2, encoding, &grid).code == heif_error_Ok);
+    heif_encoding_options_free(encoding);
+    for (uint32_t y = 0; y < 2; ++y) {
+      for (uint32_t x = 0; x < 2; ++x) {
+        auto* tile = make_ycbcr_image(colour, static_cast<int>(tile_side), static_cast<int>(tile_side));
+        for (auto channel : {heif_channel_Y, heif_channel_Cb, heif_channel_Cr}) {
+          int stride = 0;
+          auto* plane = heif_image_get_plane(tile, channel, &stride);
+          REQUIRE(plane);
+          const uint8_t sample = channel == heif_channel_Y ? samples[y * 2 + x] : 128;
+          for (int row = 0; row < heif_image_get_height(tile, channel); ++row) {
+            std::memset(plane + row * stride, sample, static_cast<size_t>(heif_image_get_width(tile, channel)));
+          }
+        }
+        REQUIRE(heif_context_add_image_tile(ctx, grid, x, y, tile, encoder).code == heif_error_Ok);
+        heif_image_release(tile);
+      }
+    }
+    const uint8_t orientation = 0;
+    REQUIRE(heif_item_add_raw_property(ctx, heif_image_handle_get_item_id(grid), heif_fourcc('i', 'r', 'o', 't'),
+                                      nullptr, &orientation, 1, 1, nullptr).code == heif_error_Ok);
+    return grid;
+  };
+  auto* base = make_grid(8, false);
+  auto* gain = make_grid(4, true);
+  const auto base_id = heif_image_handle_get_item_id(base), gain_id = heif_image_handle_get_item_id(gain);
+  const uint8_t base_clli[] = {0, 203, 0, 100};
+  REQUIRE(heif_item_add_raw_property(ctx, base_id, heif_fourcc('c', 'l', 'l', 'i'), nullptr,
+                                    base_clli, sizeof(base_clli), 0, nullptr).code == heif_error_Ok);
+  auto* options = heif_tone_map_options_alloc();
+  REQUIRE(options);
+  options->alternate_nclx = &alternate;
+  options->has_clli = 1;
+  options->clli = {1000, 400};
+  options->pixi_num_channels = 3;
+  for (size_t c = 0; c < 3; ++c) { options->pixi_bits_per_channel[c] = 12; }
+  auto metadata = make_metadata();
+  heif_image_handle* tmap = nullptr;
+  const auto added = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, options, &tmap);
+  INFO(added.message);
+  REQUIRE(added.code == heif_error_Ok);
+  const auto tmap_id = heif_image_handle_get_item_id(tmap);
+  REQUIRE(heif_context_set_primary_image(ctx, tmap).code == heif_error_Ok);
+  const auto file = write_context(ctx);
+  REQUIRE(heif_has_compatible_brand(file.data(), static_cast<int>(file.size()), "tmap"));
+  auto* read = reopen(file);
+  heif_item_id primary = 0;
+  REQUIRE(heif_context_get_primary_image_ID(read, &primary).code == heif_error_Ok);
+  REQUIRE(primary == tmap_id);
+  REQUIRE(heif_item_is_item_hidden(read, gain_id));
+  int group_count = 0;
+  auto* groups = heif_context_get_entity_groups(read, heif_entity_group_altr, 0, &group_count);
+  REQUIRE(group_count == 1);
+  REQUIRE(groups[0].num_entities == 2);
+  REQUIRE(groups[0].entities[0] == tmap_id);
+  REQUIRE(groups[0].entities[1] == base_id);
+  heif_entity_groups_release(groups, group_count);
+  for (auto id : {base_id, gain_id, tmap_id}) {
+    uint32_t type = 0;
+    heif_item_id* inputs = nullptr;
+    const auto count = heif_context_get_item_references(read, id, 0, &type, &inputs);
+    REQUIRE(type == heif_fourcc('d', 'i', 'm', 'g'));
+    REQUIRE(count == (id == tmap_id ? 2 : 4));
+    if (id == tmap_id) {
+      REQUIRE(inputs[0] == base_id);
+      REQUIRE(inputs[1] == gain_id);
+    }
+    else {
+      for (size_t i = 0; i < count; ++i) { REQUIRE(heif_item_is_item_hidden(read, inputs[i])); }
+      REQUIRE(item_has_property(read, id, heif_fourcc('i', 'r', 'o', 't')));
+    }
+    heif_release_item_references(read, &inputs);
+    REQUIRE(item_has_property(read, id, heif_fourcc('c', 'o', 'l', 'r')));
+    REQUIRE(item_has_property(read, id, heif_fourcc('p', 'i', 'x', 'i')));
+  }
+  REQUIRE(item_has_property(read, base_id, heif_fourcc('c', 'l', 'l', 'i')));
+  REQUIRE(item_has_property(read, tmap_id, heif_fourcc('c', 'l', 'l', 'i')));
+  // Only the tmap has a 12-bit resolution hint; every encoded tile is 8-bit.
+  // The public raw-property getter handles uninterpreted properties only.
+  const std::vector<uint8_t> pixi_box{0, 0, 0, 16, 'p', 'i', 'x', 'i', 0, 0, 0, 0, 3, 12, 12, 12};
+  REQUIRE(std::search(file.begin(), file.end(), pixi_box.begin(), pixi_box.end()) != file.end());
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, tmap_id, &handle).code == heif_error_Ok);
+  auto* decode_options = heif_decoding_options_alloc();
+  REQUIRE(decode_options);
+  auto linear = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
+  decode_options->output_image_nclx_profile = &linear;
+  heif_image* image = nullptr;
+  const auto decoded = heif_decode_tone_map_image_float32(handle, &image, decode_options, 32,
+                                                         heif_gain_map_resampling_phase_co_sited);
+  INFO(decoded.message);
+  REQUIRE(decoded.code == heif_error_Ok);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE(heif_image_get_width(image, channel) == 16);
+    REQUIRE(heif_image_get_height(image, channel) == 16);
+    int stride = 0;
+    const auto* plane = heif_image_get_plane_readonly(image, channel, &stride);
+    REQUIRE(plane);
+    for (size_t i = 0; i < 4; ++i) {
+      const auto* row = reinterpret_cast<const float*>(plane + (4 + 8 * (i / 2)) * stride);
+      const double signal = base_samples[i] / 255.0;
+      const double expected = std::pow((signal + 0.055) / 1.055, 2.4) * std::exp2(-1 + 2 * gain_samples[i] / 255.0);
+      REQUIRE(row[4 + 8 * (i % 2)] == Catch::Approx(expected).margin(1e-6));
+    }
+  }
+  heif_image_release(image);
+  heif_decoding_options_free(decode_options);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_tone_map_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
   heif_context_free(ctx);
 }
 

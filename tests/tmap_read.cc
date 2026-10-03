@@ -700,6 +700,72 @@ TEST_CASE("tmap rejects multiple dimg reference entries")
   heif_context_free(context);
 }
 
+TEST_CASE("Malformed tmap inputs reject decoding while the baseline stays accessible")
+{
+  const auto minimum_version = GENERATE(uint16_t{0}, uint16_t{1});
+  const auto inputs = GENERATE((std::array<uint16_t, 2>{3, 2}),
+                               (std::array<uint16_t, 2>{1, 3}),
+                               (std::array<uint16_t, 2>{99, 2}),
+                               (std::array<uint16_t, 2>{1, 99}),
+                               (std::array<uint16_t, 2>{1, 1}));
+  auto file = build_tmap_file(2, 0, minimum_version);
+  const auto original = make_box("dimg", {0, 3, 0, 2, 0, 1, 0, 2});
+  auto position = std::search(file.begin(), file.end(), original.begin(), original.end());
+  REQUIRE(position != file.end());
+  position[13] = static_cast<uint8_t>(inputs[0]);
+  position[15] = static_cast<uint8_t>(inputs[1]);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(image == nullptr);
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, 1, &base).code == heif_error_Ok);
+  REQUIRE(heif_decode_image(base, &image, heif_colorspace_undefined,
+                            heif_chroma_undefined, nullptr).code == heif_error_Ok);
+  int stride = 0;
+  const auto* pixels = heif_image_get_plane_readonly(image, heif_channel_Y, &stride);
+  REQUIRE(pixels);
+  REQUIRE(pixels[0] == 127);
+  heif_image_release(image);
+  heif_image_handle_release(base);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("A cycle through two tone-map nodes is rejected before child decoding")
+{
+  const bool future_version = GENERATE(false, true);
+  auto file = build_two_tmap_file(3);
+  if (future_version) {
+    const auto known = make_tone_map_payload();
+    const auto future = make_tone_map_payload(0, 1);
+    auto start = file.begin();
+    size_t replaced = 0;
+    while ((start = std::search(start, file.end(), known.begin(), known.end())) != file.end()) {
+      start = std::copy(future.begin(), future.end(), start);
+      ++replaced;
+    }
+    REQUIRE(replaced == 2);
+  }
+  const auto original = make_box("dimg", {0, 3, 0, 2, 0, 1, 0, 2});
+  auto position = std::search(file.begin(), file.end(), original.begin(), original.end());
+  REQUIRE(position != file.end());
+  position[13] = 5; // Node 3 now references node 5, which already references node 3.
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(error.subcode == heif_suberror_Item_reference_cycle);
+  REQUIRE(image == nullptr);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
 
 TEST_CASE("tmap reports unsupported outer and inner versions")
 {
