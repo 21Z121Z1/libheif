@@ -30,6 +30,7 @@
 #include "gain_map_reconstruction.h"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -1153,17 +1154,23 @@ TEST_CASE("Wide unsigned RGB is normalized without a 16-bit intermediate")
 TEST_CASE("Floating gain samples are unnormalized before interpolation")
 {
   const int bits = GENERATE(32, 64);
+  const bool interleaved = GENERATE(false, true);
   auto gain = std::make_shared<HeifPixelImage>();
-  gain->create(2, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
-  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 2, 1, bits, nullptr, heif_component_datatype_floating_point));
+  gain->create(2, 1, interleaved ? heif_colorspace_RGB : heif_colorspace_monochrome,
+                interleaved ? heif_chroma_interleaved_RGB : heif_chroma_monochrome);
+  const auto channel = interleaved ? heif_channel_interleaved : heif_channel_Y;
+  REQUIRE_FALSE(gain->add_channel(channel, 2, 1, bits, nullptr, heif_component_datatype_floating_point));
   const double g0 = bits == 32 ? static_cast<double>(float{1.0f / 3}) : 1.0 / 3;
-  if (bits == 32) {
-    auto* plane = gain->get_channel_memory<float>(heif_channel_Y, nullptr);
-    plane[0] = static_cast<float>(g0); plane[1] = 0.75f;
-  }
-  else {
-    auto* plane = gain->get_channel_memory<double>(heif_channel_Y, nullptr);
-    plane[0] = g0; plane[1] = 0.75;
+  const size_t components = interleaved ? 3 : 1;
+  for (size_t c = 0; c < components; ++c) {
+    if (bits == 32) {
+      auto* plane = gain->get_channel_memory<float>(channel, nullptr);
+      plane[c] = static_cast<float>(g0); plane[components + c] = 0.75f;
+    }
+    else {
+      auto* plane = gain->get_channel_memory<double>(channel, nullptr);
+      plane[c] = g0; plane[components + c] = 0.75;
+    }
   }
   auto profile = make_pixels(1, true, 0, 2)->get_color_profile_nclx();
   gain->set_color_profile_nclx(profile);
@@ -1280,6 +1287,153 @@ TEST_CASE("Mixed RGB sample types preserve signed extended transfer values")
   }
   REQUIRE(base->get_channel_memory<double>(heif_channel_B, nullptr)[0] == -0.05);
   heif_decoding_options_free(options);
+}
+
+TEST_CASE("Interleaved integer RGB keeps byte order, range and premultiplied opacity")
+{
+  const auto chroma = GENERATE(heif_chroma_interleaved_RGB, heif_chroma_interleaved_RGBA,
+                               heif_chroma_interleaved_RRGGBB_LE, heif_chroma_interleaved_RRGGBB_BE,
+                               heif_chroma_interleaved_RRGGBBAA_LE, heif_chroma_interleaved_RRGGBBAA_BE);
+  const bool full_range = GENERATE(false, true);
+  const bool premultiplied = GENERATE(false, true);
+  const bool alpha = is_interleaved_with_alpha(chroma);
+  if (premultiplied && !alpha) { return; }
+  const bool byte_samples = chroma == heif_chroma_interleaved_RGB || chroma == heif_chroma_interleaved_RGBA;
+  const bool big_endian = chroma == heif_chroma_interleaved_RRGGBB_BE || chroma == heif_chroma_interleaved_RRGGBBAA_BE;
+  const int bits = byte_samples ? 8 : 12;
+  const uint32_t max = (1U << bits) - 1;
+  const double offset = full_range ? 0 : 16U << (bits - 8);
+  const double scale = full_range ? max : 219U << (bits - 8);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(3, 2, heif_colorspace_RGB, chroma);
+  REQUIRE_FALSE(base->add_channel(heif_channel_interleaved, 3, 2, bits, nullptr));
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  profile.set_full_range_flag(full_range);
+  base->set_color_profile_nclx(profile);
+  base->set_premultiplied_alpha(premultiplied);
+  size_t stride = 0;
+  auto* data = base->get_channel_memory(heif_channel_interleaved, &stride);
+  const size_t components = alpha ? 4 : 3;
+  auto store = [&](uint32_t x, uint32_t y, size_t c, uint32_t value) {
+    auto* p = data + size_t(y) * stride + (x * components + c) * (byte_samples ? 1 : 2);
+    if (byte_samples) { p[0] = static_cast<uint8_t>(value); }
+    else {
+      p[big_endian ? 1 : 0] = static_cast<uint8_t>(value);
+      p[big_endian ? 0 : 1] = static_cast<uint8_t>(value >> 8);
+    }
+  };
+  std::array<std::array<double, 3>, 6> straight{};
+  std::array<double, 6> opacity{};
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 3; ++x) {
+      const uint32_t a = alpha ? (x == 0 ? 0 : x == 1 ? max / 2 : max) : max;
+      opacity[y * 3 + x] = a / double(max);
+      if (alpha) { store(x, y, 3, a); }
+      for (size_t c = 0; c < 3; ++c) {
+        const double signal = static_cast<double>(c + 1 + y) / 5.0;
+        const uint32_t code = static_cast<uint32_t>(std::round(offset + scale * signal * (premultiplied ? a / double(max) : 1)));
+        store(x, y, c, code);
+        const double normalized = (code - offset) / scale;
+        straight[y * 3 + x][c] = premultiplied ? (a ? normalized / opacity[y * 3 + x] : 0) : normalized;
+      }
+    }
+  }
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  profile.set_transfer_characteristics(16);
+  profile.set_full_range_flag(true);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto output = reconstruct_tone_map(base, make_pixels(3, true, 0, 2), metadata, profile, *options, nullptr);
+  heif_decoding_options_free(options);
+  REQUIRE(output);
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 3; ++x) {
+      const size_t pixel = y * 3 + x;
+      for (size_t c = 0; c < 3; ++c) {
+        // Independent ST 2084 equation after the known gain/offset operation.
+        const double linear = (straight[pixel][c] + 0.125) * 2 - 0.0625;
+        const double p = std::pow(linear * 203 / 10000, 2610.0 / 16384);
+        const double pq = std::pow((3424.0 / 4096 + (2413.0 / 128) * p) /
+                                   (1 + (2392.0 / 128) * p), 2523.0 / 32);
+        size_t output_stride = 0;
+        const auto* plane = (*output)->get_channel_memory<uint16_t>(static_cast<heif_channel>(heif_channel_R + c),
+                                                                    &output_stride);
+        const double expected = pq * (premultiplied ? opacity[pixel] : 1) * 65535;
+        REQUIRE(plane[size_t(y) * output_stride / 2 + x] == Catch::Approx(std::round(expected)).margin(1));
+      }
+      if (alpha) {
+        size_t alpha_stride = 0;
+        const auto* plane = (*output)->get_channel_memory<uint16_t>(heif_channel_Alpha, &alpha_stride);
+        REQUIRE(plane[size_t(y) * alpha_stride / 2 + x] == std::round(opacity[pixel] * 65535));
+      }
+    }
+  }
+}
+
+TEST_CASE("Typed interleaved RGB retains floating headroom and wide integer precision")
+{
+  const bool floating = GENERATE(false, true);
+  const bool alpha = GENERATE(false, true);
+  const int bits = alpha ? 64 : 32; // RGBA32 is the API's legacy alias for RGBA8.
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(2, 2, heif_colorspace_RGB, alpha ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB);
+  REQUIRE_FALSE(base->add_channel(heif_channel_interleaved, 2, 2, bits, nullptr,
+                                  floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer));
+  auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  base->set_color_profile_nclx(profile);
+  size_t stride = 0;
+  auto* data = base->get_channel_memory(heif_channel_interleaved, &stride);
+  const size_t components = alpha ? 4 : 3;
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 2; ++x) {
+      for (size_t c = 0; c < components; ++c) {
+        auto* p = data + size_t(y) * stride + (x * components + c) * static_cast<size_t>(bits / 8);
+        const double value = c == 3 ? 0.5 : static_cast<double>(x + y + c + 1) * 0.5;
+        if (floating && bits == 32) { const float f = static_cast<float>(value); std::memcpy(p, &f, sizeof(f)); }
+        else if (floating) { std::memcpy(p, &value, sizeof(value)); }
+        else if (bits == 32) {
+          const uint32_t code = c == 3 ? UINT32_MAX / 2 : static_cast<uint32_t>(x + y + c + 1) * 32768U;
+          std::memcpy(p, &code, sizeof(code));
+        }
+        else {
+          const uint64_t code = c == 3 ? UINT64_MAX / 2 : uint64_t(x + y + c + 1) << 47;
+          std::memcpy(p, &code, sizeof(code));
+        }
+      }
+    }
+  }
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {16, 1};
+  metadata.channels[0].gain_map_max = {16, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  profile.set_transfer_characteristics(16);
+  // Float values are already HDR; zero weight isolates their preservation.
+  const auto target = floating ? std::optional<double>{0.0} : std::nullopt;
+  auto output = reconstruct_tone_map(base, make_pixels(2, true, 0, 2), metadata, profile, *options, nullptr,
+                                    std::nullopt, target);
+  heif_decoding_options_free(options);
+  REQUIRE(output);
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 2; ++x) {
+      for (size_t c = 0; c < 3; ++c) {
+        size_t output_stride = 0;
+        const auto* plane = (*output)->get_channel_memory<uint16_t>(static_cast<heif_channel>(heif_channel_R + c),
+                                                                    &output_stride);
+        const double signal = plane[size_t(y) * output_stride / 2 + x] / 65535.0;
+        auto linear = gain_map_decode_transfer(signal, 16);
+        REQUIRE(linear);
+        const double expected = static_cast<double>(x + y + c + 1) *
+                                (floating ? 0.5 : 65536 * std::ldexp(1.0, bits == 32 ? 15 : 47) /
+                                                 (std::ldexp(1.0, bits) - 1));
+        REQUIRE(*linear == Catch::Approx(expected).margin(0.0002));
+      }
+    }
+  }
 }
 
 TEST_CASE("Wide limited-range mono normalization uses its own code depth")

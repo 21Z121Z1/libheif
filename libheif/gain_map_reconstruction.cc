@@ -242,7 +242,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
 
 bool is_direct_rgb(const HeifPixelImage& image)
 {
-  return (image.get_colorspace() == heif_colorspace_RGB && image.get_chroma_format() == heif_chroma_444) ||
+  return (image.get_colorspace() == heif_colorspace_RGB &&
+          (image.get_chroma_format() == heif_chroma_444 ||
+           num_interleaved_components_per_plane(image.get_chroma_format()) > 1)) ||
          (image.get_colorspace() == heif_colorspace_monochrome && image.get_chroma_format() == heif_chroma_monochrome);
 }
 
@@ -253,6 +255,11 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
   if (auto error = image->check_plane_layout()) { return error; }
   auto profile = image->get_color_profile_nclx();
   const bool direct = is_direct_rgb(*image);
+  const auto chroma = image->get_chroma_format();
+  const bool word_interleaved = chroma == heif_chroma_interleaved_RRGGBB_BE ||
+                               chroma == heif_chroma_interleaved_RRGGBB_LE ||
+                               chroma == heif_chroma_interleaved_RRGGBBAA_BE ||
+                               chroma == heif_chroma_interleaved_RRGGBBAA_LE;
   for (auto channel : image->get_channel_set()) {
     const uint16_t bits = image->get_bits_per_pixel(channel);
     const auto type = image->get_datatype(channel);
@@ -261,13 +268,16 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
     if (!integer && !floating) {
       return unsupported("Unsupported tone-map sample datatype or depth");
     }
+    if (word_interleaved && (!integer || bits > 16)) {
+      return unsupported("Tone-map RRGGBB layouts require unsigned 16-bit sample storage");
+    }
     if (direct && channel != heif_channel_Alpha && !profile.get_full_range_flag() &&
         (floating || bits < 8)) {
       return unsupported("Unsupported tone-map RGB or monochrome limited-range samples");
     }
   }
   // ISO 21496-1 Formula (2) operates on the decoded baseline, which may
-  // exceed reference white. Read planar RGB/mono directly, avoiding both
+  // exceed reference white. Read RGB/mono directly, avoiding both
   // premature clipping and a 16-bit quantization before inverse gamma/gain.
   if (direct) { return image; }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
@@ -292,6 +302,8 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
 struct SamplePlane {
   const uint8_t* data = nullptr;
   size_t stride = 0;
+  size_t pixel_step = 0;
+  int byte_order = 0; // Native, little-endian or big-endian 16-bit interleaved samples.
   int bits = 0;
   heif_component_datatype type = heif_component_datatype_undefined;
   double offset = 0;
@@ -299,12 +311,30 @@ struct SamplePlane {
 
   SamplePlane() = default;
 
-  SamplePlane(const HeifPixelImage& image, heif_channel channel, bool full_range)
+  SamplePlane(const HeifPixelImage& image, heif_channel channel, bool full_range, size_t component = 0)
   {
+    const auto chroma = image.get_chroma_format();
+    if (channel == heif_channel_Alpha && image.has_channel(heif_channel_interleaved) &&
+        is_interleaved_with_alpha(chroma)) {
+      channel = heif_channel_interleaved;
+      component = 3;
+    }
     if (!image.has_channel(channel)) { return; }
     data = image.get_channel_memory(channel, &stride);
     bits = image.get_bits_per_pixel(channel);
     type = image.get_datatype(channel);
+    const size_t bytes = static_cast<size_t>(bytes_per_sample_for_bit_depth(bits));
+    pixel_step = bytes;
+    if (channel == heif_channel_interleaved) {
+      data += component * bytes;
+      pixel_step *= num_interleaved_components_per_plane(chroma);
+      if (chroma == heif_chroma_interleaved_RRGGBB_LE || chroma == heif_chroma_interleaved_RRGGBBAA_LE) {
+        byte_order = 1;
+      }
+      else if (chroma == heif_chroma_interleaved_RRGGBB_BE || chroma == heif_chroma_interleaved_RRGGBBAA_BE) {
+        byte_order = 2;
+      }
+    }
     if (type == heif_component_datatype_unsigned_integer) {
       offset = full_range ? 0 : std::ldexp(16.0, bits - 8);
       scale = full_range ? std::ldexp(1.0, bits) - 1 : std::ldexp(219.0, bits - 8);
@@ -314,13 +344,19 @@ struct SamplePlane {
   template<class T> double read(uint32_t x, uint32_t y) const
   {
     T value;
-    std::memcpy(&value, data + size_t(y) * stride + size_t(x) * sizeof(T), sizeof(T));
+    std::memcpy(&value, data + size_t(y) * stride + size_t(x) * pixel_step, sizeof(T));
     return static_cast<double>(value);
   }
 
   double sample(uint32_t x, uint32_t y) const
   {
     if (!data) { return 1; }
+    if (byte_order) {
+      const auto* p = data + size_t(y) * stride + size_t(x) * pixel_step;
+      const uint16_t value = byte_order == 1 ? static_cast<uint16_t>(p[0] | (p[1] << 8)) :
+                                              static_cast<uint16_t>((p[0] << 8) | p[1]);
+      return (value - offset) / scale;
+    }
     if (type == heif_component_datatype_floating_point) {
       return bits == 32 ? read<float>(x, y) : read<double>(x, y);
     }
@@ -337,10 +373,12 @@ struct RGBPlanes {
   explicit RGBPlanes(const HeifPixelImage& image)
   {
     const bool mono = image.get_colorspace() == heif_colorspace_monochrome;
+    const bool interleaved = image.has_channel(heif_channel_interleaved);
     const bool full_range = image.get_color_profile_nclx().get_full_range_flag();
     const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
     for (size_t c = 0; c < 3; ++c) {
-      planes[c] = SamplePlane(image, mono ? heif_channel_Y : channels[c], full_range);
+      planes[c] = SamplePlane(image, interleaved ? heif_channel_interleaved : mono ? heif_channel_Y : channels[c],
+                              full_range, interleaved ? c : 0);
     }
   }
 
@@ -351,7 +389,7 @@ Error copy_alpha(const std::shared_ptr<HeifPixelImage>& output,
                  const std::shared_ptr<HeifPixelImage>& input, const heif_security_limits* limits,
                  bool normalize_depth)
 {
-  if (!input->has_channel(heif_channel_Alpha)) { return Error::Ok; }
+  if (!input->has_alpha()) { return Error::Ok; }
   if (input->get_datatype(heif_channel_Alpha) == heif_component_datatype_unsigned_integer &&
       (input->get_bits_per_pixel(heif_channel_Alpha) == 16 ||
        (input->get_bits_per_pixel(heif_channel_Alpha) < 16 && !normalize_depth))) {
