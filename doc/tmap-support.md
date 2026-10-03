@@ -326,6 +326,11 @@ The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
 installs AOM, dav1d, FFmpeg and x265 and includes writer and generic entity-group tests, so codec-backed
 writer regressions cannot pass merely because the encoder is unavailable.
+The main leak-detection run excludes x265. HEVC writer tests then run separately
+with ASan/UBSan: Ubuntu's `libx265.so.199` leaked an allocation inside
+`encoder_open` after all pixel assertions passed in
+[run 37127046744](https://github.com/21Z121Z1/libheif/actions/runs/37127046744/job/111214345239).
+Both test logs are retained; no leak suppression applies to the main regressions.
 
 The ordinary fuzzer workflow also runs a focused Annex C/ToneMapImage fuzzer
 with synthetic mono/RGB seeds. It checks canonical serializer round trips and
