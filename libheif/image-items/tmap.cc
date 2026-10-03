@@ -26,6 +26,7 @@
 #include "gain_map_reconstruction.h"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 
@@ -284,22 +285,46 @@ ImageItem_tmap::add_new_tone_map_item(
     return payload.error();
   }
 
-  heif_image_tiling base_tiling =
-      base->get_heif_image_tiling();
-  if (Error error =
-          base->process_image_transformations_on_tiling(
-              base_tiling)) {
-    return error;
-  }
-
-  const uint32_t width = base_tiling.image_width;
-  const uint32_t height = base_tiling.image_height;
+  const heif_image_tiling base_tiling = base->get_heif_image_tiling();
+  uint32_t width = base_tiling.image_width;
+  uint32_t height = base_tiling.image_height;
   if (width == 0 || height == 0) {
     return Error{
         heif_error_Usage_error,
         heif_suberror_Invalid_image_size,
         "Tone-map base image has no usable image dimensions"
     };
+  }
+
+  // The derived raster uses the transformed baseline. Tiling transformations
+  // retain crop offsets rather than reducing image_width/image_height.
+  auto base_properties = base->get_properties();
+  if (!base_properties) { return base_properties.error(); }
+  for (const auto& property : *base_properties) {
+    if (auto rotation = std::dynamic_pointer_cast<Box_irot>(property)) {
+      if (rotation->get_rotation_ccw() == 90 || rotation->get_rotation_ccw() == 270) {
+        std::swap(width, height);
+      }
+    }
+    if (auto clap = std::dynamic_pointer_cast<Box_clap>(property)) {
+      auto crop = clap->get_crop(width, height);
+      if (!crop) { return crop.error(); }
+      int left = crop->left, right = crop->right;
+      int top = crop->top, bottom = crop->bottom;
+      if (left < 0) { left = 0; }
+      if (top < 0) { top = 0; }
+      if (static_cast<uint32_t>(right) >= width) { right = static_cast<int>(width - 1); }
+      if (static_cast<uint32_t>(bottom) >= height) { bottom = static_cast<int>(height - 1); }
+      if (left > right || top > bottom) {
+        return Error{heif_error_Invalid_input, heif_suberror_Invalid_clean_aperture};
+      }
+      width = static_cast<uint32_t>(right - left + 1);
+      height = static_cast<uint32_t>(bottom - top + 1);
+    }
+    if (std::dynamic_pointer_cast<Box_iscl>(property)) {
+      return Error{heif_error_Unsupported_feature, heif_suberror_Unspecified,
+                   "Image scaling (iscl) transformative property is not yet supported"};
+    }
   }
 
   if (pixi_bits.size() > 4) {

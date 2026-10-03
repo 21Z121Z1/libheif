@@ -20,6 +20,7 @@
 
 #include "libheif/heif.h"
 #include "libheif/heif_plugin.h"
+#include "libheif/heif_properties.h"
 #include "encoder_x265.h"
 #include "encoder_input_check.h"
 #include <memory>
@@ -969,6 +970,17 @@ static heif_error x265_start_sequence_encoding_intern(void* encoder_raw, const h
       sstr << nclx->matrix_coefficients;
       api->param_parse(param, "colormatrix", sstr.str().c_str());
     }
+  }
+
+  if (heif_image_has_chroma_location(image)) {
+    const uint8_t location = heif_image_get_chroma_location(image);
+    if (heif_image_get_chroma_format(image) != heif_chroma_420 || location > 5) {
+      return {heif_error_Unsupported_feature, heif_suberror_Unsupported_parameter,
+              "HEVC cannot signal the declared chroma location"};
+    }
+    param->vui.bEnableChromaLocInfoPresentFlag = 1;
+    param->vui.chromaSampleLocTypeTopField = location;
+    param->vui.chromaSampleLocTypeBottomField = location;
   }
 
   // Write the pixel aspect ratio into the VUI. Extended_SAR stores sar_width/sar_height

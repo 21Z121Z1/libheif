@@ -79,11 +79,8 @@ heif_color_profile_nclx make_nclx(
 
 
 heif_image* make_ycbcr_image(
-    const heif_color_profile_nclx& nclx)
+    const heif_color_profile_nclx& nclx, int width = 4, int height = 4)
 {
-  constexpr int width = 4;
-  constexpr int height = 4;
-
   heif_image* image = nullptr;
   REQUIRE(heif_image_create(
               width, height,
@@ -1165,28 +1162,46 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
 
 TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
 {
-  const auto format = GENERATE(heif_compression_uncompressed, heif_compression_AV1);
-  const int bits = format == heif_compression_AV1 ? GENERATE(8, 10, 12) : GENERATE(8, 17, 32);
-  const uint32_t width = bits <= 12 ? 4 : 5, height = bits <= 12 ? 4 : 3;
+  std::vector<heif_compression_format> formats{heif_compression_uncompressed, heif_compression_AV1};
+  const heif_encoder_descriptor* hevc_encoder = nullptr;
+  if (heif_get_encoder_descriptors(heif_compression_HEVC, "x265", &hevc_encoder, 1)) {
+    const int count = heif_get_decoder_descriptors(heif_compression_HEVC, nullptr, 0);
+    std::vector<const heif_decoder_descriptor*> descriptors(count);
+    heif_get_decoder_descriptors(heif_compression_HEVC, descriptors.data(), count);
+    for (const auto* descriptor : descriptors) {
+      const char* id = heif_decoder_descriptor_get_id_name(descriptor);
+      if (id && strcmp(id, "ffmpeg") == 0) { formats.push_back(heif_compression_HEVC); }
+    }
+  }
+  const auto format = GENERATE_REF(Catch::Generators::from_range(formats));
+  const int bits = format == heif_compression_uncompressed ? GENERATE(8, 17, 32) : GENERATE(8, 10, 12);
+  const uint32_t width = format == heif_compression_HEVC ? 16 : bits <= 12 ? 4 : 5;
+  const uint32_t height = format == heif_compression_HEVC ? 24 : bits <= 12 ? 4 : 3;
   struct Phase { heif_chroma chroma; uint8_t location; int cb; int cr; bool declared = true; };
   const auto phase = format == heif_compression_AV1 ? GENERATE(
       Phase{heif_chroma_420, 0, 128, 144}, Phase{heif_chroma_420, 2, 136, 152},
-      Phase{heif_chroma_420, 0, 124, 140, false}) : GENERATE(
+      Phase{heif_chroma_420, 0, 124, 140, false}) : format == heif_compression_HEVC ? GENERATE(
+      Phase{heif_chroma_420, 0, 128, 144}, Phase{heif_chroma_420, 1, 124, 140},
+      Phase{heif_chroma_420, 2, 136, 152}, Phase{heif_chroma_420, 3, 132, 148},
+      Phase{heif_chroma_420, 4, 120, 136}, Phase{heif_chroma_420, 5, 116, 132}) : GENERATE(
       Phase{heif_chroma_420, 0, 128, 144}, Phase{heif_chroma_420, 1, 124, 140},
       Phase{heif_chroma_420, 2, 136, 152}, Phase{heif_chroma_420, 3, 132, 148},
       Phase{heif_chroma_420, 4, 120, 136}, Phase{heif_chroma_420, 5, 116, 132},
       Phase{heif_chroma_420, 6, 128, 152}, Phase{heif_chroma_422, 2, 152, 168},
       Phase{heif_chroma_422, 3, 148, 164}, Phase{heif_chroma_422, 6, 144, 168});
   std::vector<std::string> decoder_ids;
-  if (format == heif_compression_AV1) {
+  if (format != heif_compression_uncompressed) {
     const int count = heif_get_decoder_descriptors(format, nullptr, 0);
     std::vector<const heif_decoder_descriptor*> descriptors(count);
     heif_get_decoder_descriptors(format, descriptors.data(), count);
     for (const auto* descriptor : descriptors) {
       const char* id = heif_decoder_descriptor_get_id_name(descriptor);
-      if (id && (strcmp(id, "aom") == 0 || strcmp(id, "dav1d") == 0)) { decoder_ids.emplace_back(id); }
+      if (id && ((format == heif_compression_AV1 && (strcmp(id, "aom") == 0 || strcmp(id, "dav1d") == 0)) ||
+                 strcmp(id, "ffmpeg") == 0)) {
+        decoder_ids.emplace_back(id);
+      }
     }
-    if (decoder_ids.empty()) { SKIP("AOM/dav1d decoder unavailable"); }
+    if (decoder_ids.empty()) { SKIP("Chroma-location decoder unavailable"); }
   }
   else { decoder_ids.emplace_back(); }
   const auto decoder_id = GENERATE_REF(Catch::Generators::from_range(decoder_ids));
@@ -1194,10 +1209,11 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(format);
-  if (format == heif_compression_AV1) {
+  if (format != heif_compression_uncompressed) {
     heif_encoder_release(encoder);
     const heif_encoder_descriptor* descriptor = nullptr;
-    if (heif_get_encoder_descriptors(format, "aom", &descriptor, 1) == 0) { SKIP("AOM encoder unavailable"); }
+    const char* id = format == heif_compression_AV1 ? "aom" : "x265";
+    if (heif_get_encoder_descriptors(format, id, &descriptor, 1) == 0) { SKIP("Chroma-location encoder unavailable"); }
     REQUIRE(heif_context_get_encoder(ctx, descriptor, &encoder).code == heif_error_Ok);
     REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
   }
@@ -1219,7 +1235,7 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
     REQUIRE(plane);
     for (uint32_t y = 0; y < ch; ++y) {
       for (uint32_t x = 0; x < cw; ++x) {
-        const uint32_t value = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * x + 32 * y) << (bits - 8)) + 1;
+        const uint32_t value = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * (x % 2) + 32 * (y % 2)) << (bits - 8)) + 1;
         auto* row = plane + size_t(y) * row_bytes;
         if (bits <= 8) { row[x] = static_cast<uint8_t>(value); }
         else if (bits <= 16) { reinterpret_cast<uint16_t*>(row)[x] = static_cast<uint16_t>(value); }
@@ -1237,9 +1253,12 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   REQUIRE(heif_context_encode_image(ctx, pixels, encoder, encoding, &base).code == heif_error_Ok);
   heif_encoding_options_free(encoding);
   heif_image_release(pixels);
-  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
-  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
-  heif_image_get_plane(pixels, heif_channel_Y, &stride)[0] = 0;
+  const int gain_size = format == heif_compression_HEVC ? 16 : 1;
+  REQUIRE(heif_image_create(gain_size, gain_size, heif_colorspace_monochrome,
+                            heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, gain_size, gain_size, 8).code == heif_error_Ok);
+  auto* gain_plane = heif_image_get_plane(pixels, heif_channel_Y, &stride);
+  for (int y = 0; y < gain_size; ++y) { memset(gain_plane + y * stride, 0, gain_size); }
   heif_image_handle* gain = nullptr;
   REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
   heif_image_release(pixels);
@@ -1253,10 +1272,14 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   const auto add_error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
   INFO(add_error.message);
   REQUIRE(add_error.code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_ispe_width(tmap) == static_cast<int>(width));
+  REQUIRE(heif_image_handle_get_ispe_height(tmap) == static_cast<int>(height));
   const auto bytes = write_context(ctx);
   auto* read = reopen(bytes);
   heif_image_handle* handle = nullptr;
   REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_get_ispe_width(handle) == static_cast<int>(width));
+  REQUIRE(heif_image_handle_get_ispe_height(handle) == static_cast<int>(height));
   auto* decoding = heif_decoding_options_alloc();
   REQUIRE(decoding);
   decoding->decoder_id = decoder_id.empty() ? nullptr : decoder_id.c_str();
@@ -1267,6 +1290,8 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
                                                        heif_gain_map_resampling_phase_co_sited);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(heif_image_get_primary_width(output) == static_cast<int>(width));
+  REQUIRE(heif_image_get_primary_height(output) == static_cast<int>(height));
   const double unit = std::ldexp(1.0, bits - 8), maximum = std::ldexp(1.0, bits) - 1;
   const double expected_red = (128 * unit + 1) / maximum +
       2 * (1 - 0.299) * ((phase.cr - 128) * unit + 1) / maximum;
@@ -1298,7 +1323,7 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
     REQUIRE(plane);
     for (uint32_t y = 0; y < ch; ++y) {
       for (uint32_t x = 0; x < cw; ++x) {
-        const uint32_t expected = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * x + 32 * y) << (bits - 8)) + 1;
+        const uint32_t expected = ((c == 0 ? 128 : (c == 1 ? 112 : 128) + 16 * (x % 2) + 32 * (y % 2)) << (bits - 8)) + 1;
         const auto* row = plane + size_t(y) * row_bytes;
         REQUIRE((bits <= 8 ? row[x] : bits <= 16 ? reinterpret_cast<const uint16_t*>(row)[x] :
                                                 reinterpret_cast<const uint32_t*>(row)[x]) == expected);
@@ -1318,13 +1343,85 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   heif_context_free(ctx);
 }
 
-TEST_CASE("AOM preserves signalable chroma locations and rejects other declarations")
+TEST_CASE("tmap writer uses cropped and oriented HEVC baseline dimensions")
 {
+  const heif_encoder_descriptor* descriptor = nullptr;
+  if (heif_get_encoder_descriptors(heif_compression_HEVC, "x265", &descriptor, 1) == 0 ||
+      heif_get_decoder_descriptors(heif_compression_HEVC, nullptr, 0) == 0) { return; }
+  const int orientation = GENERATE(1, 2, 3, 4, 5, 6, 7, 8);
+  INFO("orientation=" << orientation);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  heif_encoder* encoder = nullptr;
+  REQUIRE(heif_context_get_encoder(ctx, descriptor, &encoder).code == heif_error_Ok);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
+  auto* pixels = make_ycbcr_image(baseline, 16, 24);
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = const_cast<heif_color_profile_nclx*>(&baseline);
+  encoding->image_orientation = static_cast<heif_orientation>(orientation);
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_encode_image(ctx, pixels, encoder, encoding, &base).code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
+  heif_image_release(pixels);
+  REQUIRE(heif_image_create(4, 2, heif_colorspace_monochrome, heif_chroma_monochrome,
+                            &pixels).code == heif_error_Ok);
+  fill_new_plane(pixels, heif_channel_Y, 4, 2);
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr,
+                                            &gain).code == heif_error_Ok);
+  heif_image_release(pixels);
+  heif_encoder_release(encoder);
+  auto alternate = baseline;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  auto options = make_options(&alternate);
+  auto metadata = make_metadata();
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata,
+                                                &options, &tmap).code == heif_error_Ok);
+  const int width = orientation < 5 ? 16 : 24, height = orientation < 5 ? 24 : 16;
+  REQUIRE(heif_image_handle_get_ispe_width(base) == 64);
+  REQUIRE(heif_image_handle_get_ispe_width(tmap) == width);
+  REQUIRE(heif_image_handle_get_ispe_height(tmap) == height);
+  const auto bytes = write_context(ctx);
+  auto* read = reopen(bytes);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  heif_image* output = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(handle, &output, nullptr, 4,
+                                                       heif_gain_map_resampling_phase_co_sited);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(heif_image_get_primary_width(output) == width);
+  REQUIRE(heif_image_get_primary_height(output) == height);
+  heif_image_release(output);
+  heif_image_handle_release(handle);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Codec encoders preserve signalable chroma locations and reject other declarations")
+{
+  const auto format = GENERATE(heif_compression_AV1, heif_compression_HEVC);
   const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5}, uint8_t{6});
   const bool as_gain = GENERATE(false, true);
   const heif_encoder_descriptor* descriptor = nullptr;
-  if (heif_get_encoder_descriptors(heif_compression_AV1, "aom", &descriptor, 1) == 0) {
-    SKIP("AOM encoder unavailable");
+  const char* encoder_id = format == heif_compression_AV1 ? "aom" : "x265";
+  if (heif_get_encoder_descriptors(format, encoder_id, &descriptor, 1) == 0) { return; }
+  if (format == heif_compression_HEVC) {
+    const int count = heif_get_decoder_descriptors(format, nullptr, 0);
+    std::vector<const heif_decoder_descriptor*> descriptors(count);
+    heif_get_decoder_descriptors(format, descriptors.data(), count);
+    bool have_ffmpeg = false;
+    for (const auto* decoder : descriptors) {
+      const char* id = heif_decoder_descriptor_get_id_name(decoder);
+      have_ffmpeg |= id && strcmp(id, "ffmpeg") == 0;
+    }
+    if (!have_ffmpeg) { return; }
   }
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
@@ -1332,7 +1429,8 @@ TEST_CASE("AOM preserves signalable chroma locations and rejects other declarati
   REQUIRE(heif_context_get_encoder(ctx, descriptor, &encoder).code == heif_error_Ok);
   const auto profile = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
-  auto* pixels = make_ycbcr_image(profile);
+  const int size = format == heif_compression_HEVC ? 16 : 4;
+  auto* pixels = make_ycbcr_image(profile, size, size);
   REQUIRE(heif_image_set_chroma_location(pixels, location).code == heif_error_Ok);
   heif_image_handle* handle = nullptr;
   auto signalling = profile;
@@ -1343,7 +1441,7 @@ TEST_CASE("AOM preserves signalable chroma locations and rejects other declarati
       heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, &gain_options, &handle) :
       heif_context_encode_image(ctx, pixels, encoder, nullptr, &handle);
   INFO(error.message);
-  if (location == 0 || location == 2) {
+  if (format == heif_compression_HEVC ? location <= 5 : location == 0 || location == 2) {
     REQUIRE(error.code == heif_error_Ok);
     REQUIRE(handle);
     REQUIRE(heif_context_set_primary_image(ctx, handle).code == heif_error_Ok);
@@ -1352,12 +1450,16 @@ TEST_CASE("AOM preserves signalable chroma locations and rejects other declarati
     heif_image_handle* input = nullptr;
     REQUIRE(heif_context_get_primary_image_handle(read, &input).code == heif_error_Ok);
     heif_image* decoded = nullptr;
+    auto* decoding = heif_decoding_options_alloc();
+    REQUIRE(decoding);
+    decoding->decoder_id = format == heif_compression_HEVC ? "ffmpeg" : "aom";
     const auto decode_error = heif_decode_image(input, &decoded, heif_colorspace_undefined,
-                                                heif_chroma_undefined, nullptr);
+                                                heif_chroma_undefined, decoding);
     INFO(decode_error.message);
     REQUIRE(decode_error.code == heif_error_Ok);
     REQUIRE(heif_image_has_chroma_location(decoded));
     REQUIRE(heif_image_get_chroma_location(decoded) == location);
+    heif_decoding_options_free(decoding);
     heif_image_release(decoded);
     heif_image_handle_release(input);
     heif_context_free(read);

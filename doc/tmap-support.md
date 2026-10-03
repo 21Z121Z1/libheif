@@ -147,6 +147,13 @@ An unknown AV1 position remains undeclared. AOM encoding preserves locations
 AV1 cannot represent them through that field. This does not introduce an
 external-position property or assume the meaning of an unknown AV1 value.
 
+FFmpeg propagates its declared chroma position for 4:2:0 and 4:2:2 rasters,
+using the six positions in [`AVFrame::chroma_location`](https://ffmpeg.org/doxygen/trunk/frame_8h_source.html). An unknown value remains
+undeclared. x265 writes an explicit 4:2:0 location 0-5 into both progressive
+HEVC VUI fields; declarations outside that range or for other sampling layouts
+return unsupported. Serialized 8/10/12-bit HEVC baselines exercise all six
+positions through FFmpeg, checking raw codewords and reconstructed RGB values.
+
 The default root `tmap` output preserves its alternate encoding instead of
 silently tagging PQ pixels as sRGB. Explicit requested-output NCLX uses the
 supported EOTF, linear primaries matrix and requested OETF before the ordinary
@@ -203,6 +210,11 @@ Primary selection is preserved, and attempting to hide a primary gain is an
 error. Version-1 options retain their original behaviour and read no version-2
 fields. ICC preservation is independent of whether reconstruction supports the
 profile's colour transform.
+
+The derived item's `ispe` describes the baseline after its ordered crop and
+orientation properties, including codec padding removed by `clap`. Gain inputs
+use their own transformed dimensions. The writer checks cover all eight EXIF
+orientations on an asymmetric HEVC baseline padded from 16x24 to 64x64.
 
 For several tmap nodes sharing a base, disable automatic group creation while
 constructing the nodes and create one ordered group with
@@ -305,7 +317,7 @@ without optional colourants and input-only transforms.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
-installs AOM and includes writer and generic entity-group tests, so codec-backed
+installs AOM, dav1d, FFmpeg and x265 and includes writer and generic entity-group tests, so codec-backed
 writer regressions cannot pass merely because the encoder is unavailable.
 
 The ordinary fuzzer workflow also runs a focused Annex C/ToneMapImage fuzzer
