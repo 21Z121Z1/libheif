@@ -122,10 +122,14 @@ let baseline = CIImage(color: CIColor(red: signal, green: signal, blue: signal,
 let hdrValue = baselineLinear * 4.0
 let hdr = CIImage(color: CIColor(red: hdrValue, green: hdrValue, blue: hdrValue,
                                colorSpace: linearSpace)!).cropped(to: bounds)
+// A generic linear RGB output carries an explicit ICC matrix/TRC description.
+// On macOS 15 Intel, named sRGB output omitted CP/TC from both colr and VUI,
+// leaving use_base_colour_space without defined application primaries.
+let producerSpace = CGColorSpace(name: CGColorSpace.genericRGBLinear)!
 let output = directory.appendingPathComponent("apple-mono.heic")
 require(!FileManager.default.fileExists(atPath: output.path), "Refusing to overwrite Apple producer fixture")
 try context.writeHEIFRepresentation(of: baseline, to: output, format: .RGBA8,
-                                   colorSpace: sRGB, options: [.hdrImage: hdr])
+                                   colorSpace: producerSpace, options: [.hdrImage: hdr])
 guard let source = CGImageSourceCreateWithURL(output as CFURL, nil) else { fatalError("Missing Apple output") }
 require(CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0,
         kCGImageAuxiliaryDataTypeISOGainMap) != nil, "Apple producer omitted ISO gain map")

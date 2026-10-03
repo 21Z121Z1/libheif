@@ -89,6 +89,7 @@ TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
       ++component;
     }
     INFO("Apple/libheif maximum linear pixel error: " << maximum_error);
+    std::cout << "Apple/libheif maximum linear pixel error: " << maximum_error << '\n';
     REQUIRE(maximum_error < 0.025);
     heif_nclx_color_profile_free(profile);
     heif_image_release(pixels);

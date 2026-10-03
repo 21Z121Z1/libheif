@@ -385,6 +385,12 @@ The macOS workflow writes synthetic HEVC gain maps, checks Apple ImageIO ISO
 auxiliary recognition and HDR pixels against independent linear expectations,
 then reads an Apple Core Image-produced ISO tmap through libheif. It does not
 upload user camera originals or prove Photos-library persistence.
+The producer requests Apple's generic linear RGB output, which preserves an
+explicit ICC matrix/TRC description for the SDR baseline. The macOS 15 Intel
+named-sRGB producer in run 37130954715 emitted CP=2/TC=2 in both `colr` and
+HEVC VUI, no ICC, and `use_base_colour_space=1`; it cannot define ISO's linear
+RGB application primaries. That original artifact is rejected without guessing
+BT.709. A synthetic container regression preserves this strict error boundary.
 The hosted Mac uses Intel; local framework evidence uses Apple Silicon.
 HEVC pixel results depend on the decoder version. In the local original-file
 probe, isolated libde265 1.1.3 and FFmpeg agree on gain-plane checksums in both

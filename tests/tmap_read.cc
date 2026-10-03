@@ -774,6 +774,29 @@ TEST_CASE("tmap reconstructs synthetic uncompressed inputs")
   heif_context_free(context);
 }
 
+TEST_CASE("tmap rejects undefined baseline application colour without an ICC profile")
+{
+  auto file = build_tmap_file();
+  const auto declared = make_nclx(1, 13, 1, true);
+  const auto position = std::search(file.begin(), file.end(), declared.begin(), declared.end());
+  REQUIRE(position != file.end());
+  const auto unspecified = make_nclx(2, 2, 1, true);
+  std::copy(unspecified.begin(), unspecified.end(), position);
+
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  heif_gain_map_metadata metadata{};
+  REQUIRE(heif_image_handle_get_gain_map_metadata(tmap, &metadata).code == heif_error_Ok);
+  REQUIRE(metadata.use_base_colour_space == 1);
+  heif_image* image = nullptr;
+  const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  REQUIRE(error.code == heif_error_Unsupported_feature);
+  REQUIRE(error.subcode == heif_suberror_Unsupported_color_conversion);
+  REQUIRE(image == nullptr);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 TEST_CASE("tmap exposes a single logical tile and rejects other tile coordinates")
 {
   const bool ignore_transformations = GENERATE(false, true);
