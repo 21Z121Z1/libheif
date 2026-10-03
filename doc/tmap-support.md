@@ -311,3 +311,8 @@ The macOS workflow writes synthetic HEVC gain maps, checks Apple ImageIO ISO
 auxiliary recognition and HDR pixels against independent linear expectations,
 then reads an Apple Core Image-produced ISO tmap through libheif. It does not
 upload user camera originals or prove Photos-library persistence.
+The hosted Mac uses Intel; local framework evidence uses Apple Silicon.
+HEVC pixel results depend on the decoder version. In the local original-file
+probe, isolated libde265 1.1.3 and FFmpeg agree on gain-plane checksums in both
+decode orders; installed libde265 1.0.15 changes the Cr plane after decoding
+the baseline. The gain-map implementation adds no codec-specific workaround.

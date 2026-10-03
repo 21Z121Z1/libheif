@@ -42,7 +42,7 @@ jobs:
           ctest --test-dir build-ultrahdr -R '^gain_map_ultrahdr$' --output-on-failure
 
   apple-frameworks:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
@@ -50,6 +50,10 @@ jobs:
       - name: Build HEVC reader and writer
         run: |
           brew install cmake ninja pkg-config libde265 x265 aom little-cms2
+          sw_vers
+          uname -m
+          xcodebuild -version
+          pkg-config --modversion libde265 x265 aom
           cmake --preset testing -G Ninja -S . -B build-apple \
             -DENABLE_EXPERIMENTAL_FEATURES=ON \
             -DENABLE_PLUGIN_LOADING=OFF -DWITH_EXAMPLES=OFF \

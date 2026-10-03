@@ -361,3 +361,12 @@ the existing FFmpeg HEVC plugin independently gives 0.021310 on the second
 file. Native math/colour/reader/writer and experimental ON/OFF ASan/UBSan pass.
 Fresh Apple consumer/producer checks pass 24,635 assertions with unchanged
 pixel tolerances, and stock Google container checks pass 884,844 assertions.
+
+The old installed libde265 1.0.15 also changes the second original's Cr plane
+when its baseline is decoded first. An isolated libde265 1.1.3 build
+(`ba62bf4cfb3242f3bf0a45617ff09e35236e4d82`) has identical gain-plane checksums
+in both decode orders, matching independent FFmpeg, and gives the same 0.021310
+sampled maximum difference. This is a runtime dependency comparison; no installed
+codec or libheif decoder implementation was replaced. Hosted Mac checks use
+the standard `macos-15-intel` runner alongside the local arm64 evidence and log
+the actual OS, compiler and codec versions.
