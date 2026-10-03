@@ -31,6 +31,7 @@
 #include "libheif/heif_experimental.h"
 #include "libheif/heif_tiling.h"
 #include "libheif/heif_color.h"
+#include "libheif/heif_security.h"
 #include "test_utils.h"
 
 #include <algorithm>
@@ -762,6 +763,54 @@ TEST_CASE("A cycle through two tone-map nodes is rejected before child decoding"
   REQUIRE(error.code == heif_error_Invalid_input);
   REQUIRE(error.subcode == heif_suberror_Item_reference_cycle);
   REQUIRE(image == nullptr);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+
+TEST_CASE("tmap temporary rasters obey the shared memory budget and release failed allocations")
+{
+  const bool nested = GENERATE(false, true);
+  const auto file = nested ? build_two_tmap_file(3) : build_tmap_file();
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  if (nested) {
+    heif_image_handle_release(tmap);
+    REQUIRE(heif_context_get_image_handle(ctx, 5, &tmap).code == heif_error_Ok);
+  }
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, 1, &base).code == heif_error_Ok);
+  auto* limits = heif_context_get_security_limits(ctx);
+  REQUIRE(limits);
+  // Tiny rasters use padded 64x64 planes. A float32 RGB result alone needs
+  // about 48 KiB, so 40 KiB admits the baseline and a partial reconstruction.
+  limits->max_total_memory = 40 * 1024;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    heif_image* image = nullptr;
+    // The baseline alone fits; holding both inputs and temporary RGB planes
+    // for reconstruction exceeds this budget. Repeat to catch leaked charges.
+    const auto baseline_error = heif_decode_image(base, &image, heif_colorspace_undefined,
+                                                  heif_chroma_undefined, nullptr);
+    INFO(baseline_error.message);
+    REQUIRE(baseline_error.code == heif_error_Ok);
+    heif_image_release(image);
+    image = nullptr;
+    const auto error = heif_decode_tone_map_image_float32(tmap, &image, nullptr, 32,
+                                                         heif_gain_map_resampling_phase_co_sited);
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Memory_allocation_error);
+    REQUIRE(error.subcode == heif_suberror_Security_limit_exceeded);
+    REQUIRE(image == nullptr);
+  }
+  limits->max_total_memory = 1024 * 1024;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(tmap, &image, nullptr, 32,
+                                                       heif_gain_map_resampling_phase_co_sited);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  heif_image_release(image);
+  heif_image_handle_release(base);
   heif_image_handle_release(tmap);
   heif_context_free(ctx);
 }

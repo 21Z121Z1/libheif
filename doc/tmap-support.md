@@ -224,7 +224,7 @@ selected encoder can preserve it or report an unsupported declaration.
 
 `heif_tone_map_options_alloc()` returns version-2 options. The caller supplies
 either alternate NCLX or exact `prof`/`rICC` bytes. Defaults hide the existing gain
-and create an ordered `{tmap, base}` alternative group through the generic writer.
+and create an ordered `{tmap, base}` alternative group through the typed writer.
 Primary selection is preserved, and attempting to hide a primary gain is an
 error. Version-1 options retain their original behaviour and read no version-2
 fields. ICC preservation is independent of whether reconstruction supports the
@@ -234,11 +234,17 @@ The derived item's `ispe` describes the baseline after its ordered crop and
 orientation properties, including codec padding removed by `clap`. Gain inputs
 use their own transformed dimensions. The writer checks cover all eight EXIF
 orientations on an asymmetric HEVC baseline padded from 16x24 to 64x64.
+The base and gain must have matching effective orientation: irot and imir are
+composed in their association order, so equivalent property sequences are
+accepted and different display transforms fail before mutation.
+Optional PIXI describes this writer's three reconstructed RGB colour components;
+zero components omits it. Its bit depths are approximate precision hints,
+independent of mono/RGB gain channels, encoded input depth or decoded storage.
 
 For several tmap nodes sharing a base, disable automatic group creation while
 constructing the nodes and create one ordered group with
 `heif_context_add_alternative_entity_group()`. An item cannot belong to multiple
-alternative groups. The generic writer and visibility setter reject mixed
+alternative groups. The typed alternative writer and visibility setter reject mixed
 hidden/visible alternative membership (HEIF 6.4.2). Other ordinary files do not
 receive the `tmap` brand.
 
@@ -246,10 +252,11 @@ Entity-group IDs are reserved across item/track/group namespaces even without
 the optional `unif` brand. This avoids an ImageIO discovery failure when an
 `altr` group aliases an image item, including items added after the group.
 
-The generic visibility and entity-group writer prerequisite is imported with
-its history from upstream PR #1893, commit
-`a30c8fbc0be21f2807260a8da5d3e779f8555363`. The integration adds visibility
-consistency checks and C-boundary exception guards.
+Typed alternative/stereo writers and visibility support form a separate
+prerequisite aligned with upstream PR #1893. That PR remains unmerged at
+`717f61510c1b6c0cc0f129f07e0fe49082234acf`; reuse its upstream implementation
+when available. The review series retains visibility consistency checks and
+C-boundary exception guards without exposing an arbitrary internal group graph.
 
 ISO 21496-1 4.4 recommends at least eight bits per gain component ("should",
 not "shall"). Full-range monochrome and RGB (planar or byte interleaved) inputs below eight bits
@@ -336,7 +343,7 @@ without optional colourants and input-only transforms.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
-installs AOM, dav1d, FFmpeg and x265 and includes writer and generic entity-group tests, so codec-backed
+installs AOM, dav1d, FFmpeg and x265 and includes writer and typed entity-group tests, so codec-backed
 writer regressions cannot pass merely because the encoder is unavailable.
 The main leak-detection run excludes x265. HEVC writer tests then run separately
 with ASan/UBSan: Ubuntu's `libx265.so.199` leaked an allocation inside
