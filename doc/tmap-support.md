@@ -115,7 +115,7 @@ no upscaled full-resolution floating-point gain raster is allocated.
 The reconstructed RGB raster is tagged with identity matrix and full range,
 independently of the alternate item's storage matrix/range. The original item
 description remains available on the image handle.
-RGB and monochrome rasters are read at their actual component types:
+RGB, monochrome and full-range 4:4:4 identity-matrix GBR rasters are read at their actual component types:
 unsigned integers of 1-64 bits and full-range IEEE float32/float64. Integer
 limited-range normalization uses each component's own depth and requires at
 least eight bits. Floating baseline values above reference white and signed
@@ -125,7 +125,8 @@ as integer gains. Opacity must be finite and within [0,1]; its original value
 is used before final output quantization. Interleaved RGB/RGBA samples use their
 actual pixel stride and embedded alpha, including native wide integer/float
 storage. RRGGBB(AA) layouts use their declared 16-bit byte order and coded depth.
-No intermediate RGB raster is needed for these layouts. Unsigned 1-32-bit
+No intermediate RGB raster is needed for these layouts. GBR storage maps
+Cr/Y/Cb directly to R/G/B, including mixed component types. Unsigned 1-32-bit
 YCbCr inversions use double-precision RGB planes
 at the original raster dimensions rather than quantizing before gain. H.273's
 explicit YCgCo code-domain clipping remains in its required order; extended
@@ -133,7 +134,8 @@ TC 11/12 and non-identity TC 13 signals retain their sign and range until the
 ISO linear operation and final output. Other transfers retain their nominal
 signal range. The original non-identity TC 13 description selects the signed
 sYCC EOTF/OETF rather than unsigned sRGB. Floating limited-range, signed/complex component formats,
-and floating or greater-than-32-bit YCbCr rasters remain explicit
+and floating or greater-than-32-bit YCbCr rasters outside the full-range
+4:4:4 identity-matrix case remain explicit
 unsupported cases.
 
 The uncompressed component-interleave decoder supports dense 17-32-bit

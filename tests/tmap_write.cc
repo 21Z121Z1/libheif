@@ -1050,6 +1050,7 @@ TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
 
 TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonical public decode")
 {
+  const bool gbr = GENERATE(false, true);
   const bool floating = GENERATE(false, true);
   const int bits = GENERATE(32, 64);
   auto* ctx = heif_context_alloc();
@@ -1058,8 +1059,11 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
   heif_image* pixels = nullptr;
-  REQUIRE(heif_image_create(3, 2, heif_colorspace_RGB, heif_chroma_444, &pixels).code == heif_error_Ok);
-  for (auto type : {heif_cmpd_component_type_red, heif_cmpd_component_type_green, heif_cmpd_component_type_blue}) {
+  REQUIRE(heif_image_create(3, 2, gbr ? heif_colorspace_YCbCr : heif_colorspace_RGB,
+                            heif_chroma_444, &pixels).code == heif_error_Ok);
+  const auto types = gbr ? std::array{heif_cmpd_component_type_Cr, heif_cmpd_component_type_Y, heif_cmpd_component_type_Cb} :
+                          std::array{heif_cmpd_component_type_red, heif_cmpd_component_type_green, heif_cmpd_component_type_blue};
+  for (auto type : types) {
     uint32_t id = 0;
     REQUIRE(heif_image_add_component(pixels, 3, 2, type,
         floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer,

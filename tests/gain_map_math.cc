@@ -1297,12 +1297,14 @@ TEST_CASE("Requested output converts primaries on straight colours")
 
 TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
 {
-  const bool mono = GENERATE(false, true);
+  const int layout = GENERATE(0, 1, 2); // RGB, mono, full-range GBR.
+  const bool mono = layout == 1;
   const int bits = GENERATE(32, 64);
   auto base = std::make_shared<HeifPixelImage>();
-  base->create(3, 2, mono ? heif_colorspace_monochrome : heif_colorspace_RGB,
+  base->create(3, 2, mono ? heif_colorspace_monochrome : layout == 2 ? heif_colorspace_YCbCr : heif_colorspace_RGB,
                mono ? heif_chroma_monochrome : heif_chroma_444);
   const auto channels = mono ? std::vector<heif_channel>{heif_channel_Y} :
+                       layout == 2 ? std::vector<heif_channel>{heif_channel_Cr, heif_channel_Y, heif_channel_Cb} :
                               std::vector<heif_channel>{heif_channel_R, heif_channel_G, heif_channel_B};
   for (auto channel : channels) {
     REQUIRE_FALSE(base->add_channel(channel, 3, 2, bits, nullptr, heif_component_datatype_floating_point));
@@ -1343,12 +1345,15 @@ TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
 
 TEST_CASE("Wide unsigned RGB is normalized without a 16-bit intermediate")
 {
+  const bool gbr = GENERATE(false, true);
   const int bits = GENERATE(17, 24, 32, 48, 64);
   auto base = std::make_shared<HeifPixelImage>();
-  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  base->create(1, 1, gbr ? heif_colorspace_YCbCr : heif_colorspace_RGB, heif_chroma_444);
   // A very small baseline amplified by 2^16 must survive until gain application.
   const uint64_t code = uint64_t{1} << (bits - 17);
-  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+  const auto channels = gbr ? std::array{heif_channel_Cr, heif_channel_Y, heif_channel_Cb} :
+                             std::array{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (auto channel : channels) {
     REQUIRE_FALSE(base->add_channel(channel, 1, 1, bits, nullptr));
     if (bits <= 32) { base->get_channel_memory<uint32_t>(channel, nullptr)[0] = static_cast<uint32_t>(code); }
     else { base->get_channel_memory<uint64_t>(channel, nullptr)[0] = code; }
@@ -1372,10 +1377,11 @@ TEST_CASE("Wide unsigned RGB is normalized without a 16-bit intermediate")
 TEST_CASE("Floating gain samples are unnormalized before interpolation")
 {
   const int bits = GENERATE(32, 64);
-  const bool interleaved = GENERATE(false, true);
+  const int layout = GENERATE(0, 1, 2); // Mono, interleaved RGB, full-range GBR.
+  const bool interleaved = layout == 1;
   auto gain = std::make_shared<HeifPixelImage>();
-  gain->create(2, 1, interleaved ? heif_colorspace_RGB : heif_colorspace_monochrome,
-                interleaved ? heif_chroma_interleaved_RGB : heif_chroma_monochrome);
+  gain->create(2, 1, interleaved ? heif_colorspace_RGB : layout == 2 ? heif_colorspace_YCbCr : heif_colorspace_monochrome,
+                interleaved ? heif_chroma_interleaved_RGB : layout == 2 ? heif_chroma_444 : heif_chroma_monochrome);
   const auto channel = interleaved ? heif_channel_interleaved : heif_channel_Y;
   REQUIRE_FALSE(gain->add_channel(channel, 2, 1, bits, nullptr, heif_component_datatype_floating_point));
   const double g0 = bits == 32 ? static_cast<double>(float{1.0f / 3}) : 1.0 / 3;
@@ -1388,6 +1394,11 @@ TEST_CASE("Floating gain samples are unnormalized before interpolation")
     else {
       auto* plane = gain->get_channel_memory<double>(channel, nullptr);
       plane[c] = g0; plane[components + c] = 0.75;
+    }
+  }
+  if (layout == 2) {
+    for (auto other : {heif_channel_Cb, heif_channel_Cr}) {
+      REQUIRE_FALSE(gain->copy_new_channel_from(gain, channel, other, nullptr));
     }
   }
   auto profile = make_pixels(1, true, 0, 2)->get_color_profile_nclx();
@@ -1464,10 +1475,13 @@ TEST_CASE("Typed alpha is used before final quantization and rejects invalid opa
 
 TEST_CASE("Typed tone-map samples reject nonfinite and unresolved numeric formats")
 {
+  const bool gbr = GENERATE(false, true);
   const bool colour_is_gain = GENERATE(false, true);
   auto typed = std::make_shared<HeifPixelImage>();
-  typed->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
-  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+  typed->create(1, 1, gbr ? heif_colorspace_YCbCr : heif_colorspace_RGB, heif_chroma_444);
+  const auto channels = gbr ? std::array{heif_channel_Cr, heif_channel_Y, heif_channel_Cb} :
+                             std::array{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (auto channel : channels) {
     REQUIRE_FALSE(typed->add_channel(channel, 1, 1, 64, nullptr, heif_component_datatype_floating_point));
     typed->get_channel_memory<double>(channel, nullptr)[0] = 0.25;
   }
@@ -1478,12 +1492,12 @@ TEST_CASE("Typed tone-map samples reject nonfinite and unresolved numeric format
   auto* options = heif_decoding_options_alloc();
   REQUIRE(options);
   for (double invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
-    typed->get_channel_memory<double>(heif_channel_G, nullptr)[0] = invalid;
+    typed->get_channel_memory<double>(channels[1], nullptr)[0] = invalid;
     auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, colour, *options, nullptr);
     REQUIRE_FALSE(result);
     REQUIRE(result.error().error_code == heif_error_Invalid_input);
   }
-  typed->get_channel_memory<double>(heif_channel_G, nullptr)[0] = 0.25;
+  typed->get_channel_memory<double>(channels[1], nullptr)[0] = 0.25;
   colour.set_full_range_flag(false);
   typed->set_color_profile_nclx(colour);
   auto result = reconstruct_tone_map(base, gain, GainMapMetadata{}, colour, *options, nullptr);
@@ -1494,14 +1508,17 @@ TEST_CASE("Typed tone-map samples reject nonfinite and unresolved numeric format
 
 TEST_CASE("Mixed RGB sample types preserve signed extended transfer values")
 {
+  const bool gbr = GENERATE(false, true);
   auto base = std::make_shared<HeifPixelImage>();
-  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
-  REQUIRE_FALSE(base->add_channel(heif_channel_R, 1, 1, 32, nullptr, heif_component_datatype_floating_point));
-  REQUIRE_FALSE(base->add_channel(heif_channel_G, 1, 1, 24, nullptr));
-  REQUIRE_FALSE(base->add_channel(heif_channel_B, 1, 1, 64, nullptr, heif_component_datatype_floating_point));
-  base->get_channel_memory<float>(heif_channel_R, nullptr)[0] = -0.2f;
-  base->get_channel_memory<uint32_t>(heif_channel_G, nullptr)[0] = 1;
-  base->get_channel_memory<double>(heif_channel_B, nullptr)[0] = -0.05;
+  base->create(1, 1, gbr ? heif_colorspace_YCbCr : heif_colorspace_RGB, heif_chroma_444);
+  const auto input_channels = gbr ? std::array{heif_channel_Cr, heif_channel_Y, heif_channel_Cb} :
+                                   std::array{heif_channel_R, heif_channel_G, heif_channel_B};
+  REQUIRE_FALSE(base->add_channel(input_channels[0], 1, 1, 32, nullptr, heif_component_datatype_floating_point));
+  REQUIRE_FALSE(base->add_channel(input_channels[1], 1, 1, 24, nullptr));
+  REQUIRE_FALSE(base->add_channel(input_channels[2], 1, 1, 64, nullptr, heif_component_datatype_floating_point));
+  base->get_channel_memory<float>(input_channels[0], nullptr)[0] = -0.2f;
+  base->get_channel_memory<uint32_t>(input_channels[1], nullptr)[0] = 1;
+  base->get_channel_memory<double>(input_channels[2], nullptr)[0] = -0.05;
   auto profile = make_pixels(1, false, 0, 11)->get_color_profile_nclx();
   base->set_color_profile_nclx(profile);
   auto alternate = profile;
@@ -1522,7 +1539,7 @@ TEST_CASE("Mixed RGB sample types preserve signed extended transfer values")
         std::pow((v + 0.099296826809442) / 1.099296826809442, 1 / 0.45), signal[c]);
     REQUIRE(sample_at(**result, channels[c], 0) == std::round((linear + 0.25) * 2 * 65535));
   }
-  REQUIRE(base->get_channel_memory<double>(heif_channel_B, nullptr)[0] == -0.05);
+  REQUIRE(base->get_channel_memory<double>(input_channels[2], nullptr)[0] == -0.05);
   heif_decoding_options_free(options);
 }
 
