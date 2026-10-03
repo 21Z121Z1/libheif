@@ -974,7 +974,10 @@ Error validate_rgb_curve(const IccView& view, const IccTag& tag)
       if (*d > 0 && *d <= 1) {
         auto left = evaluate_icc_curve(view, tag, std::nextafter(*d, 0.0), true);
         auto right = evaluate_icc_curve(view, tag, *d, true);
-        if (!left || !right || *left > *right) { return unsupported_icc(); }
+        // ICC WP35 allows a downward join from parameter rounding. The
+        // analytic inverse chooses the lower branch where both are valid;
+        // its lower clamp requires the join to stay above the zero-input value.
+        if (!left || !right || *right < *first) { return unsupported_icc(); }
       }
     }
   }
@@ -1041,6 +1044,8 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
     if (function <= 2) { return std::max(high_value, 0.0); }
     const double low_offset = function == 4 ? p[6] : 0;
     const double low_end = std::max(p[3] * breakpoint + low_offset, 0.0);
+    // At a downward join either branch may be an exact inverse (ICC WP35).
+    // Prefer the lower branch whenever the target is in its range.
     if (breakpoint > 0 && (target < low_end || (target == *last && target <= low_end))) {
       const double low_value = p[3] > 0 ? (target - low_offset) / p[3] : breakpoint;
       return std::clamp(low_value, 0.0, breakpoint);

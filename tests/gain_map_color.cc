@@ -461,6 +461,44 @@ TEST_CASE("Sampled ICC curves use interpolation and normative plateau inverses")
   REQUIRE_FALSE(GainMapColour::from_icc(matrix_profile({invalid, invalid, invalid})));
 }
 
+TEST_CASE("Apple Rec.709 ICC branch overlap retains exact forward values")
+{
+  // Parameters from Core Image's public itur_709 producer, stored as
+  // s15Fixed16. ICC WP35 permits a negative join caused by rounding.
+  constexpr std::array<double, 5> p{0x238e4 / 65536.0, 0xe8f0 / 65536.0,
+      0x1710 / 65536.0, 0x38e4 / 65536.0, 0x14bc / 65536.0};
+  std::vector<uint8_t> curve;
+  put_u32(curve, signature("para"));
+  put_u32(curve, 0);
+  put_u16(curve, 3);
+  put_u16(curve, 0);
+  for (double value : p) { put_fixed(curve, value); }
+  const size_t channel = GENERATE(size_t{0}, size_t{1}, size_t{2});
+  std::array<std::vector<uint8_t>, 3> curves;
+  for (auto& trc : curves) { trc = sampled_trc_tag({}); }
+  curves[channel] = curve;
+  auto colour = GainMapColour::from_icc(matrix_profile(curves));
+  REQUIRE(colour);
+  const double left = p[3] * p[4], right = std::pow(p[1] * p[4] + p[2], p[0]);
+  REQUIRE(left > right);
+  for (double sample : {0.0, 0.04, std::nextafter(p[4], 0.0), p[4], 0.5, 1.0}) {
+    auto decoded = colour->decode({sample, sample, sample});
+    REQUIRE(decoded);
+    const double expected = sample < p[4] ? p[3] * sample : std::pow(p[1] * sample + p[2], p[0]);
+    REQUIRE((*decoded)[channel] == Catch::Approx(expected).margin(1e-12));
+  }
+  const double overlap = (left + right) / 2;
+  auto encoded = colour->encode({overlap, overlap, overlap});
+  REQUIRE(encoded);
+  // Two exact inverses exist here. Keep the existing lower-branch choice.
+  REQUIRE((*encoded)[channel] == Catch::Approx(overlap / p[3]).margin(1e-12));
+  REQUIRE((*encoded)[channel] < p[4]);
+  auto decoded = colour->decode(*encoded);
+  REQUIRE(decoded);
+  for (double value : *decoded) { REQUIRE(value == Catch::Approx(overlap).margin(1e-12)); }
+}
+
+
 TEST_CASE("ICC gamma and parametric equations preserve extended relative HDR")
 {
   const int kind = GENERATE(-2, -1, 0, 1, 2, 3, 4);

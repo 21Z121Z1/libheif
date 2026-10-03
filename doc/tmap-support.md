@@ -55,13 +55,17 @@ default reference white. Other HLG viewing conditions are not configurable yet.
 For ICC-described base or alternate items, an ICC `cicp` tag uses the supported
 CICP subset and HDR reference-white convention above. RGB input/display
 matrix/TRC profiles use their stored D50 PCS colourants and each channel's
-monotone `curveType` or `parametricCurveType` (types 0-4), without matching them
+monotone `curveType` or supported `parametricCurveType` (types 0-4), without matching them
 to a CICP approximation. Sampled curves use linear interpolation; inverse
 plateaus follow ICC.1:2022 Annex F.1. Cross-profile conversions use relative
 colourimetry through the D50 PCS, with a double-precision Bradford white adaptation
 for the supported NCLX spaces.
 Gamma and parametric equations retain extended positive relative HDR values;
 sampled tables remain bounded by their stored endpoints.
+Parametric branches can overlap at their join, as in Apple's serialized
+Rec.709 shaper. Their actual parameters are retained; where both inverses
+are valid, the lower branch is selected. This follows the inversion choices
+discussed in [ICC WP35](https://archive.color.org/files/whitepapers/ICC_White_Paper35-Use_of_the_parametricCurveType.pdf).
 
 Gray ICC baseline profiles use their `kTRC` and XYZ or Lab PCS according to
 ICC.1:2022 Annex F.2. The other item's RGB primaries must supply the application
@@ -392,6 +396,14 @@ HEVC VUI, no ICC, and `use_base_colour_space=1`; it cannot define ISO's linear
 RGB application primaries. That original artifact is rejected without guessing
 BT.709. A synthetic container regression preserves this strict error boundary.
 The hosted Mac uses Intel; local framework evidence uses Apple Silicon.
+A separate local named-Rec.709 producer probe decodes after the shaper fix,
+but has not passed the Apple HDR pixel oracle (maximum error 0.247994).
+For baseline code 195/255, its serialized ICC and independent Little CMS
+give linear 0.585445; Apple's public named-space conversion gives 0.525275,
+matching gamma 2.4. libheif follows the serialized ICC, and does not substitute
+Apple's named-space interpretation. The explicit generic-linear producer
+retains its existing 0.025 pixel gate; the Rec.709 discrepancy remains in the
+acceptance matrix for classification and final compatibility wording.
 HEVC pixel results depend on the decoder version. In the local original-file
 probe, isolated libde265 1.1.3 and FFmpeg agree on gain-plane checksums in both
 decode orders; installed libde265 1.0.15 changes the Cr plane after decoding
