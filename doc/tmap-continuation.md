@@ -408,3 +408,15 @@ container checks pass 884,844, with unchanged tolerances. At `3f5b0820`, all six
 Linux Actions jobs passed; the Intel Mac job remained queued. The workflow now
 includes the shared-decoder regressions. Floating and greater-than-32-bit YCbCr
 reconstruction remain explicit limitations.
+
+The former location-6 gap is now resolved using explicit component coordinates
+in MPEG's public 2022 DIS text and 2026 second-edition working draft: horizontal
+offset 1 for Cb, 0 for Cr, with vertical offset 0. The sampler keeps separate
+horizontal phases for the two planes. These draft sources agree with the existing
+libheif enum and dump; they are cited as drafts, not as the supplied final HEIF
+publication. Two baseline/gain cases and three 8/17/32-bit serialized cases fail
+before the correction and pass afterwards. The serialized tests check all three
+RGB channels, preventing a shared phase from hiding behind a matching red value.
+Native math/reader/writer and experimental ON/OFF ASan/UBSan, tidy and lint pass.
+At `64792b40`, all six Linux Actions jobs, including shared decoder regressions
+and leak detection, passed; the Intel Mac job remained queued.

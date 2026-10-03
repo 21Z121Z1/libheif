@@ -244,8 +244,13 @@ full-range samples; bit depth alone does not make a file non-conforming.
   extension and one rounding; Y/alpha codewords are unchanged. An available
   4:2:0 location 0-5 follows [H.273 (2024), Table 8](https://www.itu.int/rec/T-REC-H.273-202407-I/en).
   Without a decoder declaration, the existing centered phase is retained.
-  Component-specific location 6 is explicitly unsupported until its separate
-  Cb/Cr phases are resolved; it is not interpreted as a shared centered phase.
+  Location 6 uses separate horizontal offsets of 1 for Cb and 0 for Cr,
+  with vertical offset 0. These coordinates are explicitly described in
+  MPEG's public [2022 DIS text](https://www.mpeg.org/wp-content/uploads/mpeg_meetings/140_Mainz/w22011.zip)
+  and [2026 second-edition working draft](https://www.mpeg.org/wp-content/uploads/mpeg_meetings/155_Geneva/w26714.zip).
+  The implementation follows those coordinates without treating 6 as a shared
+  centered phase. These public draft sources are identified separately from the
+  user's final ISO gain-map/HEIF documents.
   Reversible YCgCo retains its matching chroma-depth requirement. Unknown
   algorithms remain explicit errors. Both
   baseline and gain inputs reject unsupported or

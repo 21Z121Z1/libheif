@@ -1166,7 +1166,7 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
 {
   const int bits = GENERATE(8, 17, 32);
   const uint32_t width = bits == 8 ? 4 : 5, height = bits == 8 ? 4 : 3;
-  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5});
+  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5}, uint8_t{6});
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
@@ -1234,13 +1234,22 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
                                                        heif_gain_map_resampling_phase_co_sited);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
-  const std::array<int, 6> cr_code{144, 140, 152, 148, 136, 132};
+  const std::array<int, 7> cb_code{128, 124, 136, 132, 120, 116, 128};
+  const std::array<int, 7> cr_code{144, 140, 152, 148, 136, 132, 152};
   const double unit = std::ldexp(1.0, bits - 8), maximum = std::ldexp(1.0, bits) - 1;
   const double expected_red = (128 * unit + 1) / maximum +
       2 * (1 - 0.299) * ((cr_code[location] - 128) * unit + 1) / maximum;
-  const auto* red = reinterpret_cast<const float*>(heif_image_get_plane_readonly(output, heif_channel_R, &stride));
-  REQUIRE(red);
-  REQUIRE(red[stride / sizeof(float) + 1] == Catch::Approx(expected_red).margin(1e-7));
+  const double expected_blue = (128 * unit + 1) / maximum +
+      2 * (1 - 0.114) * ((cb_code[location] - 128) * unit + 1) / maximum;
+  const std::array<double, 3> expected_rgb{expected_red,
+      ((128 * unit + 1) / maximum - 0.299 * expected_red - 0.114 * expected_blue) / 0.587,
+      expected_blue};
+  for (size_t c = 0; c < expected_rgb.size(); ++c) {
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly(output,
+        static_cast<heif_channel>(heif_channel_R + c), &stride));
+    REQUIRE(plane);
+    REQUIRE(plane[stride / sizeof(float) + 1] == Catch::Approx(expected_rgb[c]).margin(1e-7));
+  }
   heif_image_handle* raw_handle = nullptr;
   REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(base), &raw_handle).code == heif_error_Ok);
   heif_image* raw = nullptr;

@@ -1012,9 +1012,9 @@ TEST_CASE("Wide integer YCbCr preserves independent depths through gain reconstr
   heif_decoding_options_free(options);
 }
 
-TEST_CASE("Tone-map inputs honour declared H273 chroma positions")
+TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb and Cr")
 {
-  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5});
+  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5}, uint8_t{6});
   const bool as_gain = GENERATE(false, true);
   auto raster = std::make_shared<HeifPixelImage>();
   raster->create(4, 4, heif_colorspace_YCbCr, heif_chroma_420);
@@ -1057,11 +1057,13 @@ TEST_CASE("Tone-map inputs honour declared H273 chroma positions")
                                      std::nullopt, std::nullopt, true);
   INFO("location=" << int(location));
   REQUIRE(result);
-  // H.273 (2024) Table 8: the known ramps at luma position (1,1).
+  // H.273 Table 8 and ISO 23001-17 cloc: known ramps at luma position (1,1).
   // Both chroma planes increment by 16 horizontally and 32 vertically.
-  const std::array<int, 6> cb_code{128, 124, 136, 132, 120, 116};
+  // Location 6 has h=1 for Cb and h=0 for Cr, both with v=0.
+  const std::array<int, 7> cb_code{128, 124, 136, 132, 120, 116, 128};
+  const std::array<int, 7> cr_code{144, 140, 152, 148, 136, 132, 152};
   const double cb = (cb_code[location] - 128.0) / 255;
-  const double cr = cb_code[location] / 255.0 - 112.0 / 255;
+  const double cr = (cr_code[location] - 128.0) / 255;
   constexpr double kr = 0.299, kb = 0.114;
   const double ey = 128.0 / 255;
   const double r = ey + 2 * (1 - kr) * cr;
