@@ -431,3 +431,12 @@ The colour target now passes 2,720 assertions, with native math/reader/writer,
 experimental ON/OFF ASan/UBSan, runtime CMM ON/OFF, tidy and lint also passing.
 No new CMM or public API is introduced. At `f160dbb6`, all six Linux Actions jobs
 passed; the Intel Mac job remained queued.
+
+Declared chroma positions now also apply to 4:2:2 tone-map inputs. Locations
+2, 3 and 6 use their actual horizontal phase, including independent Cb/Cr
+coordinates. Nonzero vertical offsets are explicitly rejected, following the
+same public MPEG ChromaLocationBox texts. Four baseline/gain known-value cases
+and six serialized 8/17/32-bit cases fail before the correction; after it, math
+passes 27,031 assertions and writer tests pass 10,489. Native math/reader/writer,
+experimental ON/OFF ASan/UBSan, LLVM 22 tidy and source lint pass. The ordinary
+centered fallback for inputs without a declaration is unchanged.

@@ -255,6 +255,10 @@ full-range samples; bit depth alone does not make a file non-conforming.
   The implementation follows those coordinates without treating 6 as a shared
   centered phase. These public draft sources are identified separately from the
   user's final ISO gain-map/HEIF documents.
+  Declared 4:2:2 locations 2, 3 and 6 use the same horizontal coordinates;
+  a nonzero vertical offset is rejected as inconsistent with 4:2:2 sampling,
+  following the same public MPEG texts. Both baseline and gain roles are covered,
+  including serialized unsigned 8/17/32-bit uncompressed baselines.
   Reversible YCgCo retains its matching chroma-depth requirement. Unknown
   algorithms remain explicit errors. Both
   baseline and gain inputs reject unsupported or

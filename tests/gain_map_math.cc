@@ -1014,21 +1014,30 @@ TEST_CASE("Wide integer YCbCr preserves independent depths through gain reconstr
 
 TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb and Cr")
 {
-  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5}, uint8_t{6});
+  struct Phase { heif_chroma chroma; uint8_t location; int cb; int cr; bool valid = true; };
+  const auto phase = GENERATE(
+      Phase{heif_chroma_420, 0, 128, 144}, Phase{heif_chroma_420, 1, 124, 140},
+      Phase{heif_chroma_420, 2, 136, 152}, Phase{heif_chroma_420, 3, 132, 148},
+      Phase{heif_chroma_420, 4, 120, 136}, Phase{heif_chroma_420, 5, 116, 132},
+      Phase{heif_chroma_420, 6, 128, 152}, Phase{heif_chroma_422, 2, 152, 168},
+      Phase{heif_chroma_422, 3, 148, 164}, Phase{heif_chroma_422, 6, 144, 168},
+      Phase{heif_chroma_422, 0, 0, 0, false}, Phase{heif_chroma_422, 1, 0, 0, false},
+      Phase{heif_chroma_422, 4, 0, 0, false}, Phase{heif_chroma_422, 5, 0, 0, false});
   const bool as_gain = GENERATE(false, true);
   auto raster = std::make_shared<HeifPixelImage>();
-  raster->create(4, 4, heif_colorspace_YCbCr, heif_chroma_420);
+  raster->create(4, 4, heif_colorspace_YCbCr, phase.chroma);
   auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
   profile.set_matrix_coefficients(6);
   raster->set_color_profile_nclx(profile);
-  raster->set_chroma_location(location);
+  raster->set_chroma_location(phase.location);
   REQUIRE_FALSE(raster->add_channel(heif_channel_Y, 4, 4, 8, nullptr));
   raster->fill_channel(heif_channel_Y, 128);
+  const uint32_t chroma_height = phase.chroma == heif_chroma_420 ? 2 : 4;
   for (auto channel : {heif_channel_Cb, heif_channel_Cr}) {
-    REQUIRE_FALSE(raster->add_channel(channel, 2, 2, 8, nullptr));
+    REQUIRE_FALSE(raster->add_channel(channel, 2, chroma_height, 8, nullptr));
     size_t stride = 0;
     auto* plane = raster->get_channel_memory(channel, &stride);
-    for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t y = 0; y < chroma_height; ++y) {
       for (uint32_t x = 0; x < 2; ++x) {
         plane[size_t(y) * stride + x] = static_cast<uint8_t>((channel == heif_channel_Cb ? 112 : 128) + 16 * x + 32 * y);
       }
@@ -1041,7 +1050,7 @@ TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb
   GainMapMetadata metadata;
   metadata.channels[0].gain_map_max = {as_gain ? 1 : 0, 1};
   auto base = make_pixels(4, false, 8192, 8);
-  // Full baseline geometry matches the 4:2:0 raster in either input role.
+  // Full baseline geometry matches the subsampled raster in either input role.
   if (as_gain) {
     const auto rgb_profile = base->get_color_profile_nclx();
     base = std::make_shared<HeifPixelImage>();
@@ -1055,15 +1064,19 @@ TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb
   auto result = reconstruct_tone_map(as_gain ? base : raster, as_gain ? raster : make_pixels(1, true, 0, 2),
                                      metadata, base->get_color_profile_nclx(), *options, nullptr,
                                      std::nullopt, std::nullopt, true);
-  INFO("location=" << int(location));
+  INFO("chroma=" << int(phase.chroma) << ", location=" << int(phase.location));
+  if (!phase.valid) {
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
+    heif_decoding_options_free(options);
+    return;
+  }
   REQUIRE(result);
   // H.273 Table 8 and ISO 23001-17 cloc: known ramps at luma position (1,1).
   // Both chroma planes increment by 16 horizontally and 32 vertically.
   // Location 6 has h=1 for Cb and h=0 for Cr, both with v=0.
-  const std::array<int, 7> cb_code{128, 124, 136, 132, 120, 116, 128};
-  const std::array<int, 7> cr_code{144, 140, 152, 148, 136, 132, 152};
-  const double cb = (cb_code[location] - 128.0) / 255;
-  const double cr = (cr_code[location] - 128.0) / 255;
+  const double cb = (phase.cb - 128.0) / 255;
+  const double cr = (phase.cr - 128.0) / 255;
   constexpr double kr = 0.299, kb = 0.114;
   const double ey = 128.0 / 255;
   const double r = ey + 2 * (1 - kr) * cr;
@@ -1075,7 +1088,7 @@ TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb
     const double expected = as_gain ? (8192.0 / 65535) * std::exp2(rgb[c]) : rgb[c];
     REQUIRE(output[stride / sizeof(float) + 1] == Catch::Approx(expected).margin(1e-7));
   }
-  REQUIRE(raster->get_chroma_location() == location);
+  REQUIRE(raster->get_chroma_location() == phase.location);
   heif_decoding_options_free(options);
 }
 

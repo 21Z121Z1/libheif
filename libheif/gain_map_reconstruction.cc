@@ -67,7 +67,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
   // Keep the existing centered fallback when the decoder has no declaration.
   std::array<double, 2> horizontal_offset{0.5, 0.5}; // Cb, Cr
   double vertical_offset = 0.5;
-  if (chroma == heif_chroma_420 && image->has_chroma_location()) {
+  if ((chroma == heif_chroma_420 || chroma == heif_chroma_422) && image->has_chroma_location()) {
     const auto location = image->get_chroma_location();
     if (location > 6) {
       return unsupported("Unknown tone-map chroma location");
@@ -81,6 +81,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
       // H.273 (2024) 8.7 Table 8, in luma-sample units.
       horizontal_offset.fill(location % 2 == 0 ? 0.0 : 0.5);
       vertical_offset = location < 2 ? 0.5 : location < 4 ? 0.0 : 1.0;
+    }
+    if (chroma == heif_chroma_422 && vertical_offset != 0) {
+      return unsupported("4:2:2 tone-map chroma location has a vertical offset");
     }
   }
   if (chroma != heif_chroma_444 &&

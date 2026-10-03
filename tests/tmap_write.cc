@@ -1166,7 +1166,13 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
 {
   const int bits = GENERATE(8, 17, 32);
   const uint32_t width = bits == 8 ? 4 : 5, height = bits == 8 ? 4 : 3;
-  const uint8_t location = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4}, uint8_t{5}, uint8_t{6});
+  struct Phase { heif_chroma chroma; uint8_t location; int cb; int cr; };
+  const auto phase = GENERATE(
+      Phase{heif_chroma_420, 0, 128, 144}, Phase{heif_chroma_420, 1, 124, 140},
+      Phase{heif_chroma_420, 2, 136, 152}, Phase{heif_chroma_420, 3, 132, 148},
+      Phase{heif_chroma_420, 4, 120, 136}, Phase{heif_chroma_420, 5, 116, 132},
+      Phase{heif_chroma_420, 6, 128, 152}, Phase{heif_chroma_422, 2, 152, 168},
+      Phase{heif_chroma_422, 3, 148, 164}, Phase{heif_chroma_422, 6, 144, 168});
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
   auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
@@ -1174,13 +1180,13 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
       heif_transfer_characteristic_linear, heif_matrix_coefficients_ITU_R_BT_601_6, true);
   heif_image* pixels = nullptr;
   REQUIRE(heif_image_create(static_cast<int>(width), static_cast<int>(height),
-                          heif_colorspace_YCbCr, heif_chroma_420, &pixels).code == heif_error_Ok);
+                          heif_colorspace_YCbCr, phase.chroma, &pixels).code == heif_error_Ok);
   const std::array<heif_cmpd_component_type, 3> types{heif_cmpd_component_type_Y,
       heif_cmpd_component_type_Cb, heif_cmpd_component_type_Cr};
   for (size_t c = 0; c < types.size(); ++c) {
     uint32_t id = 0;
     const uint32_t cw = c == 0 ? width : (width + 1) / 2;
-    const uint32_t ch = c == 0 ? height : (height + 1) / 2;
+    const uint32_t ch = c == 0 || phase.chroma == heif_chroma_422 ? height : (height + 1) / 2;
     REQUIRE(heif_image_add_component(pixels, cw, ch, types[c],
         heif_component_datatype_unsigned_integer, bits, &id).code == heif_error_Ok);
     size_t row_bytes = 0;
@@ -1196,7 +1202,7 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
     }
   }
   REQUIRE(heif_image_set_nclx_color_profile(pixels, &baseline).code == heif_error_Ok);
-  REQUIRE(heif_image_set_chroma_location(pixels, location).code == heif_error_Ok);
+  REQUIRE(heif_image_set_chroma_location(pixels, phase.location).code == heif_error_Ok);
   int stride = 0;
   auto* encoding = heif_encoding_options_alloc();
   REQUIRE(encoding);
@@ -1234,13 +1240,11 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
                                                        heif_gain_map_resampling_phase_co_sited);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
-  const std::array<int, 7> cb_code{128, 124, 136, 132, 120, 116, 128};
-  const std::array<int, 7> cr_code{144, 140, 152, 148, 136, 132, 152};
   const double unit = std::ldexp(1.0, bits - 8), maximum = std::ldexp(1.0, bits) - 1;
   const double expected_red = (128 * unit + 1) / maximum +
-      2 * (1 - 0.299) * ((cr_code[location] - 128) * unit + 1) / maximum;
+      2 * (1 - 0.299) * ((phase.cr - 128) * unit + 1) / maximum;
   const double expected_blue = (128 * unit + 1) / maximum +
-      2 * (1 - 0.114) * ((cb_code[location] - 128) * unit + 1) / maximum;
+      2 * (1 - 0.114) * ((phase.cb - 128) * unit + 1) / maximum;
   const std::array<double, 3> expected_rgb{expected_red,
       ((128 * unit + 1) / maximum - 0.299 * expected_red - 0.114 * expected_blue) / 0.587,
       expected_blue};
@@ -1258,7 +1262,7 @@ TEST_CASE("Serialized uncompressed tmap baseline retains its declared chroma pha
   for (size_t c = 0; c < 3; ++c) {
     const auto channel = static_cast<heif_channel>(heif_channel_Y + c);
     const uint32_t cw = c == 0 ? width : (width + 1) / 2;
-    const uint32_t ch = c == 0 ? height : (height + 1) / 2;
+    const uint32_t ch = c == 0 || phase.chroma == heif_chroma_422 ? height : (height + 1) / 2;
     REQUIRE(heif_image_get_bits_per_pixel_range(raw, channel) == bits);
     int row_bytes = 0;
     const auto* plane = heif_image_get_plane_readonly(raw, channel, &row_bytes);
