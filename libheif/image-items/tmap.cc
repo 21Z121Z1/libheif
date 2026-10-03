@@ -479,7 +479,8 @@ ImageItem_tmap::decode_compressed_image(
                               payload.tone_map_image->gain_map_metadata,
                               *alternate_colour, options,
                               get_context()->get_security_limits(),
-                              *baseline_colour, target_headroom, true);
+                              *baseline_colour, target_headroom, true,
+                              decode_state.centered_gain_map_samples);
 }
 
 

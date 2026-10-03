@@ -72,6 +72,45 @@ for rgb in [false, true] {
     // extended-linear pixels are the cross-version evidence that DecodeToHDR
     // actually applied the gain map; contentHeadroom remains diagnostic only.
     print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
+    if maximumError >= 0.025 {
+        // Diagnostic A/B only; none of these alternatives replaces the gate.
+        let variants: [(String, [CFString: Any])] = [
+            ("minimal", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR]),
+            ("float", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+                       kCGImageSourceShouldAllowFloat: true]),
+            ("nested-options", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+                                 kCGImageSourceShouldAllowFloat: true,
+                                 kCGImageSourceDecodeRequestOptions:
+                                    [kCGImageSourceGenerateImageSpecificLumaScaling: false]]),
+            ("no-cache", [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
+                          kCGImageSourceShouldAllowFloat: true,
+                          kCGImageSourceShouldCache: false,
+                          kCGImageSourceGenerateImageSpecificLumaScaling: false])
+        ]
+        for (label, options) in variants {
+            guard let probeSource = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary),
+                  let probe = CGImageSourceCreateImageAtIndex(probeSource, 0, options as CFDictionary) else {
+                print("CHECK ImageIO request \(label) \(name) decode failed")
+                continue
+            }
+            var values = [Float](repeating: 0, count: 64 * 64 * 4)
+            values.withUnsafeMutableBytes { bytes in
+                context.render(CIImage(cgImage: probe), toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
+                               bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
+            }
+            var error = 0.0
+            var maximum = 0.0
+            for i in 0..<(64 * 64) {
+                for c in 0..<3 {
+                    let value = Double(values[i * 4 + c])
+                    require(value.isFinite, "Non-finite ImageIO request probe pixel")
+                    maximum = max(maximum, value)
+                    error = max(error, abs(value - baselineLinear * gains[c]))
+                }
+            }
+            print("CHECK ImageIO request \(label) \(name) headroom=\(probe.contentHeadroom) maxLinear=\(maximum) error=\(error) space=\(String(describing: probe.colorSpace?.name))")
+        }
+    }
     // An independent public Core Image load helps distinguish the ImageIO
     // decode-request path from file discovery/reconstruction on hosted Macs.
     // It does not replace or relax the ImageIO pixel gate below.
@@ -142,9 +181,13 @@ reference.withUnsafeMutableBytes { bytes in
 let producerError = reference.enumerated().filter { $0.offset % 4 != 3 }.map {
     abs(Double($0.element) - hdrValue)
 }.max()!
-require(producerError < 0.06, "Apple lossy producer differs from HDR intention")
+if producerError >= 0.06 {
+    failures.append("Apple lossy producer differs from HDR intention: \(producerError)")
+}
 try reference.withUnsafeBytes { bytes in
     try Data(bytes).write(to: URL(fileURLWithPath: output.path + ".rgba32f"), options: .withoutOverwriting)
 }
-print("PASS Apple producer apple-mono.heic (canonical libheif decode checked separately)")
+if producerError < 0.06 {
+    print("PASS Apple producer apple-mono.heic (canonical libheif decode checked separately)")
+}
 require(failures.isEmpty, failures.joined(separator: "\n"))

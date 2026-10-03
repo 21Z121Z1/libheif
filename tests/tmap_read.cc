@@ -116,10 +116,12 @@ std::vector<uint8_t> build_tmap_file(
     const std::array<uint32_t, 2>* diffuse_whites = nullptr,
     uint16_t alternate_matrix = 9,
     bool alternate_full_range = true,
-    uint16_t alternate_transfer = 16)
+    uint16_t alternate_transfer = 16,
+    bool wide_gain = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
+  const uint32_t gain_width = wide_gain ? 4 : width;
 
   std::vector<uint8_t> tmap_payload =
       make_tone_map_payload(outer_version, minimum_version, override_metadata);
@@ -205,6 +207,14 @@ std::vector<uint8_t> build_tmap_file(
       diffuse_white_properties[c] = next_property++;
     }
   }
+  uint8_t gain_ispe_property = 1;
+  if (wide_gain) {
+    std::vector<uint8_t> payload;
+    put_u32_be(payload, gain_width);
+    put_u32_be(payload, height);
+    append(ipco_payload, make_box("ispe", payload, true));
+    gain_ispe_property = next_property;
+  }
   auto ipco = make_box("ipco", ipco_payload);
 
   std::vector<uint8_t> ipma_payload;
@@ -223,7 +233,7 @@ std::vector<uint8_t> build_tmap_file(
 
   put_u16_be(ipma_payload, 2);
   ipma_payload.push_back(3);
-  ipma_payload.push_back(0x80 | 1);
+  ipma_payload.push_back(0x80 | gain_ispe_property);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(4);
 
@@ -248,7 +258,13 @@ std::vector<uint8_t> build_tmap_file(
   append(iprp_payload, ipma);
   auto iprp = make_box("iprp", iprp_payload);
 
-  std::vector<uint8_t> idat_payload(width * height * 2, 0x7F);
+  std::vector<uint8_t> idat_payload((width + gain_width) * height, 0x7F);
+  if (wide_gain) {
+    for (uint32_t y = 0; y < height; ++y) {
+      const std::array<uint8_t, 4> row{0, 64, 128, 255};
+      std::copy(row.begin(), row.end(), idat_payload.begin() + width * height + y * gain_width);
+    }
+  }
   if (rotate_base) {
     idat_payload[0] = 0;
     idat_payload[1] = 63;
@@ -270,7 +286,7 @@ std::vector<uint8_t> build_tmap_file(
 
   const uint32_t item_lengths[4] = {
       width * height,
-      width * height,
+      gain_width * height,
       static_cast<uint32_t>(tmap_payload.size()),
       width * height
   };
@@ -982,6 +998,7 @@ TEST_CASE("Nested relative tmap preserves HDR before root PQ quantization")
 
 TEST_CASE("Float32 tmap output preserves relative HDR, ICC, alpha and baseline fallback")
 {
+  const auto phase = GENERATE(heif_gain_map_resampling_phase_co_sited, heif_gain_map_resampling_phase_centered);
   const bool icc_colour = GENERATE(false, true);
   const bool fallback = GENERATE(false, true);
   const bool convert = GENERATE(false, true);
@@ -1005,7 +1022,7 @@ TEST_CASE("Float32 tmap output preserves relative HDR, ICC, alpha and baseline f
   requested->full_range_flag = 1;
   if (convert) { options->output_image_nclx_profile = requested; }
   heif_image* image = nullptr;
-  const auto error = heif_decode_tone_map_image_float32(tmap, &image, options, 32);
+  const auto error = heif_decode_tone_map_image_float32(tmap, &image, options, 32, phase);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
@@ -1041,10 +1058,55 @@ TEST_CASE("Float32 tmap output preserves relative HDR, ICC, alpha and baseline f
   REQUIRE(profile->full_range_flag);
   heif_nclx_color_profile_free(profile);
   heif_image_release(image);
+  image = nullptr;
+  REQUIRE(heif_decode_tone_map_image_float32(tmap, &image, options, 32,
+              heif_gain_map_resampling_phase_undefined).code == heif_error_Usage_error);
+  REQUIRE(image == nullptr);
   options->convert_hdr_to_8bit = true;
   image = nullptr;
-  REQUIRE(heif_decode_tone_map_image_float32(tmap, &image, options, 32).code == heif_error_Usage_error);
+  REQUIRE(heif_decode_tone_map_image_float32(tmap, &image, options, 32, phase).code == heif_error_Usage_error);
   REQUIRE(image == nullptr);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Float32 public decoding forwards the selected gain-map lattice phase")
+{
+  const auto phase = GENERATE(heif_gain_map_resampling_phase_co_sited, heif_gain_map_resampling_phase_centered);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata, false,
+                                    nullptr, nullptr, 13, nullptr, 0, true, 13, true);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* image = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(tmap, &image, options, 32, phase);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  const std::array<double, 2> log_gain = phase == heif_gain_map_resampling_phase_centered ?
+      std::array<double, 2>{32.0 / 255, 191.5 / 255} : std::array<double, 2>{0, 128.0 / 255};
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    int stride = 0;
+    const auto* pixels = reinterpret_cast<const float*>(heif_image_get_plane_readonly(image, channel, &stride));
+    REQUIRE(pixels);
+    for (size_t x = 0; x < 2; ++x) {
+      REQUIRE(pixels[x] == Catch::Approx(0.2122307574140551 * std::exp2(log_gain[x])).margin(1e-6));
+    }
+  }
+  heif_image_release(image);
   heif_nclx_color_profile_free(requested);
   options->output_image_nclx_profile = nullptr;
   heif_decoding_options_free(options);

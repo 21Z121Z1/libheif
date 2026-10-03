@@ -303,3 +303,26 @@ with two original Apple ISO files exposed the relative-HDR clipping above;
 remaining whole-framework/codec pixel differences are still under investigation.
 Originals and their derived pixel probes stay local and are not redistributed.
 Hosted Mac 15 acceptance is still required; no complete-standards claim is made.
+
+ICC-described YCbCr now retains RGB excursions until its actual ICC transfer;
+the required CP=2/TC=2 storage NCLX no longer clips them early. A known-value
+test covers full and limited range, gamma, offsets and relative HDR above one.
+The experimental floating decode accepts an explicit co-sited/centered phase,
+including nested nodes; ordinary decode retains ISO's preferred co-sited phase.
+Tests use nonuniform gains, inverse gamma before interpolation and both down-
+and upsampling lattice geometry. C-header checks now also enable the experimental
+declarations.
+
+Using the same Apple-decoded baseline and ISO auxiliary raster isolates the
+reconstruction equation: centered phase yields maximum linear-sRGB differences
+of 0.000227 and 0.006473 on 589 sample positions in each of two originals.
+The public libheif decoder with that phase yields maxima of 0.016445 and
+0.130829, respectively; these complete-decoder differences are not presented as
+pixel identity or as a passed 100% acceptance gate. The originals and full
+auxiliary buffers remain private local evidence.
+
+Hosted run `37091358325` at `91978466` passed all six Linux jobs. On Mac 15,
+ImageIO still returned SDR-range pixels for both synthetic files and the Apple
+producer, while the direct Core Image HDR load gave errors of 0.000000639 and
+0.012865. A request-options A/B now records minimal, floating, nested-options
+and uncached ImageIO requests on failure; the original strict gate is unchanged.

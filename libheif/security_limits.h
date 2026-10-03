@@ -86,6 +86,7 @@ struct DecodeTraversalState
 
   // Consumed by the root tmap only; derived inputs reconstruct fully.
   std::optional<double> root_tmap_target_headroom;
+  bool centered_gain_map_samples = false;
 
   uint32_t overlay_nesting = 0;         // number of overlays on the path to here
   uint32_t max_overlay_nesting = 0;     // 0 == unlimited

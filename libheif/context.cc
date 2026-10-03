@@ -1553,7 +1553,8 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
                                                                   bool decode_only_tile, uint32_t tx, uint32_t ty,
                                                                   std::set<heif_item_id> processed_ids,
                                                                   std::optional<double> root_tmap_target_headroom,
-                                                                  bool tmap_output_float) const
+                                                                  bool tmap_output_float,
+                                                                  bool centered_gain_samples) const
 {
   std::shared_ptr<ImageItem> imgitem;
   if (m_all_images.contains(ID)) {
@@ -1582,6 +1583,7 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
   DecodeTraversalState decode_state;
   decode_state.processed_ids = std::move(processed_ids);
   decode_state.root_tmap_target_headroom = root_tmap_target_headroom;
+  decode_state.centered_gain_map_samples = centered_gain_samples;
 
   const heif_security_limits* limits = get_security_limits();
   if (limits && limits->max_items != 0) {

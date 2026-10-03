@@ -782,9 +782,9 @@ TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd
   const uint32_t c_height = chroma == heif_chroma_420 ? (height + 1) / 2 : height;
   REQUIRE_FALSE(base->add_channel(heif_channel_Cb, 3, c_height, c_bits, nullptr));
   REQUIRE_FALSE(base->add_channel(heif_channel_Cr, 3, c_height, c_bits, nullptr));
-  const uint16_t y_sample = 1U << (y_bits - 1);
-  const uint16_t c_mid = 1U << (c_bits - 1);
-  const uint16_t c_unit = 1U << (c_bits - 8);
+  const auto y_sample = static_cast<uint16_t>(1U << (y_bits - 1));
+  const auto c_mid = static_cast<uint16_t>(1U << (c_bits - 1));
+  const auto c_unit = static_cast<uint16_t>(1U << (c_bits - 8));
   base->fill_channel(heif_channel_Y, y_sample);
   base->fill_channel(heif_channel_Cr, c_mid);
   size_t stride = 0;
@@ -792,7 +792,7 @@ TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd
   for (uint32_t y = 0; y < c_height; ++y) {
     auto* row = cb + size_t(y) * stride;
     for (uint32_t x = 0; x < 3; ++x) {
-      const uint16_t value = (120 + 8 * x + 16 * y) * c_unit;
+      const auto value = static_cast<uint16_t>((120 + 8 * x + 16 * y) * c_unit);
       if (c_bits <= 8) { row[x] = static_cast<uint8_t>(value); }
       else { reinterpret_cast<uint16_t*>(row)[x] = value; }
     }
@@ -921,6 +921,37 @@ TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
   REQUIRE(sample_at(**result, heif_channel_R, 1) == 16384);
   REQUIRE(sample_at(**result, heif_channel_R, 2) == 32768);
   REQUIRE(sample_at(**result, heif_channel_R, 3) == 32768);
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("Explicit gain-map phases interpolate log gains after inverse gamma")
+{
+  const bool centered = GENERATE(false, true);
+  auto base = make_pixels(4, false, 16384, 8);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(2, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 2, 1, 32, nullptr,
+                                  heif_component_datatype_floating_point));
+  auto* pixels = gain->get_channel_memory<float>(heif_channel_Y, nullptr);
+  pixels[0] = 0.25F;
+  pixels[1] = 0.5625F;
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {2, 1};
+  metadata.channels[0].gamma = {2, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, base->get_color_profile_nclx(),
+                                     *options, nullptr, std::nullopt, std::nullopt, true, centered);
+  REQUIRE(result);
+  // Inverse gamma produces log gains 1 and 1.5 before either interpolation.
+  const std::array<double, 4> log_gain = centered ? std::array<double, 4>{1, 1.125, 1.375, 1.5} :
+                                                 std::array<double, 4>{1, 1.25, 1.5, 1.5};
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    const auto* output = (*result)->get_channel_memory<float>(channel, nullptr);
+    for (size_t x = 0; x < 4; ++x) {
+      REQUIRE(output[x] == Catch::Approx((16384.0 / 65535) * std::exp2(log_gain[x])).margin(1e-7));
+    }
+  }
   heif_decoding_options_free(options);
 }
 

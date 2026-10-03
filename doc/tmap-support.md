@@ -76,7 +76,8 @@ return unsupported; the matrix/TRC and CICP paths remain available.
 
 When ICC and NCLX are both associated, HEIF 6.5.5's CP=2/TC=2 storage NCLX
 does not replace the ICC colourimetry. Codec matrix/range handling remains on
-the decoded raster. A matrix/TRC alternate retains its original ICC and uses
+the decoded raster, retaining RGB excursions for the actual ICC transfer instead
+of clipping them according to unspecified storage TC=2. A matrix/TRC alternate retains its original ICC and uses
 CP=2/TC=2 for the RGB raster instead of inventing a CICP encoding. Unknown-version
 baseline fallback also honours ICC during requested output conversion.
 Device-link and non-RGB transforms are not approximated. A LUT tag does not
@@ -131,6 +132,10 @@ headroom weighting and returns planar RGB float32, retaining values above one
 in relative encodings such as extended sRGB ICC. Explicit output NCLX can instead
 request linear RGB or PQ. Its alpha plane reports its own datatype and depth;
 an unknown minimum version returns the baseline converted to floating RGB.
+Its explicit phase argument selects co-sited or centered gain-map bilinear
+sampling for all derived nodes. Ordinary integer decode keeps the ISO 6.2.2
+preferred co-sited phase. Centered is a consumer choice, matching the local
+Apple Core Image observations; Annex C does not serialize this selection.
 The existing integer decoding APIs retain their output contract.
 
 For a premultiplied baseline, reconstruction divides the decoded RGB sample

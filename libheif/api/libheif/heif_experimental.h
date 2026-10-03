@@ -123,18 +123,29 @@ heif_error heif_decode_tone_map_image(
     const heif_decoding_options* options,
     double target_headroom);
 
+typedef enum heif_gain_map_resampling_phase
+{
+  heif_gain_map_resampling_phase_co_sited = 0, // ISO 21496-1 6.2.2 preferred phase.
+  heif_gain_map_resampling_phase_centered = 1,
+  heif_gain_map_resampling_phase_undefined = 99 // Rejected by decoding.
+} heif_gain_map_resampling_phase;
+
 // Same weighting, returning planar RGB float32 without unit-range clipping.
 // Useful for relative HDR encodings (e.g. extended sRGB ICC) whose reconstructed
 // values exceed 1. Alpha, if present, is separate; query its datatype and depth.
 // output_image_nclx_profile selects primaries/transfer; storage matrix/range do
 // not apply to floating RGB. convert_hdr_to_8bit must be false. Unknown minimum
 // versions still return the baseline, converted to RGB float32.
+// The selected gain-map phase applies to each derived node. Existing integer
+// decode uses co-sited sampling. Centered sampling is an explicit consumer choice;
+// it is not inferred from a producer name or recorded in Annex C metadata.
 LIBHEIF_API
 heif_error heif_decode_tone_map_image_float32(
     const heif_image_handle* tmap,
     heif_image** out_img,
     const heif_decoding_options* options,
-    double target_headroom);
+    double target_headroom,
+    heif_gain_map_resampling_phase phase);
 
 
 typedef struct heif_tone_map_options

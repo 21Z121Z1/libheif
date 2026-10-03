@@ -38,7 +38,8 @@ Error unsupported(const char* message)
 
 Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
     const std::shared_ptr<HeifPixelImage>& image,
-    const heif_decoding_options& options, const heif_security_limits* limits)
+    const heif_decoding_options& options, const heif_security_limits* limits,
+    bool icc_colour)
 {
   auto profile = image->get_color_profile_nclx();
   const auto matrix = profile.m_matrix_coefficients;
@@ -46,7 +47,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
   const bool lms_matrix = matrix == 14 || matrix == 15;
   const bool code_matrix = matrix == 0 || matrix == 8 || matrix == 16 || matrix == 17;
   const bool linear_matrix = !code_matrix && !constant_luminance && !lms_matrix && matrix != 11;
-  const bool extended = profile.m_transfer_characteristics == 11 || profile.m_transfer_characteristics == 12 ||
+  const bool extended = icc_colour || profile.m_transfer_characteristics == 11 || profile.m_transfer_characteristics == 12 ||
                         (profile.m_transfer_characteristics == 13 && matrix != 0);
   const int y_bits = image->get_bits_per_pixel(heif_channel_Y);
   const int c_bits = image->get_bits_per_pixel(heif_channel_Cb);
@@ -250,7 +251,8 @@ bool is_direct_rgb(const HeifPixelImage& image)
 
 Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
     const std::shared_ptr<HeifPixelImage>& image,
-    const heif_decoding_options& options, const heif_security_limits* limits)
+    const heif_decoding_options& options, const heif_security_limits* limits,
+    bool icc_colour = false)
 {
   if (auto error = image->check_plane_layout()) { return error; }
   auto profile = image->get_color_profile_nclx();
@@ -290,7 +292,9 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
     if (!explicit_linear && !derived_linear && !explicit_nonlinear) {
       return unsupported("Unsupported tone-map YCbCr matrix coefficients");
     }
-    return decode_ycbcr(image, options, limits);
+    // CP=2/TC=2 storage NCLX does not describe an ICC's RGB transfer. The ICC
+    // evaluator must handle its own extended signals after matrix inversion.
+    return decode_ycbcr(image, options, limits, icc_colour);
   }
   profile.set_matrix_coefficients(0);
   profile.set_full_range_flag(true);
@@ -446,7 +450,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const heif_security_limits* limits,
     const std::optional<GainMapColour>& baseline_colour_override,
     std::optional<double> target_headroom,
-    bool defer_quantization)
+    bool defer_quantization,
+    bool centered_gain_samples)
 {
   if (!limits) {
     limits = &global_security_limits;
@@ -488,7 +493,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   if (!before) { return before.error(); }
   if (!after) { return after.error(); }
 
-  auto base_rgb = prepare_rgb(base, options, limits);
+  auto base_rgb = prepare_rgb(base, options, limits, baseline_colour.icc_profile() != nullptr);
   auto gain_rgb = prepare_rgb(gain, options, limits);
   if (!base_rgb) { return base_rgb.error(); }
   if (!gain_rgb) { return gain_rgb.error(); }
@@ -522,16 +527,20 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       strides[c] /= sizeof(uint16_t);
     }
   }
-  // Co-sited bilinear interpolation, with edge extension. Unnormalize each
-  // of the four gain samples BEFORE interpolation; no full-resolution gain
+  // Bilinear interpolation at the selected lattice phase, with edge extension.
+  // ISO 6.2.2 prefers co-sited; centered is explicit consumer compatibility.
+  // Unnormalize each of the four gain samples BEFORE interpolation; no full-resolution gain
   // buffer is allocated. All pixel buffers use HeifPixelImage accounting.
+  const double phase = centered_gain_samples ? 0.5 : 0;
   for (uint32_t y = 0; y < height; ++y) {
-    const double gy = static_cast<double>(y) * gain_height / height;
+    const double gy = std::clamp(static_cast<double>(y) * gain_height / height +
+                                 phase * (double(gain_height) / height - 1), 0.0, double(gain_height - 1));
     const uint32_t y0 = std::min(static_cast<uint32_t>(gy), gain_height - 1);
     const uint32_t y1 = std::min(y0 + 1, gain_height - 1);
     const double fy = gy - y0;
     for (uint32_t x = 0; x < width; ++x) {
-      const double gx = static_cast<double>(x) * gain_width / width;
+      const double gx = std::clamp(static_cast<double>(x) * gain_width / width +
+                                   phase * (double(gain_width) / width - 1), 0.0, double(gain_width - 1));
       const uint32_t x0 = std::min(static_cast<uint32_t>(gx), gain_width - 1);
       const uint32_t x1 = std::min(x0 + 1, gain_width - 1);
       const double fx = gx - x0;
@@ -616,7 +625,7 @@ Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
     return image; // Includes an unknown-version baseline fallback.
   }
   if (!limits) { limits = &global_security_limits; }
-  auto prepared = prepare_rgb(image, options, limits);
+  auto prepared = prepare_rgb(image, options, limits, image->get_color_profile_icc() != nullptr);
   if (!prepared) { return prepared.error(); }
   const uint32_t width = image->get_width(), height = image->get_height();
   auto output = std::make_shared<HeifPixelImage>();
@@ -694,7 +703,7 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map output has no alpha channel"};
   }
-  auto rgb = prepare_rgb(image, options, limits);
+  auto rgb = prepare_rgb(image, options, limits, source_colour.icc_profile() != nullptr);
   if (!rgb) { return rgb.error(); }
   const RGBPlanes input(**rgb);
   const SamplePlane alpha_plane(**rgb, heif_channel_Alpha, true);

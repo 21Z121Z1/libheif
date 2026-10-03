@@ -418,6 +418,58 @@ TEST_CASE("ICC gamma and parametric equations preserve extended relative HDR")
   for (size_t c = 0; c < 3; ++c) { REQUIRE((*encoded)[c] == Catch::Approx(signal[c]).margin(1e-12)); }
 }
 
+TEST_CASE("ICC storage NCLX does not clip relative RGB before its actual transfer")
+{
+  const bool full_range = GENERATE(false, true);
+  const auto curve = sampled_trc_tag({512});
+  const auto profile = matrix_profile({curve, curve, curve});
+  auto colour = GainMapColour::from_icc(profile);
+  REQUIRE(colour);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_YCbCr, heif_chroma_444);
+  const std::array<heif_channel, 3> input{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const std::array<uint8_t, 3> codes{200, 168, 188};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE_FALSE(base->add_channel(input[c], 1, 1, 8, nullptr));
+    base->get_channel_memory(input[c], nullptr)[0] = codes[c];
+  }
+  nclx_profile storage;
+  storage.set_colour_primaries(2);
+  storage.set_transfer_characteristics(2);
+  storage.set_matrix_coefficients(6);
+  storage.set_full_range_flag(full_range);
+  base->set_color_profile_nclx(storage);
+  base->set_color_profile_icc(profile);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->fill_channel(heif_channel_Y, 255);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto output = reconstruct_tone_map(base, gain, metadata, *colour, *options, nullptr,
+                                     *colour, std::nullopt, true);
+  REQUIRE(output);
+  const double y = full_range ? 200.0 / 255 : 184.0 / 219;
+  const double cb = 40.0 / (full_range ? 255 : 224);
+  const double cr = 60.0 / (full_range ? 255 : 224);
+  const double r = y + 1.402 * cr, b = y + 1.772 * cb;
+  const GainMapRGB signal{r, (y - 0.299 * r - 0.114 * b) / 0.587, b};
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < 3; ++c) {
+    // Independent gamma-2 EOTF, ISO gain/offset equation, inverse gamma-2.
+    const double expected = std::sqrt((signal[c] * signal[c] + 0.125) * 2 - 0.0625);
+    REQUIRE((*output)->get_channel_memory<float>(channels[c], nullptr)[0] ==
+            Catch::Approx(expected).margin(1e-6));
+  }
+  REQUIRE(base->get_channel_memory(heif_channel_Cr, nullptr)[0] == 188);
+  heif_decoding_options_free(options);
+}
+
 #if LIBHEIF_TEST_LCMS
 namespace {
 std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,

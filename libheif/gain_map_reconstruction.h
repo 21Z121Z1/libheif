@@ -37,7 +37,8 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     const heif_security_limits* limits,
     const std::optional<GainMapColour>& baseline_colour_override = std::nullopt,
     std::optional<double> target_headroom = std::nullopt,
-    bool defer_quantization = false);
+    bool defer_quantization = false,
+    bool centered_gain_samples = false);
 
 // Quantize only at the public output boundary, after nested gains and colour
 // conversion. Internal tmap samples may exceed a relative encoding's unit range.

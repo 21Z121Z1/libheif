@@ -130,7 +130,8 @@ public:
                                                        bool decode_only_tile, uint32_t tx, uint32_t ty,
                                                        std::set<heif_item_id> processed_ids,
                                                        std::optional<double> root_tmap_target_headroom = std::nullopt,
-                                                       bool tmap_output_float = false) const;
+                                                       bool tmap_output_float = false,
+                                                       bool centered_gain_samples = false) const;
 
   Result<std::shared_ptr<HeifPixelImage>> convert_to_output_colorspace(std::shared_ptr<HeifPixelImage> img,
                                                                        heif_colorspace out_colorspace,
