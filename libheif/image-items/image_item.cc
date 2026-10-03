@@ -706,7 +706,7 @@ bool ImageItem::populate_descriptions_from_child(const ImageItem& child,
 
 
 std::vector<std::shared_ptr<Box_colr> >
-ImageItem::add_color_profile(const std::shared_ptr<HeifPixelImage>& image,
+ImageItem::add_color_profile(const std::shared_ptr<const HeifPixelImage>& image,
                              const heif_encoding_options& options,
                              heif_image_input_class input_class,
                              const heif_color_profile_nclx* target_heif_nclx)

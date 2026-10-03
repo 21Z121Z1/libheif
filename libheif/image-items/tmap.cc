@@ -241,6 +241,180 @@ Error ImageItem_tmap::validate_tone_map_structure() const
 }
 
 
+Result<std::shared_ptr<ImageItem_tmap>>
+ImageItem_tmap::add_new_tone_map_item(
+    HeifContext* ctx,
+    const std::shared_ptr<ImageItem>& base,
+    const std::shared_ptr<ImageItem>& gain,
+    const ToneMapImage& tone_map_image,
+    const std::shared_ptr<const color_profile>& alternate_colour,
+    const heif_content_light_level* clli,
+    const std::vector<uint8_t>& pixi_bits)
+{
+  if (!ctx || !base || !gain || !alternate_colour) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Null_pointer_argument,
+        "Tone-map writer requires a context, base image, and gain-map image"
+    };
+  }
+
+  if (base->get_context() != ctx ||
+      gain->get_context() != ctx) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Tone-map input images must belong to the target context"
+    };
+  }
+
+  if (Error error = validate_tone_map_inputs(*base, *gain)) {
+    return error;
+  }
+
+  if (tone_map_image.version != 0) {
+    return Error{
+        heif_error_Unsupported_feature,
+        heif_suberror_Unsupported_data_version,
+        "Unsupported ToneMapImage version"
+    };
+  }
+
+  auto payload = serialize_tone_map_image(tone_map_image);
+  if (!payload) {
+    return payload.error();
+  }
+
+  const heif_image_tiling base_tiling = base->get_heif_image_tiling();
+  uint32_t width = base_tiling.image_width;
+  uint32_t height = base_tiling.image_height;
+  if (width == 0 || height == 0) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_image_size,
+        "Tone-map base image has no usable image dimensions"
+    };
+  }
+
+  // The derived raster uses the transformed baseline. Tiling transformations
+  // retain crop offsets rather than reducing image_width/image_height.
+  auto base_properties = base->get_properties();
+  if (!base_properties) { return base_properties.error(); }
+  for (const auto& property : *base_properties) {
+    if (auto rotation = std::dynamic_pointer_cast<Box_irot>(property)) {
+      if (rotation->get_rotation_ccw() == 90 || rotation->get_rotation_ccw() == 270) {
+        std::swap(width, height);
+      }
+    }
+    if (auto clap = std::dynamic_pointer_cast<Box_clap>(property)) {
+      auto crop = clap->get_crop(width, height);
+      if (!crop) { return crop.error(); }
+      int left = crop->left, right = crop->right;
+      int top = crop->top, bottom = crop->bottom;
+      if (left < 0) { left = 0; }
+      if (top < 0) { top = 0; }
+      if (static_cast<uint32_t>(right) >= width) { right = static_cast<int>(width - 1); }
+      if (static_cast<uint32_t>(bottom) >= height) { bottom = static_cast<int>(height - 1); }
+      if (left > right || top > bottom) {
+        return Error{heif_error_Invalid_input, heif_suberror_Invalid_clean_aperture};
+      }
+      width = static_cast<uint32_t>(right - left + 1);
+      height = static_cast<uint32_t>(bottom - top + 1);
+    }
+    if (std::dynamic_pointer_cast<Box_iscl>(property)) {
+      return Error{heif_error_Unsupported_feature, heif_suberror_Unspecified,
+                   "Image scaling (iscl) transformative property is not yet supported"};
+    }
+  }
+
+  if (pixi_bits.size() > 4) {
+    return Error{
+        heif_error_Usage_error,
+        heif_suberror_Invalid_parameter_value,
+        "Tone-map PIXI hint may contain at most four channels"
+    };
+  }
+  for (uint8_t bits : pixi_bits) {
+    if (bits == 0) {
+      return Error{
+          heif_error_Usage_error,
+          heif_suberror_Invalid_parameter_value,
+          "Tone-map PIXI bit depth must be nonzero"
+      };
+    }
+  }
+
+  auto file = ctx->get_heif_file();
+  auto id_result = file->add_new_image(fourcc("tmap"));
+  if (!id_result) {
+    return id_result.error();
+  }
+
+  const heif_item_id tmap_id = *id_result;
+  auto tmap = std::make_shared<ImageItem_tmap>(ctx, tmap_id);
+  tmap->set_resolution(width, height);
+  ctx->insert_image_item(tmap_id, tmap);
+
+  constexpr uint8_t construction_method_idat = 1;
+  file->append_iloc_data(
+      tmap_id, *payload, construction_method_idat);
+  file->add_iref_reference(
+      tmap_id, fourcc("dimg"), {base->get_id(), gain->get_id()});
+
+  auto ispe = std::make_shared<Box_ispe>();
+  ispe->set_size(width, height);
+  if (tmap->add_property(ispe, false) == 0) {
+    return Error{
+        heif_error_Encoding_error,
+        heif_suberror_Unspecified,
+        "Could not add tone-map 'ispe' property"
+    };
+  }
+
+  if (auto icc = std::dynamic_pointer_cast<const color_profile_raw>(alternate_colour)) {
+    tmap->set_color_profile_icc(icc);
+  }
+  else if (auto nclx = std::dynamic_pointer_cast<const color_profile_nclx>(alternate_colour)) {
+    tmap->set_color_profile_nclx(nclx->get_nclx_color_profile());
+  }
+  if (Error error = require_colour_property(*tmap, false,
+          "Could not add tone-map alternate colour profile")) {
+    return error;
+  }
+
+  if (clli) {
+    tmap->set_clli(*clli);
+  }
+
+  if (!pixi_bits.empty()) {
+    auto pixi = std::make_shared<Box_pixi>();
+    for (uint8_t bits : pixi_bits) {
+      if (!pixi->add_channel_bits(bits)) {
+        return Error{
+            heif_error_Usage_error,
+            heif_suberror_Invalid_parameter_value,
+            "Invalid tone-map PIXI bit depth"
+        };
+      }
+    }
+    if (tmap->add_property(pixi, false) == 0) {
+      return Error{
+          heif_error_Encoding_error,
+          heif_suberror_Unspecified,
+          "Could not add tone-map 'pixi' property"
+      };
+    }
+  }
+
+  auto ftyp = file->get_ftyp_box();
+  if (ftyp) {
+    ftyp->add_compatible_brand(fourcc("tmap"));
+  }
+
+  return tmap;
+}
+
+
 Result<std::shared_ptr<HeifPixelImage>>
 ImageItem_tmap::decode_compressed_image(
     const heif_decoding_options& options,

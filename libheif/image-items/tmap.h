@@ -47,6 +47,15 @@ public:
   int get_luma_bits_per_pixel() const override { return 16; }
   int get_chroma_bits_per_pixel() const override { return 16; }
 
+  static Result<std::shared_ptr<ImageItem_tmap>> add_new_tone_map_item(
+      HeifContext* ctx,
+      const std::shared_ptr<ImageItem>& base,
+      const std::shared_ptr<ImageItem>& gain,
+      const ToneMapImage& tone_map_image,
+      const std::shared_ptr<const color_profile>& alternate_colour,
+      const heif_content_light_level* clli,
+      const std::vector<uint8_t>& pixi_bits);
+
   Result<std::shared_ptr<HeifPixelImage>> decode_compressed_image(
       const heif_decoding_options& options,
       bool decode_tile_only,
