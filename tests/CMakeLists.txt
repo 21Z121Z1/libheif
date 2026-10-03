@@ -91,6 +91,7 @@ endif()
 
 if (ENABLE_EXPERIMENTAL_FEATURES AND NOT WITH_REDUCED_VISIBILITY)
     add_libheif_test(pixel_data_types)
+    add_libheif_test(tmap_read)
 endif()
 
 if (NOT WITH_REDUCED_VISIBILITY AND WITH_UNCOMPRESSED_CODEC)

@@ -35,6 +35,119 @@ extern "C" {
  */
 
 
+
+// --- ISO 21496-1 / HEIF 'tmap' inspection
+
+typedef struct heif_signed_rational32
+{
+  int32_t numerator;
+  uint32_t denominator;
+} heif_signed_rational32;
+
+typedef struct heif_unsigned_rational32
+{
+  uint32_t numerator;
+  uint32_t denominator;
+} heif_unsigned_rational32;
+
+typedef struct heif_gain_map_channel
+{
+  heif_signed_rational32 gain_map_min;
+  heif_signed_rational32 gain_map_max;
+  heif_unsigned_rational32 gamma;
+  heif_signed_rational32 base_offset;
+  heif_signed_rational32 alternate_offset;
+} heif_gain_map_channel;
+
+typedef struct heif_gain_map_metadata
+{
+  uint32_t struct_version;
+
+  uint16_t minimum_version;
+  uint16_t writer_version;
+
+  uint8_t channel_count;
+  uint8_t use_base_colour_space;
+
+  heif_unsigned_rational32 base_hdr_headroom;
+  heif_unsigned_rational32 alternate_hdr_headroom;
+  heif_gain_map_channel channels[3];
+} heif_gain_map_metadata;
+
+typedef enum heif_gain_map_metadata_status
+{
+  heif_gain_map_metadata_status_not_a_tone_map = 0,
+  heif_gain_map_metadata_status_parsed = 1,
+  heif_gain_map_metadata_status_unsupported_tone_map_version = 2,
+  heif_gain_map_metadata_status_unsupported_minimum_version = 3,
+  heif_gain_map_metadata_status_malformed = 4
+} heif_gain_map_metadata_status;
+
+LIBHEIF_API
+int heif_image_handle_is_tone_map_derived_image(
+    const heif_image_handle* handle);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_base_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_base);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_gain_map_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_gain_map);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_gain_map_metadata(
+    const heif_image_handle* tmap,
+    heif_gain_map_metadata* out_metadata);
+
+LIBHEIF_API
+heif_gain_map_metadata_status
+heif_image_handle_get_gain_map_metadata_status(
+    const heif_image_handle* tmap);
+
+// Decode a root tmap with ISO 21496-1 clause 6.3 target-headroom weighting.
+// target_headroom is finite, nonnegative log2 HDR headroom (stops), as in the
+// metadata, not a linear luminance ratio. Values outside the two metadata
+// endpoints clamp the weight. Output retains the alternate colour encoding;
+// this is gain-map weighting, not general display tone mapping. Nested tmap
+// inputs reconstruct fully. Unknown minimum versions still return the baseline.
+// heif_decode_image() continues to apply the complete gain map.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    heif_colorspace colorspace,
+    heif_chroma chroma,
+    const heif_decoding_options* options,
+    double target_headroom);
+
+typedef enum heif_gain_map_resampling_phase
+{
+  heif_gain_map_resampling_phase_co_sited = 0, // ISO 21496-1 6.2.2 preferred phase.
+  heif_gain_map_resampling_phase_centered = 1,
+  heif_gain_map_resampling_phase_undefined = 99 // Rejected by decoding.
+} heif_gain_map_resampling_phase;
+
+// Same weighting, returning planar RGB float32 without unit-range clipping.
+// Useful for relative HDR encodings (e.g. extended sRGB ICC) whose reconstructed
+// values exceed 1. Alpha, if present, is separate; query its datatype and depth.
+// output_image_nclx_profile selects primaries/transfer; storage matrix/range do
+// not apply to floating RGB. convert_hdr_to_8bit must be false. Unknown minimum
+// versions still return the baseline, converted to RGB float32.
+// The selected gain-map phase applies to each derived node. Existing integer
+// decode uses co-sited sampling. Centered sampling is an explicit consumer choice;
+// it is not inferred from a producer name or recorded in Annex C metadata.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image_float32(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    const heif_decoding_options* options,
+    double target_headroom,
+    heif_gain_map_resampling_phase phase);
+
+
 /*
 heif_item_property_type_camera_intrinsic_matrix = heif_fourcc('c', 'm', 'i', 'n'),
 heif_item_property_type_camera_extrinsic_matrix = heif_fourcc('c', 'm', 'e', 'x')
