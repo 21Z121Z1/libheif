@@ -42,7 +42,10 @@ for rgb in [false, true] {
     }
     require(CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0,
             kCGImageAuxiliaryDataTypeISOGainMap) != nil, "Missing ISO auxiliary data in \(name)")
-    guard let decoded = CGImageSourceCreateImageAtIndex(source, 0, hdrOptions) else {
+    // Auxiliary discovery may populate the source's default SDR decode cache.
+    // Use a fresh source with the same explicit HDR options at both entry points.
+    guard let hdrSource = CGImageSourceCreateWithURL(url as CFURL, hdrOptions),
+          let decoded = CGImageSourceCreateImageAtIndex(hdrSource, 0, hdrOptions) else {
         require(false, "ImageIO HDR decode failed for \(name)")
         fatalError()
     }
@@ -127,7 +130,8 @@ try context.writeHEIFRepresentation(of: baseline, to: output, format: .RGBA8,
 guard let source = CGImageSourceCreateWithURL(output as CFURL, nil) else { fatalError("Missing Apple output") }
 require(CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0,
         kCGImageAuxiliaryDataTypeISOGainMap) != nil, "Apple producer omitted ISO gain map")
-guard let produced = CGImageSourceCreateImageAtIndex(source, 0, hdrOptions) else {
+guard let hdrSource = CGImageSourceCreateWithURL(output as CFURL, hdrOptions),
+      let produced = CGImageSourceCreateImageAtIndex(hdrSource, 0, hdrOptions) else {
     fatalError("Apple producer HDR decode failed")
 }
 var reference = [Float](repeating: 0, count: 64 * 64 * 4)

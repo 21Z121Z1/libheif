@@ -50,12 +50,14 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
                         (profile.m_transfer_characteristics == 13 && matrix != 0);
   const int y_bits = image->get_bits_per_pixel(heif_channel_Y);
   const int c_bits = image->get_bits_per_pixel(heif_channel_Cb);
-  if (y_bits < 1 || c_bits < 1 || c_bits != image->get_bits_per_pixel(heif_channel_Cr)) {
-    return unsupported("Tone-map matrix requires matching Cb and Cr depths");
+  const int cr_bits = image->get_bits_per_pixel(heif_channel_Cr);
+  if (y_bits < 1 || c_bits < 1 || cr_bits < 1) {
+    return unsupported("Tone-map matrix requires three colour components");
   }
   const int rgb_bits = y_bits - (matrix == 16 ? 2 : matrix == 17 ? 1 : 0);
   if (rgb_bits < 1 || (!profile.get_full_range_flag() &&
-                      (rgb_bits < 8 || (!code_matrix && c_bits < 8))) ||
+                      (rgb_bits < 8 || (!code_matrix && (c_bits < 8 || cr_bits < 8)))) ||
+      (code_matrix && matrix != 0 && c_bits != cr_bits) ||
       (matrix == 8 && c_bits != y_bits && c_bits != y_bits + 1)) {
     return unsupported("Unsupported tone-map matrix bit depths");
   }
@@ -64,27 +66,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
       options.color_conversion_options.only_use_preferred_chroma_algorithm &&
       options.color_conversion_options.preferred_chroma_upsampling_algorithm !=
           heif_chroma_upsampling_nearest_neighbor) {
-    if (options.color_conversion_options.preferred_chroma_upsampling_algorithm == heif_chroma_upsampling_bilinear) {
-      // Reuse the existing raster sampler without changing the coded depth,
-      // matrix or range. The recursive call sees 4:4:4 and cannot resample again.
-      ColorState input_state(heif_colorspace_YCbCr, chroma, false, y_bits);
-      input_state.bits_per_pixel_Cb = c_bits;
-      input_state.bits_per_pixel_Cr = c_bits;
-      input_state.nclx = profile;
-      input_state.bits_per_pixel_alpha = image->get_bits_per_pixel(heif_channel_Alpha);
-      auto target_state = input_state;
-      target_state.chroma = heif_chroma_444;
-      heif_color_conversion_options_ext extra{};
-      extra.version = 1;
-      ColorConversionPipeline sampler;
-      if (!sampler.construct_pipeline(input_state, target_state, options.color_conversion_options, extra)) {
-        return unsupported("Unsupported mandatory tone-map chroma upsampling");
-      }
-      auto expanded = sampler.convert_image(image, limits);
-      if (!expanded) { return expanded.error(); }
-      return decode_ycbcr(*expanded, options, limits);
+    if (options.color_conversion_options.preferred_chroma_upsampling_algorithm != heif_chroma_upsampling_bilinear) {
+      return unsupported("Unsupported mandatory tone-map chroma upsampling algorithm");
     }
-    return unsupported("Unsupported mandatory tone-map chroma upsampling algorithm");
   }
   // Constant-luminance chroma depends on the actual transfer, not just Kr/Kb.
   // Use the normalized matrix transfer before any display OOTF when deriving
@@ -131,34 +115,57 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
   const double rgb_offset = profile.get_full_range_flag() ? 0 : 16.0 * (1U << (rgb_bits - 8));
   const double rgb_scale = profile.get_full_range_flag() ? rgb_max : 219.0 * (1U << (rgb_bits - 8));
   const int32_t c_mid = 1U << (c_bits - 1);
+  const int32_t cr_mid = 1U << (cr_bits - 1);
   const double c_scale = code_matrix ? 1 :
                         profile.get_full_range_flag() ? (1U << c_bits) - 1 :
                                                         224.0 * (1U << (c_bits - 8));
+  const double cr_scale = code_matrix ? 1 :
+                         profile.get_full_range_flag() ? (1U << cr_bits) - 1 :
+                                                         224.0 * (1U << (cr_bits - 8));
+  const bool bilinear = options.color_conversion_options.preferred_chroma_upsampling_algorithm ==
+                        heif_chroma_upsampling_bilinear;
+  auto raw_sample = [&](size_t c, uint32_t x, uint32_t y) -> double {
+    const auto* row = input[c] + size_t(y) * in_stride[c];
+    const int bits = c == 0 ? y_bits : c == 1 ? c_bits : cr_bits;
+    return bits <= 8 ? row[x] : reinterpret_cast<const uint16_t*>(row)[x];
+  };
+  auto chroma_sample = [&](size_t c, uint32_t x, uint32_t y) -> int32_t {
+    if (chroma == heif_chroma_444) { return static_cast<int32_t>(raw_sample(c, x, y)); }
+    if (!bilinear) {
+      return static_cast<int32_t>(raw_sample(c, x / 2, chroma == heif_chroma_420 ? y / 2 : y));
+    }
+    // Centred chroma, with edge extension and a single rounding at its own
+    // coded depth. Cb and Cr may have different storage widths (H.273 5.4).
+    const double sx = std::clamp((double(x) - 0.5) / 2, 0.0, double((width - 1) / 2));
+    const double sy = chroma == heif_chroma_420 ?
+        std::clamp((double(y) - 0.5) / 2, 0.0, double((height - 1) / 2)) : y;
+    const auto x0 = static_cast<uint32_t>(sx), y0 = static_cast<uint32_t>(sy);
+    const auto x1 = std::min(x0 + 1, (width - 1) / 2);
+    const auto y1 = std::min(y0 + 1, chroma == heif_chroma_420 ? (height - 1) / 2 : height - 1);
+    const double fx = sx - x0, fy = sy - y0;
+    const double top = raw_sample(c, x0, y0) * (1 - fx) + raw_sample(c, x1, y0) * fx;
+    const double bottom = raw_sample(c, x0, y1) * (1 - fx) + raw_sample(c, x1, y1) * fx;
+    return static_cast<int32_t>(std::round(top * (1 - fy) + bottom * fy));
+  };
   // Portable arithmetic right shift for negative, odd lifting differences.
   auto half_floor = [](int32_t value) { return value >= 0 ? value / 2 : -((1 - value) / 2); };
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
-      std::array<int32_t, 3> sample{};
-      for (size_t c = 0; c < 3; ++c) {
-        const uint32_t sx = c == 0 || chroma == heif_chroma_444 ? x : x / 2;
-        const uint32_t sy = c == 0 || chroma != heif_chroma_420 ? y : y / 2;
-        const auto* row = input[c] + size_t(sy) * in_stride[c];
-        sample[c] = (c == 0 ? y_bits : c_bits) <= 8 ? row[sx] :
-                        reinterpret_cast<const uint16_t*>(row)[sx];
-      }
-      const int32_t cb = sample[1] - c_mid, cr = sample[2] - c_mid;
+      const std::array<int32_t, 3> sample{static_cast<int32_t>(raw_sample(0, x, y)),
+                                        chroma_sample(1, x, y), chroma_sample(2, x, y)};
+      const int32_t cb = sample[1] - c_mid, cr = sample[2] - cr_mid;
       GainMapRGB signal{};
       if (!code_matrix) {
         // H.273 (2024) Eq.30-38 and 76-78, with independent Y/C depths.
         const double ey = (sample[0] - rgb_offset) / rgb_scale;
         if (linear_matrix) {
           const double kr = linear_weights.Kr, kb = linear_weights.Kb;
-          const double r = ey + 2 * (1 - kr) * cr / c_scale;
+          const double r = ey + 2 * (1 - kr) * cr / cr_scale;
           const double b = ey + 2 * (1 - kb) * cb / c_scale;
           signal = {r, (ey - kr * r - kb * b) / (1 - kr - kb), b};
         }
         else if (lms_matrix) {
-          auto rgb = gain_map_decode_lms_matrix({ey, cb / c_scale, cr / c_scale}, matrix,
+          auto rgb = gain_map_decode_lms_matrix({ey, cb / c_scale, cr / cr_scale}, matrix,
                                                 profile.m_transfer_characteristics);
           if (!rgb) { return rgb.error(); }
           signal = *rgb;
@@ -166,7 +173,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
         else if (constant_luminance) {
           // Eq.66-75: restore R'/B', solve linear G from luminance, then
           // reapply the transfer. Applying an NCL matrix here is incorrect.
-          const double r = ey + 2 * cr / c_scale * cl[cr <= 0 ? 4 : 5];
+          const double r = ey + 2 * cr / cr_scale * cl[cr <= 0 ? 4 : 5];
           const double b = ey + 2 * cb / c_scale * cl[cb <= 0 ? 2 : 3];
           const auto transfer = profile.m_transfer_characteristics;
           auto linear_y = gain_map_decode_matrix_signal(ey, transfer);
@@ -181,7 +188,7 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
           signal = {r, *g, b};
         }
         else {
-          signal = {2 * cr / c_scale + 0.991902 * ey, ey,
+          signal = {2 * cr / cr_scale + 0.991902 * ey, ey,
                     (2 * cb / c_scale + ey) / 0.986566};
         }
       }
@@ -189,8 +196,12 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
         // Identity matrix stores G, B and R in Y, Cb and Cr (Eq.48-50).
         const GainMapRGB rgb{static_cast<double>(sample[2]), static_cast<double>(sample[0]),
                              static_cast<double>(sample[1])};
+        const std::array<int, 3> depths{cr_bits, y_bits, c_bits};
         for (size_t c = 0; c < 3; ++c) {
-          signal[c] = (std::clamp(rgb[c], 0.0, rgb_max) - rgb_offset) / rgb_scale;
+          const double max = (1U << depths[c]) - 1;
+          const double offset = profile.get_full_range_flag() ? 0 : std::ldexp(16.0, depths[c] - 8);
+          const double scale = profile.get_full_range_flag() ? max : std::ldexp(219.0, depths[c] - 8);
+          signal[c] = (std::clamp(rgb[c], 0.0, max) - offset) / scale;
         }
       }
       else {

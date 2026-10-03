@@ -830,6 +830,80 @@ TEST_CASE("Tone-map matrix paths honor mandatory bilinear chroma sampling on odd
   heif_decoding_options_free(options);
 }
 
+TEST_CASE("Tone maps normalize and interpolate Cb and Cr at independent depths")
+{
+  const int cb_bits = GENERATE(8, 12, 16);
+  const int cr_bits = GENERATE(8, 10, 16);
+  const auto chroma = GENERATE(heif_chroma_444, heif_chroma_422, heif_chroma_420);
+  const bool full_range = GENERATE(false, true);
+  const bool as_gain = GENERATE(false, true);
+  auto raster = std::make_shared<HeifPixelImage>();
+  raster->create(5, 3, heif_colorspace_YCbCr, chroma);
+  REQUIRE_FALSE(raster->add_channel(heif_channel_Y, 5, 3, 8, nullptr));
+  raster->fill_channel(heif_channel_Y, 128);
+  const std::array<heif_channel, 2> channels{heif_channel_Cb, heif_channel_Cr};
+  const std::array<int, 2> depths{cb_bits, cr_bits};
+  const uint32_t cw = chroma == heif_chroma_444 ? 5 : 3;
+  const uint32_t ch = chroma == heif_chroma_420 ? 2 : 3;
+  for (size_t c = 0; c < 2; ++c) {
+    REQUIRE_FALSE(raster->add_channel(channels[c], cw, ch, depths[c], nullptr));
+    size_t stride = 0;
+    auto* plane = raster->get_channel_memory(channels[c], &stride);
+    for (uint32_t y = 0; y < ch; ++y) {
+      for (uint32_t x = 0; x < cw; ++x) {
+        const uint16_t value = static_cast<uint16_t>((120 + 8 * x + 16 * y + 4 * c) << (depths[c] - 8));
+        if (depths[c] <= 8) { plane[size_t(y) * stride + x] = static_cast<uint8_t>(value); }
+        else { reinterpret_cast<uint16_t*>(plane + size_t(y) * stride)[x] = value; }
+      }
+    }
+  }
+  auto alternate = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  auto profile = alternate;
+  profile.set_matrix_coefficients(11);
+  profile.set_full_range_flag(full_range);
+  raster->set_color_profile_nclx(profile);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+  options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_max = {1, 1};
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(5, 3, heif_colorspace_RGB, heif_chroma_444);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(base->add_channel(channel, 5, 3, 8, nullptr));
+    base->fill_channel(channel, 64);
+  }
+  base->set_color_profile_nclx(alternate);
+  auto result = reconstruct_tone_map(as_gain ? base : raster,
+                                     as_gain ? raster : make_pixels(1, true, 0, 8),
+                                     metadata, alternate, *options, nullptr);
+  REQUIRE(result);
+  const std::array<double, 5> position{0, 0.25, 0.75, 1.25, 1.75};
+  for (uint32_t y = 0; y < 3; ++y) {
+    for (uint32_t x = 0; x < 5; ++x) {
+      const double cx = chroma == heif_chroma_444 ? x : position[x];
+      const double cy = chroma == heif_chroma_420 ? position[y] : y;
+      const double ey = full_range ? 128.0 / 255 : 112.0 / 219;
+      const double cb = (120 + 8 * cx + 16 * cy - 128) * std::ldexp(1.0, cb_bits - 8) /
+                        (full_range ? std::ldexp(1.0, cb_bits) - 1 : std::ldexp(224.0, cb_bits - 8));
+      const double cr = (124 + 8 * cx + 16 * cy - 128) * std::ldexp(1.0, cr_bits - 8) /
+                        (full_range ? std::ldexp(1.0, cr_bits) - 1 : std::ldexp(224.0, cr_bits - 8));
+      const std::array<double, 3> rgb{2 * cr + 0.991902 * ey, ey, (2 * cb + ey) / 0.986566};
+      for (size_t c = 0; c < 3; ++c) {
+        const double v = std::clamp(rgb[c], 0.0, 1.0);
+        const double expected = as_gain ? (64.0 / 255) * std::exp2(v) : v;
+        size_t stride = 0;
+        const auto* plane = (*result)->get_channel_memory<uint16_t>(static_cast<heif_channel>(heif_channel_R + c), &stride);
+        REQUIRE(plane[size_t(y) * stride / 2 + x] == Catch::Approx(std::round(expected * 65535)).margin(1));
+      }
+    }
+  }
+  REQUIRE(raster->get_bits_per_pixel(heif_channel_Cb) == cb_bits);
+  REQUIRE(raster->get_bits_per_pixel(heif_channel_Cr) == cr_bits);
+  heif_decoding_options_free(options);
+}
+
 TEST_CASE("Resampling interpolates unnormalized log gain at co-sited phase")
 {
   auto base = make_pixels(4, false, 8192, 8);
