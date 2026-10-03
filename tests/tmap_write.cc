@@ -1014,6 +1014,61 @@ TEST_CASE("Two tiled inputs round-trip the Figure J.5 tone-map graph and pixels"
 }
 
 
+TEST_CASE("tmap PIXI describes reconstructed RGB rather than input channels or storage depth")
+{
+  const uint8_t channels = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4});
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  const auto base_colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, base_colour);
+  heif_image* gain_pixels = nullptr;
+  REQUIRE(heif_image_create(4, 4, heif_colorspace_monochrome,
+                           heif_chroma_monochrome, &gain_pixels).code == heif_error_Ok);
+  fill_new_plane(gain_pixels, heif_channel_Y, 4, 4);
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, gain_pixels, encoder, nullptr,
+                                            nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(gain_pixels);
+  heif_encoder_release(encoder);
+  auto metadata = make_metadata();
+  auto options = make_options(&base_colour);
+  options.pixi_num_channels = channels;
+  for (auto& bits : options.pixi_bits_per_channel) { bits = 12; }
+  const auto count = heif_context_get_number_of_items(ctx);
+  heif_image_handle* tmap = nullptr;
+  const auto error = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
+  if (channels != 0 && channels != 3) {
+    REQUIRE(error.code == heif_error_Usage_error);
+    REQUIRE(error.subcode == heif_suberror_Invalid_parameter_value);
+    REQUIRE(tmap == nullptr);
+    REQUIRE(heif_context_get_number_of_items(ctx) == count);
+  }
+  else {
+    INFO(error.message);
+    REQUIRE(error.code == heif_error_Ok);
+    const auto file = write_context(ctx);
+    auto* reopened = heif_context_alloc();
+    REQUIRE(heif_context_read_from_memory_without_copy(reopened, file.data(), file.size(), nullptr).code == heif_error_Ok);
+    heif_image_handle* output = nullptr;
+    REQUIRE(heif_context_get_image_handle(reopened, heif_image_handle_get_item_id(tmap), &output).code == heif_error_Ok);
+    heif_image* image = nullptr;
+    REQUIRE(heif_decode_image(output, &image, heif_colorspace_RGB, heif_chroma_444, nullptr).code == heif_error_Ok);
+    REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_R) == 16);
+    const std::vector<uint8_t> pixi{0, 0, 0, 16, 'p', 'i', 'x', 'i', 0, 0, 0, 0, 3, 12, 12, 12};
+    REQUIRE((std::search(file.begin(), file.end(), pixi.begin(), pixi.end()) != file.end()) == (channels == 3));
+    heif_image_release(image);
+    heif_image_handle_release(output);
+    heif_context_free(reopened);
+    heif_image_handle_release(tmap);
+  }
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+
 TEST_CASE("tmap writer supports shared base and does not invent PIXI")
 {
   heif_context* ctx = heif_context_alloc();
@@ -1284,6 +1339,67 @@ TEST_CASE("tmap writer compares ordered rotation and mirror composition")
     heif_context_free(read);
     heif_image_handle_release(output);
   }
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("tmap geometry follows transformed inputs rather than their coded ispe")
+{
+  const bool declare_coded_size = GENERATE(false, true);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, baseline,
+      heif_orientation_rotate_270_cw, 4, 6);
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour,
+      heif_orientation_rotate_270_cw);
+  heif_encoder_release(encoder);
+  auto metadata = make_metadata();
+  auto options = make_options(&baseline);
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain,
+      &metadata, &options, &tmap).code == heif_error_Ok);
+  auto bytes = write_context(ctx);
+  if (declare_coded_size) {
+    // Only the derived image has a 6x4 reconstructed extent. Corrupt that
+    // declaration to the baseline's 4x6 coded extent, leaving transforms intact.
+    const std::vector<uint8_t> ispe{0, 0, 0, 20, 'i', 's', 'p', 'e',
+                                  0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 4};
+    const auto found = std::search(bytes.begin(), bytes.end(), ispe.begin(), ispe.end());
+    REQUIRE(found != bytes.end());
+    REQUIRE(std::search(found + ispe.size(), bytes.end(), ispe.begin(), ispe.end()) == bytes.end());
+    found[15] = 4;
+    found[19] = 6;
+  }
+  auto* read = reopen(bytes);
+  heif_image_handle* output = nullptr;
+  REQUIRE(heif_context_get_image_handle(read, heif_image_handle_get_item_id(tmap),
+      &output).code == heif_error_Ok);
+  heif_image* pixels = nullptr;
+  const auto error = heif_decode_tone_map_image_float32(output, &pixels, nullptr,
+      4, heif_gain_map_resampling_phase_co_sited);
+  INFO(error.message);
+  if (declare_coded_size) {
+    REQUIRE(error.code == heif_error_Invalid_input);
+    REQUIRE(error.subcode == heif_suberror_Invalid_image_size);
+    REQUIRE(pixels == nullptr);
+  }
+  else {
+    REQUIRE(error.code == heif_error_Ok);
+    REQUIRE(heif_image_get_primary_width(pixels) == 6);
+    REQUIRE(heif_image_get_primary_height(pixels) == 4);
+    heif_image_release(pixels);
+  }
+  heif_image_handle_release(output);
+  heif_context_free(read);
+  heif_image_handle_release(tmap);
   heif_image_handle_release(gain);
   heif_image_handle_release(base);
   heif_context_free(ctx);

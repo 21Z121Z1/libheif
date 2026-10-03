@@ -379,11 +379,11 @@ ImageItem_tmap::add_new_tone_map_item(
     }
   }
 
-  if (pixi_bits.size() > 4) {
+  if (!pixi_bits.empty() && pixi_bits.size() != 3) {
     return Error{
         heif_error_Usage_error,
         heif_suberror_Invalid_parameter_value,
-        "Tone-map PIXI hint may contain at most four channels"
+        "Tone-map PIXI hint must describe three reconstructed colour components"
     };
   }
   for (uint8_t bits : pixi_bits) {
