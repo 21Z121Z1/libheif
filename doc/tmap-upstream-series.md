@@ -38,6 +38,14 @@ retained; branch filters include this exact review branch and v1.24.x PRs so tha
 the same compiler, sanitizer, license, API, fuzz and independent-oracle gates can
 exercise the new baseline.
 
+The completed seven-commit tip `49ea0cbf` passed nine native core/raw-oracle
+executables, five exp OFF/CMM OFF executables, 112 C-header compilations and
+479 stable-symbol checks. The owned C/C++ scope passed cpplint and repository
+clang-tidy; unchanged upstream/Catch/Google diagnostics from the unfiltered tidy
+run remain in local evidence. Public Apple and pinned Google exchanges passed
+909,433 joint assertions; Google HEIF/AVIF depends on its bundled libheif and
+is compatibility evidence, not a separate HEIF graph implementation.
+
 The [conformance matrix](tmap-conformance-matrix.md) is the remaining task queue.
 Complete standards conformance remains unclaimed while the requested archives,
 final audit and revision-specific acceptance evidence are incomplete. The separate
