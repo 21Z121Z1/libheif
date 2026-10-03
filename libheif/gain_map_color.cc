@@ -363,6 +363,41 @@ Result<GainMapMatrix> parse_chad_tag(const IccView& view, const IccTag& tag)
   return matrix;
 }
 
+Result<GainMapMatrix> chromaticity_to_pcs(const IccView& view,
+                                       const IccTag& chromaticity, const IccTag& chad)
+{
+  uint32_t type = 0;
+  uint16_t channels = 0, encoding = 0;
+  const auto& data = *view.bytes;
+  if (chromaticity.size < 36 || !read_u32(data, chromaticity.offset, type) ||
+      type != icc_sig('c', 'h', 'r', 'm') ||
+      !read_u16(data, chromaticity.offset + 8, channels) || channels != 3 ||
+      !read_u16(data, chromaticity.offset + 10, encoding)) { return malformed_icc(); }
+  if (encoding > 6) { return unsupported_icc(); }
+  auto adaptation = parse_chad_tag(view, chad);
+  if (!adaptation) { return adaptation.error(); }
+  if (std::abs(determinant(*adaptation)) < 1e-12) { return unsupported_icc(); }
+
+  // ICC.1:2022 10.2 stores native, unadapted xy. E.4.1 derives the native
+  // adopted white by applying inverse chad to the D50 PCS adopted white.
+  GainMapMatrix matrix{};
+  for (size_t c = 0; c < 3; ++c) {
+    uint32_t x = 0, y = 0;
+    if (!read_u32(data, chromaticity.offset + 12 + c * 8, x) ||
+        !read_u32(data, chromaticity.offset + 16 + c * 8, y)) { return malformed_icc(); }
+    matrix[0][c] = x / 65536.0;
+    matrix[1][c] = y / 65536.0;
+    matrix[2][c] = 1 - matrix[0][c] - matrix[1][c];
+  }
+  if (std::abs(determinant(matrix)) < 1e-12) { return unsupported_icc(); }
+  const auto white = gain_map_transform(inverse(*adaptation), {0.9642, 1, 0.8249});
+  const auto scale = gain_map_transform(inverse(matrix), white);
+  for (size_t row = 0; row < 3; ++row) {
+    for (size_t c = 0; c < 3; ++c) { matrix[row][c] *= scale[c]; }
+  }
+  return multiply(*adaptation, matrix);
+}
+
 Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x,
                                  bool allow_sampled = false)
 {
@@ -1076,7 +1111,14 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   for (char name : {'r', 'g', 'b'}) {
     colourants += view->find(icc_sig(name, 'X', 'Y', 'Z')) != nullptr;
   }
-  if (gray || (colourants == 0 && lut)) {
+  const auto* chromaticity = view->find(icc_sig('c', 'h', 'r', 'm'));
+  const auto* chad = view->find(icc_sig('c', 'h', 'a', 'd'));
+  if (!gray && colourants == 0 && lut && chromaticity && chad) {
+    auto matrix = chromaticity_to_pcs(*view, *chromaticity, *chad);
+    if (!matrix) { return matrix.error(); }
+    transform->to_pcs = *matrix;
+  }
+  else if (gray || (colourants == 0 && lut)) {
     // PCS is an intermediate representation, never a guessed RGB application
     // space. It suffices when the other item supplies the application primaries.
     transform->to_pcs = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
@@ -1090,7 +1132,7 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   }
   else if (colourants != 3) { return unsupported_icc(); }
   for (size_t c = 0; c < 3; ++c) {
-    if (!transform->application_primaries) { break; }
+    if (!transform->application_primaries || colourants == 0) { break; }
     const char name = "rgb"[c];
     const auto* xyz = view->find(icc_sig(name, 'X', 'Y', 'Z'));
     const auto* curve = view->find(icc_sig(name, 'T', 'R', 'C'));

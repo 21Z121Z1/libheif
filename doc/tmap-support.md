@@ -74,7 +74,13 @@ convert a gray baseline to explicitly requested RGB NCLX.
 When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
 input, display, output and ColorSpace (`spac`) LUT profiles use their relative-colorimetric CMM
 transforms through XYZ PCS. The actual `rXYZ`/`gXYZ`/`bXYZ` colourants define
-the linear RGB application space. A profile without colourants can still convert
+the linear RGB application space. When those three tags are absent, explicit
+`chrm` and invertible `chad` tags can instead supply the native primaries and
+their adaptation to D50. The native adopted white is recovered by inverse
+adaptation of the PCS adopted white, following
+[ICC.1:2022, 10.2 and E.4.1](https://www.color.org/specifications/ICC.1-2022-05.pdf).
+LUT transforms still take precedence over shapers. A profile without either
+description can still convert
 through PCS when the other item supplies the selected application primaries;
 PCS is never used as guessed RGB primaries. Only the transform directions actually
 needed must be available. Missing LUT directions return unsupported instead of
@@ -251,7 +257,7 @@ full-range samples; bit depth alone does not make a file non-conforming.
 
 ## Remaining limitations
 
-- ICC profiles without explicit RGB colourants cannot supply the selected
+- ICC profiles without RGB colourants or explicit chromaticity/adaptation cannot supply the selected
   application primaries; RGB LUTs may still convert through PCS to/from the
   other item's application space. Gray baselines also convert through PCS;
   device-link, CMYK and other non-RGB, and non-monotone shaper

@@ -649,7 +649,8 @@ TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
 namespace {
 std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double gamma,
                                                        bool colourants = true, bool encode = true,
-                                                       cmsProfileClassSignature profile_class = cmsSigDisplayClass)
+                                                       cmsProfileClassSignature profile_class = cmsSigDisplayClass,
+                                                       bool chromaticity = false)
 {
   using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
   using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
@@ -667,21 +668,37 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
   REQUIRE(profile);
   cmsSetProfileVersion(profile.get(), version);
   cmsSetDeviceClass(profile.get(), profile_class);
-  // D50-scaled XYZ basis makes the intended LUT and application-space values
-  // independently known. Deliberately leave the identity TRCs in the profile:
-  // selecting those instead of the LUT would miss the gamma entirely.
+  // Chromaticity fixtures retain the native RGB basis; other fixtures use a
+  // D50-scaled XYZ basis with independently known application-space values.
+  // Leave identity TRCs present so selecting them would miss the LUT's gamma.
   const std::array<double, 3> white_xyz{0.9642, 1, 0.8249};
   const std::array<cmsTagSignature, 3> tags{cmsSigRedColorantTag, cmsSigGreenColorantTag, cmsSigBlueColorantTag};
   std::array<double, 9> to_pcs{}, from_pcs{};
   constexpr double pcs_scale = 65535.0 / 32768;
   for (size_t c = 0; c < 3; ++c) {
     cmsCIEXYZ xyz{};
-    if (c == 0) { xyz.X = white_xyz[c]; }
-    if (c == 1) { xyz.Y = white_xyz[c]; }
-    if (c == 2) { xyz.Z = white_xyz[c]; }
-    REQUIRE(cmsWriteTag(profile.get(), tags[c], &xyz));
-    to_pcs[c * 3 + c] = white_xyz[c] / pcs_scale;
-    from_pcs[c * 3 + c] = pcs_scale / white_xyz[c];
+    if (chromaticity) { xyz = *static_cast<cmsCIEXYZ*>(cmsReadTag(profile.get(), tags[c])); }
+    else {
+      if (c == 0) { xyz.X = white_xyz[c]; }
+      if (c == 1) { xyz.Y = white_xyz[c]; }
+      if (c == 2) { xyz.Z = white_xyz[c]; }
+      REQUIRE(cmsWriteTag(profile.get(), tags[c], &xyz));
+    }
+    to_pcs[c] = xyz.X / pcs_scale;
+    to_pcs[3 + c] = xyz.Y / pcs_scale;
+    to_pcs[6 + c] = xyz.Z / pcs_scale;
+  }
+  const auto& m = to_pcs;
+  const double det = m[0] * (m[4] * m[8] - m[5] * m[7]) -
+                     m[1] * (m[3] * m[8] - m[5] * m[6]) +
+                     m[2] * (m[3] * m[7] - m[4] * m[6]);
+  REQUIRE(std::abs(det) > 1e-12);
+  for (size_t row = 0; row < 3; ++row) {
+    for (size_t c = 0; c < 3; ++c) {
+      from_pcs[row * 3 + c] =
+          (m[((c + 1) % 3) * 3 + (row + 1) % 3] * m[((c + 2) % 3) * 3 + (row + 2) % 3] -
+           m[((c + 1) % 3) * 3 + (row + 2) % 3] * m[((c + 2) % 3) * 3 + (row + 1) % 3]) / det;
+    }
   }
   for (bool inverse : {false, true}) {
     if (inverse && !encode) { continue; }
@@ -700,9 +717,10 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
       auto* matrix = inverse ? from_pcs.data() : to_pcs.data();
       REQUIRE(cmsStageSampleCLut16bit(clut,
           [](const cmsUInt16Number in[], cmsUInt16Number out[], void* cargo) -> int {
-            const auto* diagonal = static_cast<const double*>(cargo);
+            const auto* matrix = static_cast<const double*>(cargo);
             for (size_t c = 0; c < 3; ++c) {
-              out[c] = static_cast<uint16_t>(std::round(std::clamp(in[c] * diagonal[c * 3 + c], 0.0, 65535.0)));
+              const double value = in[0] * matrix[c * 3] + in[1] * matrix[c * 3 + 1] + in[2] * matrix[c * 3 + 2];
+              out[c] = static_cast<uint16_t>(std::round(std::clamp(value, 0.0, 65535.0)));
             }
             return 1;
           }, matrix, 0));
@@ -721,6 +739,7 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
   }
   if (!colourants) {
     for (auto tag : tags) { REQUIRE(cmsWriteTag(profile.get(), tag, nullptr)); }
+    if (!chromaticity) { REQUIRE(cmsWriteTag(profile.get(), cmsSigChromaticityTag, nullptr)); }
   }
   cmsUInt32Number size = 0;
   REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
@@ -731,6 +750,98 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
 }  // namespace
 
 #if LIBHEIF_HAVE_LCMS2
+TEST_CASE("RGB ICC LUT chromaticity defines application primaries without XYZ colourants")
+{
+  const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);
+  const bool use_base = GENERATE(false, true);
+  auto baseline = GainMapColour::from_icc(rgb_lut_profile(4.3, 2, false, true, profile_class, true));
+  auto alternate = GainMapColour::from_icc(rgb_lut_profile(4.3, 1, false, true, profile_class, true));
+  REQUIRE(baseline);
+  REQUIRE(alternate);
+  REQUIRE(baseline->has_application_primaries());
+  REQUIRE(alternate->has_application_primaries());
+  auto linear = baseline->decode({0.25, 0.5, 0.75});
+  auto signal = baseline->encode({0.0625, 0.25, 0.5625});
+  REQUIRE(linear);
+  REQUIRE(signal);
+  for (size_t c = 0; c < 3; ++c) {
+    const double expected = static_cast<double>(c + 1) * 0.25;
+    REQUIRE((*linear)[c] == Catch::Approx(expected * expected).margin(0.0001));
+    REQUIRE((*signal)[c] == Catch::Approx(expected).margin(0.0001));
+  }
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  metadata.use_base_colour_space = use_base;
+  for (size_t c = 0; c < 3; ++c) {
+    const auto channel = static_cast<heif_channel>(heif_channel_R + c);
+    REQUIRE_FALSE(base->add_channel(channel, 1, 1, 16, nullptr));
+    base->fill_channel(channel, 16384);
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].base_offset = {1, 8};
+    metadata.channels[c].alternate_offset = {1, 16};
+  }
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->fill_channel(heif_channel_Y, 255);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, *alternate, *options, nullptr, *baseline);
+  REQUIRE(result);
+  for (size_t c = 0; c < 3; ++c) {
+    const double expected = (std::pow(16384.0 / 65535, 2) + 0.125) * std::exp2(double(c)) - 0.0625;
+    const auto channel = static_cast<heif_channel>(heif_channel_R + c);
+    REQUIRE((*result)->get_channel_memory<uint16_t>(channel, nullptr)[0] ==
+            Catch::Approx(std::round(expected * 65535)).margin(8));
+  }
+  heif_decoding_options_free(options);
+}
+
+TEST_CASE("ICC chromaticity needs a valid explicit adaptation and nonsingular basis")
+{
+  const int variant = GENERATE(0, 1, 2, 3, 4, 5, 6);
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  const auto source = rgb_lut_profile(4.3, 2, false, true, cmsSigDisplayClass, true);
+  Profile profile(cmsOpenProfileFromMem(source->get_data().data(),
+                  static_cast<cmsUInt32Number>(source->get_data().size())), cmsCloseProfile);
+  REQUIRE(profile);
+  std::vector<uint8_t> chrm(36);
+  REQUIRE(cmsReadRawTag(profile.get(), cmsSigChromaticityTag, chrm.data(), 36) == 36);
+  if (variant == 0) { chrm.resize(20); }
+  if (variant == 1) { set_u32(chrm, 0, signature("XYZ ")); }
+  if (variant == 2) { chrm[9] = 2; }
+  if (variant == 3) { chrm[11] = 7; }
+  if (variant == 4) {
+    for (size_t i = 0; i < 8; ++i) { chrm[20 + i] = chrm[28 + i] = chrm[12 + i]; }
+  }
+  REQUIRE(cmsWriteRawTag(profile.get(), cmsSigChromaticityTag, chrm.data(),
+                          static_cast<cmsUInt32Number>(chrm.size())));
+  if (variant == 5) {
+    std::vector<uint8_t> chad(44);
+    set_u32(chad, 0, signature("sf32"));
+    REQUIRE(cmsWriteRawTag(profile.get(), cmsSigChromaticAdaptationTag, chad.data(), 44));
+  }
+  if (variant == 6) { REQUIRE(cmsWriteTag(profile.get(), cmsSigChromaticAdaptationTag, nullptr)); }
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  auto colour = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+  if (variant == 6) {
+    REQUIRE(colour);
+    REQUIRE_FALSE(colour->has_application_primaries());
+    REQUIRE(colour->decode({0.25, 0.5, 0.75}));
+  }
+  else {
+    REQUIRE_FALSE(colour);
+    REQUIRE(colour.error().error_code ==
+        (variant < 3 ? heif_error_Invalid_input : heif_error_Unsupported_feature));
+  }
+}
+
 TEST_CASE("ICC LUT PCS conversions need primaries only on the selected application space")
 {
   const double version = GENERATE(2.1, 4.3);
@@ -854,7 +965,8 @@ TEST_CASE("RGB ICC LUTs retain their application primaries and take precedence o
 TEST_CASE("RGB ICC LUTs return unsupported when the optional CMM is disabled")
 {
   const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);
-  auto colour = GainMapColour::from_icc(rgb_lut_profile(4.3, 2, true, true, profile_class));
+  const bool chromaticity = GENERATE(false, true);
+  auto colour = GainMapColour::from_icc(rgb_lut_profile(4.3, 2, !chromaticity, true, profile_class, chromaticity));
   REQUIRE_FALSE(colour);
   REQUIRE(colour.error().error_code == heif_error_Unsupported_feature);
 }
