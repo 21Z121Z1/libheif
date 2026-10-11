@@ -35,6 +35,201 @@ extern "C" {
  */
 
 
+
+// --- ISO 21496-1 / HEIF 'tmap' inspection
+
+typedef struct heif_signed_rational32
+{
+  int32_t numerator;
+  uint32_t denominator;
+} heif_signed_rational32;
+
+typedef struct heif_unsigned_rational32
+{
+  uint32_t numerator;
+  uint32_t denominator;
+} heif_unsigned_rational32;
+
+typedef struct heif_gain_map_channel
+{
+  heif_signed_rational32 gain_map_min;
+  heif_signed_rational32 gain_map_max;
+  heif_unsigned_rational32 gamma;
+  heif_signed_rational32 base_offset;
+  heif_signed_rational32 alternate_offset;
+} heif_gain_map_channel;
+
+typedef struct heif_gain_map_metadata
+{
+  uint32_t struct_version;
+
+  uint16_t minimum_version;
+  uint16_t writer_version;
+
+  uint8_t channel_count;
+  uint8_t use_base_colour_space;
+
+  heif_unsigned_rational32 base_hdr_headroom;
+  heif_unsigned_rational32 alternate_hdr_headroom;
+  heif_gain_map_channel channels[3];
+} heif_gain_map_metadata;
+
+typedef enum heif_gain_map_metadata_status
+{
+  heif_gain_map_metadata_status_not_a_tone_map = 0,
+  heif_gain_map_metadata_status_parsed = 1,
+  heif_gain_map_metadata_status_unsupported_tone_map_version = 2,
+  heif_gain_map_metadata_status_unsupported_minimum_version = 3,
+  heif_gain_map_metadata_status_malformed = 4
+} heif_gain_map_metadata_status;
+
+LIBHEIF_API
+int heif_image_handle_is_tone_map_derived_image(
+    const heif_image_handle* handle);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_base_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_base);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_tone_map_gain_map_image_handle(
+    const heif_image_handle* tmap,
+    heif_image_handle** out_gain_map);
+
+LIBHEIF_API
+heif_error heif_image_handle_get_gain_map_metadata(
+    const heif_image_handle* tmap,
+    heif_gain_map_metadata* out_metadata);
+
+LIBHEIF_API
+heif_gain_map_metadata_status
+heif_image_handle_get_gain_map_metadata_status(
+    const heif_image_handle* tmap);
+
+// Decode a root tmap with ISO 21496-1 clause 6.3 target-headroom weighting.
+// target_headroom is finite, nonnegative log2 HDR headroom (stops), as in the
+// metadata, not a linear luminance ratio. Values outside the two metadata
+// endpoints clamp the weight. Output retains the alternate colour encoding;
+// this is gain-map weighting, not general display tone mapping. Nested tmap
+// inputs reconstruct fully. Unknown minimum versions still return the baseline.
+// heif_decode_image() continues to apply the complete gain map.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    heif_colorspace colorspace,
+    heif_chroma chroma,
+    const heif_decoding_options* options,
+    double target_headroom);
+
+typedef enum heif_gain_map_resampling_phase
+{
+  heif_gain_map_resampling_phase_co_sited = 0, // ISO 21496-1 6.2.2 preferred phase.
+  heif_gain_map_resampling_phase_centered = 1,
+  heif_gain_map_resampling_phase_undefined = 99 // Rejected by decoding.
+} heif_gain_map_resampling_phase;
+
+// Same weighting, returning planar RGB float32 without unit-range clipping.
+// Useful for relative HDR encodings (e.g. extended sRGB ICC) whose reconstructed
+// values exceed 1. Alpha, if present, is separate; query its datatype and depth.
+// output_image_nclx_profile selects primaries/transfer; storage matrix/range do
+// not apply to floating RGB. convert_hdr_to_8bit must be false. Unknown minimum
+// versions still return the baseline, converted to RGB float32.
+// The selected gain-map phase applies to each derived node. Existing integer
+// decode uses co-sited sampling. Centered sampling is an explicit consumer choice;
+// it is not inferred from a producer name or recorded in Annex C metadata.
+LIBHEIF_API
+heif_error heif_decode_tone_map_image_float32(
+    const heif_image_handle* tmap,
+    heif_image** out_img,
+    const heif_decoding_options* options,
+    double target_headroom,
+    heif_gain_map_resampling_phase phase);
+
+
+typedef struct heif_tone_map_options
+{
+  uint32_t version;
+
+  // Required in version 1. In version 2, choose NCLX or ICC, but not both.
+  // Describes the fully-applied alternate image.
+  const heif_color_profile_nclx* alternate_nclx;
+
+  // Optional version-1 properties.
+  int has_clli;
+  heif_content_light_level clli;
+
+  // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI;
+  // otherwise three colour components describe this writer's RGB alternate.
+  // Bit depths are approximate precision, independent of input/decoded storage.
+  uint8_t pixi_num_channels;
+  uint8_t pixi_bits_per_channel[4];
+
+  // Version 2. ICC bytes are copied; the caller retains ownership.
+  heif_color_profile_type alternate_icc_type; // prof or rICC
+  const void* alternate_icc;
+  size_t alternate_icc_size;
+
+  // Compatibility policy, independent of normative tmap reconstruction.
+  // The allocator defaults to hiding the gain map and creating {tmap,base}.
+  // Primary selection is always preserved. Disable group creation when
+  // assembling several alternatives, then use the generic altr writer.
+  int hide_gain_map;
+  int create_altr_group;
+} heif_tone_map_options;
+
+LIBHEIF_API
+heif_tone_map_options* heif_tone_map_options_alloc(void);
+
+LIBHEIF_API
+void heif_tone_map_options_free(heif_tone_map_options* options);
+
+typedef struct heif_gain_map_image_options
+{
+  uint32_t version;
+  // Describes the sample-domain matrix/range, with CP=2 and TC=2.
+  // NULL defaults to full-range identity for RGB, or BT.601 when the codec
+  // requires subsampled YCbCr, and unspecified for mono. Explicit identity
+  // requires a codec configured for 4:4:4.
+  // YCbCr input requires explicit sample-domain signalling.
+  const heif_color_profile_nclx* nclx;
+  int hidden;
+} heif_gain_map_image_options;
+
+LIBHEIF_API
+heif_gain_map_image_options* heif_gain_map_image_options_alloc(void);
+
+LIBHEIF_API
+void heif_gain_map_image_options_free(heif_gain_map_image_options* options);
+
+// Input samples are normalized gain data, not an SDR/HDR colour image.
+// Full-range monochrome and RGB (planar or byte interleaved) below 8 bits are normalized to a common
+// unsigned depth of at least 8 bits before encoding, rounded to the nearest
+// representable level. Other lower-depth layouts/ranges are rejected.
+// Does not modify the input image or select a primary image. NULL gain_options
+// uses defaults (including hidden=true). The encoded gain may be shared.
+LIBHEIF_API
+heif_error heif_context_encode_gain_map_image(
+    heif_context* ctx,
+    const heif_image* gain_pixels,
+    heif_encoder* encoder,
+    const heif_encoding_options* encoding_options,
+    const heif_gain_map_image_options* gain_options,
+    heif_image_handle** out_gain);
+
+// The base and gain must have the same effective display orientation.
+// Equivalent ordered irot/imir compositions are accepted; a mismatch is
+// rejected before adding an item or changing visibility/alternative groups.
+LIBHEIF_API
+heif_error heif_context_add_tone_map_derived_image(
+    heif_context* ctx,
+    const heif_image_handle* base,
+    const heif_image_handle* gain,
+    const heif_gain_map_metadata* metadata,
+    const heif_tone_map_options* options,
+    heif_image_handle** out_tmap);
+
 /*
 heif_item_property_type_camera_intrinsic_matrix = heif_fourcc('c', 'm', 'i', 'n'),
 heif_item_property_type_camera_extrinsic_matrix = heif_fourcc('c', 'm', 'e', 'x')

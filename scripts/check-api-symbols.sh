@@ -73,9 +73,13 @@ if [ -z "$LIB" ]; then
         -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
         -DBUILD_TESTING=OFF -DENABLE_PLUGIN_LOADING=OFF \
         >"$TMP/cmake.log" 2>&1 \
-        && cmake --build "$TMP/build" -j"$(nproc)" >>"$TMP/cmake.log" 2>&1 \
+        && cmake --build "$TMP/build" --parallel >>"$TMP/cmake.log" 2>&1 \
         || { echo "ERROR: minimal libheif build failed:" >&2; cat "$TMP/cmake.log" >&2; exit 1; }
-    LIB="$TMP/build/libheif/libheif.so"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        LIB="$TMP/build/libheif/libheif.dylib"
+    else
+        LIB="$TMP/build/libheif/libheif.so"
+    fi
 fi
 
 if [ ! -e "$LIB" ]; then
@@ -105,7 +109,13 @@ find "$API_DIR" -maxdepth 1 -name '*.h' "${find_args[@]}" -print0 \
         }' \
   | sort -u > "$TMP/declared.txt"
 
-nm -D --defined-only "$LIB" | awk '{print $NF}' | sort -u > "$TMP/defined.txt"
+if [ "$(uname -s)" = "Darwin" ]; then
+    # Mach-O C symbols have a leading underscore. -U excludes undefined
+    # symbols and -g restricts the check to exported external definitions.
+    nm -gU "$LIB" | awk '{print $NF}' | sed 's/^_//' | sort -u > "$TMP/defined.txt"
+else
+    nm -D --defined-only "$LIB" | awk '{print $NF}' | sort -u > "$TMP/defined.txt"
+fi
 
 declared_count=$(wc -l < "$TMP/declared.txt")
 missing=$(comm -23 "$TMP/declared.txt" "$TMP/defined.txt")

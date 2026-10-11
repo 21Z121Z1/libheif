@@ -20,6 +20,7 @@
 
 #include "libheif/heif.h"
 #include "libheif/heif_plugin.h"
+#include "libheif/heif_properties.h"
 #include "common_utils.h"
 #include <algorithm>
 #include <cstring>
@@ -961,6 +962,16 @@ static heif_error aom_start_sequence_encoding_intern(void* encoder_raw, const he
   // --- copy libheif image to aom image
 
   chroma_info chroma_info = get_chroma_info(chroma, bpp_y, source_height);
+
+  if (heif_image_has_chroma_location(image)) {
+    const uint8_t location = heif_image_get_chroma_location(image);
+    // AV1 6.4.2 explicitly represents only H.273 locations 0 and 2 for 4:2:0.
+    if (chroma != heif_chroma_420 || (location != 0 && location != 2)) {
+      return {heif_error_Unsupported_feature, heif_suberror_Unsupported_parameter,
+              "AV1 cannot signal the declared chroma location"};
+    }
+    chroma_info.chroma_sample_position = location == 0 ? AOM_CSP_VERTICAL : AOM_CSP_COLOCATED;
+  }
 
 
   // --- configure codec

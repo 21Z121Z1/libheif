@@ -354,7 +354,7 @@ TEST_CASE("uncv sequence frame with tiles decodes each tile from its own data") 
   REQUIRE(ctx != nullptr);
 
   heif_error err = heif_context_read_from_reader(ctx, &reader, &counting_reader, nullptr);
-  INFO("read error: " << err.message);
+  INFO("read error: " << (err.message ? err.message : ""));
   REQUIRE(err.code == heif_error_Ok);
   REQUIRE(heif_context_has_sequence(ctx) == 1);
 
@@ -366,7 +366,7 @@ TEST_CASE("uncv sequence frame with tiles decodes each tile from its own data") 
 
   heif_image* img = nullptr;
   err = heif_track_decode_next_image(track, &img, heif_colorspace_RGB, heif_chroma_444, nullptr);
-  INFO("decode error: " << err.message);
+  INFO("decode error: " << (err.message ? err.message : ""));
   REQUIRE(err.code == heif_error_Ok);
   REQUIRE(img != nullptr);
 

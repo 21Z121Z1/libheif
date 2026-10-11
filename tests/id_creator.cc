@@ -82,6 +82,20 @@ TEST_CASE("IDCreator namespaces are independent") {
   REQUIRE(*it == 501);
 }
 
+TEST_CASE("IDCreator noncolliding group reserves future item and track IDs") {
+  IDCreator idc;
+  idc.mark_id_used(NS::item, 3);
+  auto group = idc.get_new_id_noncolliding();
+  REQUIRE(group);
+  REQUIRE(*group == 4);
+  REQUIRE(*idc.get_new_id(NS::item) > *group);
+  REQUIRE(*idc.get_new_id(NS::track) > *group);
+  REQUIRE(*idc.get_new_id(NS::entity_group) > *group);
+  REQUIRE_FALSE(idc.get_unif());
+  idc.mark_id_used(NS::item, UINT32_MAX);
+  REQUIRE_FALSE(idc.get_new_id_noncolliding());
+}
+
 TEST_CASE("IDCreator exhausts cleanly at UINT32_MAX-1") {
   IDCreator idc;
   idc.mark_id_used(NS::item, UINT32_MAX - 1);

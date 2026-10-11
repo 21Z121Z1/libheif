@@ -91,7 +91,7 @@ void unc_decoder_legacybase::processComponentSample(UncompressedBitReader& srcBi
 {
   uint64_t dst_col_number = static_cast<uint64_t>(tile_column) * entry.tile_width + tile_x;
   uint64_t dst_column_offset = dst_col_number * entry.bytes_per_component_sample;
-  int val = srcBits.get_bits(entry.bits_per_component_sample); // get_bits() reads input in big-endian order
+  uint32_t val = srcBits.get_bits(entry.bits_per_component_sample); // get_bits() reads input in big-endian order
   memcpy_to_native_endian(entry.dst_plane + dst_row_offset + dst_column_offset, val, entry.bytes_per_component_sample);
 }
 
@@ -115,7 +115,7 @@ void unc_decoder_legacybase::processComponentRow(ChannelListEntry& entry, Uncomp
 void unc_decoder_legacybase::processComponentTileSample(UncompressedBitReader& srcBits, const ChannelListEntry& entry, uint64_t dst_offset, uint32_t tile_x)
 {
   uint64_t dst_sample_offset = uint64_t{tile_x} * entry.bytes_per_component_sample;
-  int val = srcBits.get_bits(entry.bits_per_component_sample);
+  uint32_t val = srcBits.get_bits(entry.bits_per_component_sample);
   memcpy_to_native_endian(entry.dst_plane + dst_offset + dst_sample_offset, val, entry.bytes_per_component_sample);
 }
 
@@ -147,12 +147,16 @@ unc_decoder_legacybase::ChannelListEntry unc_decoder_legacybase::buildChannelLis
   entry.tile_width = m_tile_width;
   entry.tile_height = m_tile_height;
   if ((entry.channel == heif_channel_Cb) || (entry.channel == heif_channel_Cr)) {
+    const bool wide = std::any_of(m_uncC->get_components().begin(), m_uncC->get_components().end(),
+        [](const Box_uncC::Component& c) { return c.component_bit_depth > 16; });
+    // The new wide component path matches the encoder's ceil-sized chroma.
+    // Preserve the existing narrow sequence edge handling.
     if (m_uncC->get_sampling_type() == sampling_mode_422) {
-      entry.tile_width /= 2;
+      entry.tile_width = m_tile_width / 2 + (wide ? m_tile_width % 2 : 0);
     }
     else if (m_uncC->get_sampling_type() == sampling_mode_420) {
-      entry.tile_width /= 2;
-      entry.tile_height /= 2;
+      entry.tile_width = m_tile_width / 2 + (wide ? m_tile_width % 2 : 0);
+      entry.tile_height = m_tile_height / 2 + (wide ? m_tile_height % 2 : 0);
     }
 
     // chroma[0] is this entry's own plane; chroma[1] is the paired plane
@@ -164,17 +168,16 @@ unc_decoder_legacybase::ChannelListEntry unc_decoder_legacybase::buildChannelLis
 
     entry.chroma_dst_plane[0] = entry.dst_plane;
     entry.chroma_dst_plane_stride[0] = entry.dst_plane_stride;
-    entry.chroma_bytes_per_component_sample[0] = (component.component_bit_depth + 7) / 8;
+    entry.chroma_bytes_per_component_sample[0] = img->get_component_storage_bits_per_pixel(m_uncC_index_to_comp_ids[component_id]) / 8;
 
     entry.chroma_dst_plane[1] = img->get_channel_memory(paired_channel, &(entry.chroma_dst_plane_stride[1]));
     entry.chroma_bytes_per_component_sample[1] = img->get_storage_bits_per_pixel(paired_channel) / 8;
   }
   entry.bits_per_component_sample = component.component_bit_depth;
   entry.component_alignment = component.component_align_size;
-  entry.bytes_per_component_sample = (component.component_bit_depth + 7) / 8;
-  entry.bytes_per_tile_row_src = entry.tile_width * entry.bytes_per_component_sample;
+  // Packed 17-24-bit samples occupy four bytes in the native destination.
+  // The coded row size and native pixel step are separate quantities.
+  entry.bytes_per_component_sample = img->get_component_storage_bits_per_pixel(m_uncC_index_to_comp_ids[component_id]) / 8;
+  entry.bytes_per_tile_row_src = entry.tile_width * ((component.component_bit_depth + 7) / 8);
   return entry;
 }
-
-
-

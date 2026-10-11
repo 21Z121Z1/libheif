@@ -281,6 +281,12 @@ Result<std::shared_ptr<ImageItem_uncompressed>> ImageItem_uncompressed::add_unci
     unci_image->add_property(unci_image->m_unc_encoder->get_cpat(), true);
   }
 
+  // Preserve the same explicit colour descriptions as the ordinary encoder.
+  for (const auto& colr : add_color_profile(prototype, *encoding_options,
+      heif_image_input_class_normal, encoding_options->output_nclx_profile)) {
+    unci_image->add_property(colr, false);
+  }
+
   // Add `ispe` property
 
   auto ispe = std::make_shared<Box_ispe>();

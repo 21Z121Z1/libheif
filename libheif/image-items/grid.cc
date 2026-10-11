@@ -242,7 +242,7 @@ static void wait_for_jobs(std::deque<std::future<Error> >* jobs) {
   }
 
   while (!jobs->empty()) {
-    jobs->front().get();
+    (void) jobs->front().get();
     jobs->pop_front();
   }
 }
