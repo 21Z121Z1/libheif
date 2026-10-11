@@ -57,8 +57,35 @@ both valid transformed output and rejection of the incorrect declaration.
 
 This is a container finding with a structural explanation, not grounds for a
 producer-specific relaxation. The separate public Apple producer/consumer and
-pinned Google gates remain required. The requested user archives are still
-missing; these synthetic files do not substitute for their per-file reports.
+pinned Google gates remain required. The subsequently supplied user archives
+now have their own [per-file validation](tmap-sample-validation.md); these
+synthetic files do not substitute for that evidence.
+
+## 2026-10-11 continuation
+
+Current libavif source at
+[`fa78ed71`](https://github.com/AOMediaCodec/libavif/tree/fa78ed71de0bcd35cc314393ea491e57c0eba66f)
+was checked again for ToneMapImage parsing, dimg ordering, output geometry,
+colour-property association and compatible-brand writing. Its narrower
+container/transform model is not copied into libheif's nested derived-image
+support. The English final standards still decide padding, rational headroom
+and transformed geometry. This is a fresh source comparison; the executed
+libavif/CrabbyAvif differential above remains tied to its original pins.
+
+The raw Google oracle was rebuilt and executed at the same `66821e0a` pin and
+passed. Final parser, reconstruction, colour, graph and writer regressions also
+passed locally with ASan/UBSan. The second semantic pass retained exact public
+POD rationals, unsupported-colour errors, baseline fallback only for unknown
+minimum metadata versions, shared graph limits and RAII raster ownership.
+No private rendering fallback or resampling rule was imported.
+
+That pass found a writer invariant outside the typed tmap helper: generic item
+creation could emit a valid hidden or visible tmap without its required brand.
+The regression failed for both cases. The context writer now scans actual item
+types once to enforce both brand implications, preserving rejection of a tmap
+brand without an item. Writing contexts read from files remains unsupported.
+No other broad simplification has a demonstrated benefit sufficient to change
+the existing normative or security boundaries.
 
 ## Evidence boundary
 

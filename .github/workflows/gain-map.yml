@@ -163,19 +163,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
           persist-credentials: false
-      - name: Install HEVC decoder
+      - name: Install HEVC codecs
         run: |
           sudo apt-get update
-          sudo apt-get install -y libde265-dev
+          sudo apt-get install -y libde265-dev libx265-dev
       - name: Build external-sample interop harness
         run: |
           cmake --preset testing -S . -B build-interop \
             -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_EXPERIMENTAL_FEATURES=ON \
             -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
-            -DWITH_LIBDE265=ON -DWITH_X265=OFF \
+            -DWITH_LIBDE265=ON -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
             -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF
-          cmake --build build-interop --target tmap_interop --parallel 2
+          cmake --build build-interop --target tmap_interop tmap_write --parallel 2
+      - name: Check per-file report and failure isolation
+        run: |
+          LIBHEIF_TMAP_WRITE_DIR=build-interop/synthetic \
+            build-interop/tests/tmap_write 'Generate synthetic HEVC tmap files for independent consumers'
+          python3 scripts/check-tmap-samples.py \
+            --library build-interop/libheif/libheif.so \
+            --revision "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --output build-interop/sample-report.json --expect-files 2 build-interop/synthetic
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          Path('build-interop/synthetic/invalid.heic').write_bytes(b'not a HEIF file')
+          result = subprocess.run([sys.executable, 'scripts/check-tmap-samples.py',
+                                   '--library', 'build-interop/libheif/libheif.so',
+                                   '--output', 'build-interop/failure-report.json',
+                                   '--expect-files', '3', 'build-interop/synthetic'], check=False)
+          report = json.loads(Path('build-interop/failure-report.json').read_text())
+          assert result.returncode == 1, result.returncode
+          assert report['summary'] == {'files': 3, 'passed': 2, 'tmap_files': 2}, report['summary']
+          PY
       - name: Upload interop harness
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
         with:
@@ -183,3 +205,4 @@ jobs:
           path: |
             build-interop/tests/tmap_interop
             build-interop/libheif/libheif.so*
+            build-interop/*report.json
