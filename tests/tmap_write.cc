@@ -34,6 +34,7 @@
 #include "libheif/heif_uncompressed.h"
 #include "test_utils.h"
 #include "gain_map_color.h"
+#include "gain_map_metadata.h"
 
 #include <algorithm>
 #include <array>
@@ -713,6 +714,62 @@ TEST_CASE("tmap brand cannot be written without a tone-map item")
   REQUIRE(encoded.empty());
 
   heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
+
+TEST_CASE("Generic tone-map items receive their required compatible brand")
+{
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  const auto base_colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, base_colour);
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
+  heif_encoder_release(encoder);
+  const auto base_id = heif_image_handle_get_item_id(base);
+  const auto gain_id = heif_image_handle_get_item_id(gain);
+  ToneMapImage tone_map;
+  tone_map.gain_map_metadata.use_base_colour_space = true;
+  tone_map.gain_map_metadata.alternate_hdr_headroom = {2, 1};
+  auto payload = serialize_tone_map_image(tone_map);
+  REQUIRE(payload);
+  heif_item_id tmap_id = 0;
+  REQUIRE(heif_context_add_item(ctx, "tmap", payload->data(),
+              static_cast<int>(payload->size()), &tmap_id).code == heif_error_Ok);
+  const int hidden = GENERATE(0, 1);
+  REQUIRE(heif_item_set_item_hidden(ctx, tmap_id, hidden).code == heif_error_Ok);
+  REQUIRE(heif_item_set_item_hidden(ctx, gain_id, 1).code == heif_error_Ok);
+  const heif_item_id inputs[] = {base_id, gain_id};
+  REQUIRE(heif_context_add_item_references(ctx, fourcc("dimg"), tmap_id, inputs, 2).code == heif_error_Ok);
+  const uint8_t ispe[] = {0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 4};
+  const uint8_t colr[] = {'n', 'c', 'l', 'x', 0, 1, 0, 13, 0, 1, 0x80};
+  REQUIRE(heif_item_add_raw_property(ctx, tmap_id, fourcc("ispe"), nullptr,
+              ispe, sizeof(ispe), 0, nullptr).code == heif_error_Ok);
+  REQUIRE(heif_item_add_raw_property(ctx, tmap_id, fourcc("colr"), nullptr,
+              colr, sizeof(colr), 0, nullptr).code == heif_error_Ok);
+  const auto encoded = write_context(ctx);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+  REQUIRE(heif_has_compatible_brand(encoded.data(), static_cast<int>(encoded.size()), "tmap") == 1);
+  ctx = reopen(encoded);
+  heif_item_id primary_id = 0;
+  REQUIRE(heif_context_get_primary_image_ID(ctx, &primary_id).code == heif_error_Ok);
+  REQUIRE(primary_id == base_id);
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, tmap_id, &tmap).code == heif_error_Ok);
+  REQUIRE(heif_image_handle_is_tone_map_derived_image(tmap) == 1);
+  REQUIRE(heif_item_is_item_hidden(ctx, tmap_id) == hidden);
+  heif_gain_map_metadata round_trip{};
+  REQUIRE(heif_image_handle_get_gain_map_metadata(tmap, &round_trip).code == heif_error_Ok);
+  REQUIRE(round_trip.alternate_hdr_headroom.numerator == 2);
+  heif_image_handle_release(tmap);
   heif_context_free(ctx);
 }
 
