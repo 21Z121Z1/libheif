@@ -1310,6 +1310,7 @@ TEST_CASE("Floating RGB and monochrome retain HDR samples through reverse gain")
     REQUIRE_FALSE(base->add_channel(channel, 3, 2, bits, nullptr, heif_component_datatype_floating_point));
     size_t stride = 0;
     auto* plane = base->get_channel_memory(channel, &stride);
+    REQUIRE(plane != nullptr);
     for (size_t y = 0; y < 2; ++y) {
       for (size_t x = 0; x < 3; ++x) {
         const double value = 1.5 + static_cast<double>(x) * 0.5 + static_cast<double>(y) * 0.25;
