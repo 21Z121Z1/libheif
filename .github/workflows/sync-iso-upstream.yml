@@ -1,0 +1,145 @@
+name: sync-iso-upstream
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      validate_current:
+        description: Run all gates even when upstream is already integrated
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-iso-upstream
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == '21Z121Z1/libheif' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      base_before: ${{ steps.merge.outputs.base_before }}
+      iso_before: ${{ steps.merge.outputs.iso_before }}
+      base_after: ${{ steps.merge.outputs.base_after }}
+      iso_after: ${{ steps.merge.outputs.iso_after }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify merge, conflict, concurrency and atomic publication behavior
+        run: python3 scripts/test-sync-iso-upstream.py
+      - name: Integrate upstream while preserving the fork and ISO history
+        id: merge
+        env:
+          VALIDATE_CURRENT: ${{ inputs.validate_current }}
+        run: |
+          options=()
+          if [ "$VALIDATE_CURRENT" = "true" ]; then options+=(--validate-current); fi
+          python3 scripts/sync-iso-upstream.py prepare --output "$RUNNER_TEMP/iso-sync" "${options[@]}"
+      - name: Retain exact source and merge diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: iso-sync-source
+          path: ${{ runner.temp }}/iso-sync/
+          retention-days: 14
+
+  gain-map:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || inputs.validate_current
+    permissions:
+      contents: read
+    uses: 21Z121Z1/libheif/.github/workflows/gain-map.yml@iso21496-gain-map-metadata-core
+    with:
+      source_ref: ${{ needs.prepare.outputs.iso_before }}
+      source_bundle: iso-sync-source
+      source_sha: ${{ needs.prepare.outputs.iso_after }}
+
+  core-tests:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || inputs.validate_current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fork-baseline
+            checkout: ${{ needs.prepare.outputs.base_before }}
+            candidate: ${{ needs.prepare.outputs.base_after }}
+          - name: iso-integration
+            checkout: ${{ needs.prepare.outputs.iso_before }}
+            candidate: ${{ needs.prepare.outputs.iso_after }}
+    env:
+      TESTS: 1
+      WITH_AOM: 1
+      WITH_LIBDE265: 1
+      WITH_X265: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.checkout }}
+          persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        with:
+          artifact: iso-sync-source
+          sha: ${{ matrix.candidate }}
+      - run: ./scripts/install-ci-linux.sh
+      - run: ./scripts/prepare-ci.sh
+      - run: ./scripts/run-ci.sh
+
+  source-checks:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || inputs.validate_current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [lint, fuzzer]
+    env:
+      CPPLINT: ${{ matrix.mode == 'lint' && '1' || '' }}
+      CHECK_LICENSES: ${{ matrix.mode == 'lint' && '1' || '' }}
+      FUZZER: ${{ matrix.mode == 'fuzzer' && '1' || '' }}
+      WITH_AOM: 1
+      WITH_GRAPHICS: 1
+      WITH_LIBDE265: 1
+      WITH_X265: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.iso_before }}
+          persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        with:
+          artifact: iso-sync-source
+          sha: ${{ needs.prepare.outputs.iso_after }}
+      - run: ./scripts/install-ci-linux.sh
+      - run: ./scripts/prepare-ci.sh
+      - run: ./scripts/run-ci.sh
+
+  publish:
+    needs: [prepare, gain-map, core-tests, source-checks]
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Only this job receives write credentials; it does not execute candidate code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: iso-sync-source
+          path: ${{ runner.temp }}/iso-sync
+      - name: Fast-forward both branches only if their heads have not changed
+        run: python3 scripts/sync-iso-upstream.py publish --output "$RUNNER_TEMP/iso-sync"
