@@ -366,6 +366,12 @@ Error ImageItem_uncompressed::add_image_tile(uint32_t tile_x, uint32_t tile_y, c
     // TODO: drop alpha
   }
 
+  // Tiles are passed to the 'unci' encoder directly, without going through
+  // Encoder::convert_colorspace_for_encoding(), so the sample range is checked here.
+  if (Error err = image->check_sample_value_ranges()) {
+    return err;
+  }
+
   Result<std::vector<uint8_t>> codedBitstreamResult = m_unc_encoder->encode_tile(image);
   if (!codedBitstreamResult) {
     return codedBitstreamResult.error();
@@ -473,7 +479,7 @@ heif_image_tiling ImageItem_uncompressed::get_heif_image_tiling() const
 
 Result<std::shared_ptr<Decoder>> ImageItem_uncompressed::get_decoder() const
 {
-  return {m_decoder};
+  return decoder_or_error(m_decoder);
 }
 
 std::shared_ptr<Encoder> ImageItem_uncompressed::get_encoder() const
@@ -530,6 +536,11 @@ void ImageItem_uncompressed::set_decoder_input_data()
 
 bool ImageItem_uncompressed::has_coded_alpha_channel() const
 {
+  // An item that was added by encoding has no decoder (see decoder_or_error()).
+  if (!m_decoder) {
+    return false;
+  }
+
   return m_decoder->has_alpha_component();
 }
 

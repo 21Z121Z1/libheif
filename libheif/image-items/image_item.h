@@ -409,6 +409,10 @@ public:
                                          bool decode_tile_only,
                                          uint32_t tile_x0, uint32_t tile_y0) const;
 
+  // Checks that the decoded image has the bit depths that the image handle reports
+  // (get_luma_bits_per_pixel() and get_chroma_bits_per_pixel()).
+  Error check_decoded_image_bit_depth(const HeifPixelImage& img) const;
+
   Result<std::vector<std::shared_ptr<Box>>> get_properties() const;
 
   bool has_essential_property_other_than(const std::set<uint32_t>&) const;
@@ -473,6 +477,12 @@ public:
   Error process_image_transformations_on_tiling(heif_image_tiling&) const;
 
   Error transform_requested_tile_position_to_original_tile_position(uint32_t& tile_x, uint32_t& tile_y) const;
+
+  // The decoder of an image item is created when the item is read from a file
+  // (initialize_decoder()). An item that was added by encoding an image has none.
+  // This turns a missing decoder into an error, so that the functions that need the
+  // decoder fail instead of dereferencing a null pointer.
+  static Result<std::shared_ptr<class Decoder>> decoder_or_error(std::shared_ptr<class Decoder> decoder);
 
   virtual Result<std::shared_ptr<class Decoder>> get_decoder() const
   {
