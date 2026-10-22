@@ -8,6 +8,8 @@ for the stated requirement and tested configuration, not a complete-conformance
 claim. `OPEN` means required work or evidence is missing. `LIMIT` describes a
 reviewed recommendation or supported-condition boundary; it does not assert full
 coverage of that feature. `N/A` includes its reason.
+`LIVE` points to the exact current head's PR checks rather than caching a
+success from an older revision.
 
 | Source | Edition and applicable clauses |
 | --- | --- |
@@ -16,10 +18,12 @@ coverage of that feature. `N/A` includes its reason.
 | ISO/IEC 23008-12/Amd.1 | 2025, 6.6.2.4 and 10.2.6; Figure J.5 is an example |
 | H.273 / ICC | H.273:2024 and ICC.1:2022 where referenced by the colour descriptions |
 
-The implementation's canonical alternate is RGB, as specified by Annex B.2.
-Gray/CMYK baselines can be colour-managed into the alternate's declared RGB
-application primaries; gray/CMYK alternate profiles cannot describe those RGB
-samples. DeviceLink profiles are not embeddable image profiles under ICC.1:2022
+The gain operation uses Annex B.2's selected linear RGB application primaries.
+Gray/CMYK baselines can be colour-managed into an alternate RGB space; a gray
+alternate uses baseline RGB application primaries and retains a monochrome
+ICC-described raster internally. Requested RGB output is colour-managed after
+reconstruction. Unresolved RGB application primaries and CMYK alternates remain
+unsupported. DeviceLink profiles are not embeddable image profiles under ICC.1:2022
 8.6. HLG viewing conditions and the choice of a perceptual gamut-mapping
 algorithm are display policies; R14/R16 retain their recommendation/rendering
 limits without treating them as unknown Annex C or HEIF fields. This matrix
@@ -110,6 +114,26 @@ consumer/producer. G14 records the additional independent implementation review.
 
 ## HEIF 2025 / Amd.1 storage and derived-image semantics
 
+R24 / ICC.1:2022 8.10.2 directional transform precedence: each relative-colourimetric
+direction now selects D/B1, then A/B1, then A/B0, then its declared matrix/TRC.
+The CMM creates both available directions; unrelated-intent tags do not replace
+the current shaper or require a CMM. Three RGB/gray cases failed four assertions
+before correction and pass 199 afterwards, including independent direct CMM
+transforms and known gamma/identity values. Genuinely unavailable directions
+still fail. The CMYK input fixture now includes its required A2B0, description,
+copyright and white-point tags. Status: PASS locally; current-head CI is G04.
+
+R23 / Gray alternate follow-up: a baseline with selected RGB primaries now
+converts through PCS into the gray alternate's XYZ/Lab shaper or available
+output LUT. Twenty-four native variants failed before correction. Mono
+integer/floating HDR, opacity, 36 serialized XYZ/Lab/PIXI/headroom/request
+variants, independent CMM values, nested full application and unknown-version
+fallback pass locally. The actual mono raster retains its ICC; requested RGB
+uses explicit colour management and drops the non-RGB ICC. Gray handle depth
+is unknown (-1), since PIXI is approximate and public output has its own
+datatype/depth. Coded-child depth checks remain unchanged. Status: PASS locally;
+final-head Actions pending. Gray cannot supply undefined RGB application primaries.
+
 | ID / requirement | Implementation | Unit test | Container test | Independent implementation | Status |
 | --- | --- | --- | --- | --- | --- |
 | H01 / 6.6.2.4.1 one ordered dimg entry with exactly {base,gain} | `ImageItem_tmap::get_input_item_ids` | — | R: ordered inputs; multiple dimg entries rejected; W: reopen graph ordering | I: Apple and Google files (E1/E2) | PASS |
@@ -119,7 +143,7 @@ consumer/producer. G14 records the additional independent implementation review.
 | H05 / 6.6.2.4.1 nested tmap fully applies gain and retains alternate encoding | Internal float reconstruction; root target/output conversion only | N: relative HDR before reverse gain | R: nested relative HDR; root requested output leaves nested operations canonical | — | PASS |
 | H06 / 6.6.2.4.1 independent raster/metadata channel counts | Broadcast raster or metadata independently | N: mono/RGB mismatch case | W: mono/RGB synthetic files | Q: all metadata/raster count combinations (E1) | PASS |
 | H07 / 6.6.2.4.1 recommended clli on base/alternate | Optional CLLI property; writer preserves base | — | W: graph metadata colour and brand round trip | I: actual Apple clli dump | PASS: optional recommendation |
-| H08 / 6.6.2.4.1 recommended pixi; 6.5.6 reconstructed components/depth | Optional caller-supplied hint describes the current RGB alternate; preflight permits 0 or 3 components, independently of input/storage precision | — | W: mono gain, RGB8 base, RGB16 decode and optional 12/12/12 PIXI; 1/2/4 rejected before any item mutation, three failing cases before fix, 91 assertions pass | E12: libavif/CrabbyAvif retain original alternate plane/depth hints; their mono-alternate model is not a universal three-component rule | PASS locally at E11; current canonical reconstruction does not support a gray alternate. Keep approximate bit depth and omitted PIXI valid; no ABI layout change |
+| H08 / 6.6.2.4.1 recommended pixi; 6.5.6 reconstructed components/depth | Optional caller-supplied hint matches the declared alternate: 3 RGB components or 1 gray ICC component; zero omits it, independently of input/storage precision | C: gray ICC hint 0/1 with actual 16-bit mono and float32 RGB output | W: RGB hint 0/3 with optional 12/12/12; wrong counts reject before item mutation. C: gray hint 3 rejects, hint 1 round-trips | E12: independent mono-alternate hints are not a universal three-component rule; R23 supplies gray ICC/CMM evidence | PASS locally; approximate bit depth and omitted PIXI remain valid; no ABI layout change; final-head Actions pending |
 | H09 / 6.6.2.4.1 recommended hidden gain, preserve valid primary | Gain writer defaults hidden; public visibility rules | E: hidden-primary rejection/promotion | W: hidden mono without selecting primary; preflight visibility errors | I: Apple hidden gain graph (E2) | PASS |
 | H10 / 6.6.2.4.2-.3 outer ToneMapImage version 0; unknown version not processed | Outer parser status distinct from Annex C version | M: unknown outer version not processed | R: outer/inner version distinction and unaffected base access | — | PASS |
 | H11 / 10.2.6.1 tmap item implies tmap compatible brand | Context serialization inspects all item types and adds the brand, including generic, hidden and non-primary tmap items | — | W: Generic tone-map items receive their required compatible brand (both visibility cases failed before the fix; 74 assertions pass); existing typed graph round trip | I: Apple/Google ftyp (E1/E2) | PASS locally: both generic and typed writer paths; rewriting a parsed context remains unsupported |
@@ -136,7 +160,7 @@ consumer/producer. G14 records the additional independent implementation review.
 | G01 / truncated payloads, rational overflow, finite arithmetic | Bounded reads, exact rational checks, allocation limits, finite output checks | M: every truncated prefix; INT32_MIN; N: NaN/Inf/exponent overflow | E1 ASan/UBSan matrix | Q byte/pixel oracle | PASS for exercised payload and arithmetic; G02 covers graph audit |
 | G02 / final malformed graph / memory-limit audit | Reviewed checklist below; upstream compressed-tile budget fix 585607ac is a prerequisite absent from v1.24.x | All four upstream tile regressions fail before its exact backport; 68 assertions pass afterwards. E11 adds 43 assertions proving partial-allocation failure releases raster charges for flat/nested reconstruction; E13 repeats native and sanitizer guards | E10 retains and passes the original compressed-tile sanitizer gate; fresh head checks tracked in G04 | Structural and raster-budget checklist reviewed again against actual ownership/failure paths; external CMM/codec allocation accounting is not universal | PASS locally for the stated guards; preserve all existing security checks |
 | G03 / exp ON/OFF x LCMS ON/OFF, Linux ASan/UBSan | Four blocking jobs; main LSan enabled with x265 OFF; separate x265 ASan/UBSan step has LSan OFF | Mac LSan unavailable; E5/E8 focused ASan/UBSan passed | All four E10 sanitizer configurations and separate x265 checks passed | CMM ON independent LCMS and OFF explicit unsupported results | PASS on e28e36ee; local follow-up needs final exact-SHA gates |
-| G04 / compiler / fuzzer / lint / C headers / exported symbols | Existing repository jobs and thresholds; no checker/license-ignore changes | E9 formal native/static/API evidence; initial baseline failures fixed by standard includes and the exact upstream security prerequisite | E10 complete job/step/log review: 12 workflows/47 jobs passed; gain_map_fuzzer ran, stock CIFuzz records a pre-existing x265 UB | No reportable new fuzz crash; this is not an absence-of-all-crashes claim | OPEN: E10 is historical; E14 synchronized integration passes locally and needs exact final-head Actions |
+| G04 / compiler / fuzzer / lint / C headers / exported symbols | Existing jobs and thresholds; no checker/license-ignore changes | Final local results and source receipts below; historical E9/E10 retain their original revisions | [Current-head PR check rollup](https://github.com/21Z121Z1/libheif/pull/1/checks); inspect each latest job for its actual source | Raw Google and direct CMM plus generated Apple/Google gates; dedicated CIFuzz source receipts under G16 | LIVE: local gates pass; the exact head's remote conclusion is the linked check rollup, not an older green commit |
 | G05 / Apple producer -> libheif consumer, Intel and ARM | Public Core Image generic linear RGB producer, explicit ICC; strict unresolved-colour negative regression | E2 ARM passed; E5 replays the E4 Intel file | E10 producer passed; E4 max linear error 0.00158095 < 0.025 | Generated colour dump confirms declared ICC application primaries. Original E1 file remains unresolved; R15 records the separate Rec.709 discrepancy | PASS on e28e36ee; local public producer/consumer replay also passed |
 | G06 / libheif producer -> Apple consumer | DecodeToHDR, ISO aux discovery, ImageIO and Core Image pixels | E2 mono/RGB passed, unchanged 0.025 pixel limit | E10 mono/RGB ImageIO and Core Image passed | Independently calculated baseline/gain expectations | PASS on e28e36ee |
 | G07 / pinned Google HEIC/AVIF bidirectional, bytes and float pixels | Pin 66821e0a261aa3a06c0e7c889f52eced52850be1 and its bundled HEIF workaround | E14 retains four non-conforming originals as negative cases and creates four explicit NCLX-only projections; two libheif outputs remain positive | E14: raw oracle and six valid container exchanges pass; original/projection stock HDR bytes are identical | Historical PR #1503 ABI is not imported; projections are not pristine producer originals | PASS locally for stated strict-colour boundary; fresh CI pending |
@@ -148,7 +172,7 @@ consumer/producer. G14 records the additional independent implementation review.
 | G13 / completion wording | Retain explicit supported conditions and colour/display limits; no complete-standard-conformance claim | This matrix, tmap-support and sample-validation boundaries reviewed together | A green job does not replace clause-level evidence; exact new head remains under G04/G10 | Separate compatibility, source review, byte oracle and pixel oracle evidence | PASS for the stated scope and wording |
 | G14 / independent open-source semantic review | Pinned libavif, CrabbyAvif, Skia, libultrahdr and libjxl source comparisons in the independent review | E12 actual byte-level differential plus independent AVIF decode/math; useful PIXI/geometry boundaries get regressions, not copied implementation restrictions | Google container reuse is explicitly classified as compatibility only | Two independent parser/writers plus independent libavif container/math; Skia/JXL source-only API/ownership review | PASS for the stated cross-checks; no producer-specific fallback or new public coupling |
 | G15 / final semantic second pass and simplification | Read official current deepseek-harness dsh-find-simplifications instructions; repeat source/English-standard review after archive evidence | Rechecked bounded metadata/rationals, ordered derivation/cycle guards, root/nested state, colour roles, alpha, transformed geometry, raster ownership and release paths; E13 | Fresh exact-SHA gates remain tracked by G04/G10 | [Current open-source source comparison](tmap-independent-review.md); retain independent raw Google math gate | PASS locally: H11 is the demonstrated remaining writer gap; no broader removal has a proven benefit |
-| G16 / dedicated CIFuzz builds this fork's exact head | Supply the explicit checkout through OSS-Fuzz InternalGeneric; compare an in-container source receipt and require gain_map_fuzzer | Workflow/action source review confirms InternalGithub silently falls back to upstream when fork refs fail | Prior 9c tmap-CIFuzz logs show checkout failure and upstream fallback; four replacement jobs retain existing sanitizers, architectures and fuzz duration | Pinned OSS-Fuzz infrastructure, exact-head receipt retained as artifact | OPEN: corrected workflow requires a fresh run; previous green tmap-CIFuzz is not evidence for this fork |
+| G16 / dedicated CIFuzz builds this fork's exact head | Supply the explicit checkout through InternalGeneric; compare an in-container source receipt, require gain_map_fuzzer and package four valid seeds | InternalGithub's silent upstream fallback is confirmed; exact-source checks are exercised in the replacement workflow | All four 42139b0f jobs verify that commit and run gain_map_fuzzer; later heads require their own receipts and seed-load logs | Pinned OSS-Fuzz infrastructure; compiled-source receipt retained as an artifact | LIVE: current-head receipts and fuzz logs are in G04's check rollup; older upstream-fallback greens are excluded |
 
 ## G02 graph and allocation audit
 
@@ -165,6 +189,28 @@ consumer/producer. G14 records the additional independent implementation review.
 | Compressed input buffers | Exact upstream 585607ac backport retains fetch-once and advertised/decompressed-size budget checks, including four failing-before regressions. |
 | External allocations | Codec/CMM internal allocations are not all charged to libheif's pixel-plane tracker. Existing library limits and sanitizer coverage remain; no universal process-memory ceiling is claimed. |
 
+The final local follow-up includes R18-R24: 109 native tests passed and six
+skipped out of 115; colour checks passed 28,511 assertions in 31 cases with
+runtime CMM ON and 24,821 in 26 cases with CMM OFF. Seven Mac ASan/UBSan
+executables passed, retaining the local leak-detection limitation. Seventeen
+changed C/C++ files pass cpplint; changed production TUs and changed ranges in
+the shared context/image-item files pass repository clang-tidy. The raw shared
+image-item run still records one unchanged upstream alpha-copy warning.
+Public C headers compile 112 times and all 469 stable API symbols are defined.
+Generated Apple/Google consumer replay passes 909,461 assertions; no private
+archive or Photos behaviour is part of this follow-up.
+
+Remote results are revision-specific: use the current head's
+[PR check rollup](https://github.com/21Z121Z1/libheif/pull/1/checks) for G03/G04,
+R18-R24 and the dedicated CIFuzz source receipts. Initial `42139b0f` CMM-OFF
+Linux jobs found an unused test variable; the follow-up moves that generator
+inside its enabled-runtime branch. All four dedicated CIFuzz jobs on `42139b0f`
+used InternalGeneric, verified that exact compiled commit and ran the new
+gain-map fuzzer successfully. Later sources still require their own run; the
+build now packages four valid mono/RGB Annex C/ToneMapImage seeds for the new
+target rather than depending on an unavailable public corpus.
+
 This checklist does not remove validation. The second source pass and both
-requested archives are recorded in E13. Final revision-specific remote evidence
-remains tracked under G04/G10 and must not be inferred from older green heads.
+historical archives remain recorded in E13. G10's separate v1.24.x review-branch
+publication remains historical work, outside this maintained-master follow-up.
+Older green heads do not establish the current head's remote result.

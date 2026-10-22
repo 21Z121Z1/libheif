@@ -85,9 +85,16 @@ Gray ICC baseline profiles use their `kTRC` and XYZ or Lab PCS according to
 ICC.1:2022 Annex F.2. The other item's RGB primaries must supply the application
 space. Gray shapers need no CMM; gray input LUTs use optional Little CMS and
 take precedence over the shaper. Unequal RGB samples cannot silently be decoded
-as gray. Gray profiles cannot define RGB application primaries or describe the
-canonical RGB alternate output. Unknown-version baseline fallback can still
-convert a gray baseline to explicitly requested RGB NCLX.
+as gray. Gray profiles cannot define RGB application primaries. A gray
+alternate is supported when the baseline supplies the selected RGB application
+primaries. Its XYZ/Lab shaper inverse or available output LUT encodes PCS colour
+into one gray component. Internal and requested monochrome output retain that
+actual encoding and its original ICC; nested derivations decode it through the
+same profile. Unknown-version fallback keeps the baseline.
+When RGB output is requested for a gray alternate or gray/CMYK fallback,
+the source is colour-managed into the requested RGB NCLX. Missing RGB
+primaries/transfer use linear BT.709; the changed samples do not retain a
+non-RGB ICC. This also keeps the float32 API's planar RGB contract.
 
 CMYK input/output ICC LUT profiles use Little CMS to convert all four device
 components through XYZ PCS into the alternate's declared RGB application
@@ -108,9 +115,15 @@ adaptation of the PCS adopted white, following
 LUT transforms still take precedence over shapers. A profile without either
 description can still convert
 through PCS when the other item supplies the selected application primaries;
-PCS is never used as guessed RGB primaries. Only the transform directions actually
-needed must be available. Missing LUT directions return unsupported instead of
-falling back to coexisting shaper tags. The CMM uses per-decode
+PCS is never used as guessed RGB primaries. ICC.1:2022 8.10.2 selects transforms
+independently for each direction and rendering intent. Relative colourimetry
+uses the applicable D/B1 or A/B1 transform, then A/B0, then the declared
+matrix/TRC model when no higher-priority transform applies. The CMM resolves
+both directions with this precedence; an input LUT does not erase a valid
+matrix/TRC output direction, or the reverse. Only the directions actually
+needed must be available; a genuinely unavailable direction remains unsupported.
+Unrelated intent LUTs do not replace the relative-colourimetric shaper model
+or introduce a CMM dependency. The CMM uses per-decode
 contexts and uncached transforms. Without this dependency, these profiles
 return unsupported; the matrix/TRC and CICP paths remain available.
 ColorSpace profiles are permitted in embedded images by
@@ -131,6 +144,7 @@ available on the image handle. A full-range RGB/XYZ alternate can also retain
 its ICC on the decoded raster. A YCbCr or narrow-range CICP alternate becomes
 full-range RGB NCLX after storage inversion, so its original ICC is retained
 only on the item; attaching it to those changed samples would mislabel them.
+A gray alternate instead retains its ICC on its actual monochrome raster.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
 then unnormalized to log2 gains before co-sited bilinear resampling with edge
@@ -138,7 +152,7 @@ extension. Mono pixels and mono metadata are independently replicated. The
 headroom direction determines the sign of the full-application weight. Offsets
 are applied in linear application primaries. Derived-node samples retain float32
 precision in the alternate encoding through nested reconstruction and requested
-root colour conversion. Ordinary decode quantizes to planar 16-bit RGB at the
+root colour conversion. Ordinary decode quantizes to planar 16-bit RGB or gray at the
 public output boundary. This decoded pixel depth is independent of the writer's caller-supplied
 `pixi` hint. All raster allocations use existing pixel-image security accounting;
 no upscaled full-resolution floating-point gain raster is allocated.
@@ -219,8 +233,10 @@ integer output still clips at the final representable boundary.
 Its alpha plane reports its own datatype and depth; an unknown minimum
 version returns the baseline converted to floating RGB. For unknown-minimum-version
 fallback, handle bit-depth queries return -1 because the baseline can have a
-different native depth. Query the decoded image for its actual component depth;
-the baseline codec still undergoes the upstream signaled-depth validation.
+different native depth. Gray derived items also report -1: their internal
+floating Y and public integer Y have different depths, and PIXI is only a
+precision hint. Query the decoded image for its actual component depth and
+datatype; the baseline and gain codecs retain upstream signaled-depth validation.
 Its explicit phase argument selects co-sited or centered gain-map bilinear
 sampling for all derived nodes. Ordinary integer decode keeps the ISO 6.2.2
 preferred co-sited phase. Centered is a consumer choice, matching the local
@@ -267,7 +283,7 @@ orientations on an asymmetric HEVC baseline padded from 16x24 to 64x64.
 The base and gain must have matching effective orientation: irot and imir are
 composed in their association order, so equivalent property sequences are
 accepted and different display transforms fail before mutation.
-Optional PIXI describes this writer's three reconstructed RGB colour components;
+Optional PIXI describes three RGB components, or one for a gray ICC alternate;
 zero components omits it. Its bit depths are approximate precision hints,
 independent of mono/RGB gain channels, encoded input depth or decoded storage.
 
@@ -312,10 +328,11 @@ contract and are rejected at plane construction for other component depths.
 - HLG uses the reference viewing conditions described above. Non-reference
   display rendering is a consumer policy, with no parameter in Annex C or the
   HEIF `tmap` metadata. This is a display-rendering limit, not an unparsed file field.
-- Annex B.2 converts to the RGB encoding of the alternate. Gray or CMYK
-  profiles cannot label that RGB output; a baseline in either space needs
-  the alternate's RGB application primaries. This requirement is distinct from
-  supporting gray/CMYK baselines through colour management.
+- The selected application space must supply RGB primaries. Gray/CMYK
+  baselines can use the alternate's RGB primaries; a gray alternate can use
+  the baseline's RGB primaries. A gray profile labels its actual mono raster,
+  with colour management when RGB is requested. CMYK alternates and other
+  unresolved non-RGB application spaces remain unsupported.
 - B.2 recommends gamut mapping for a smaller alternate gamut, without
   specifying a mapping algorithm. Canonical float output preserves the ISO
   arithmetic, including out-of-gamut components. Integer output clips at its
@@ -390,6 +407,10 @@ ICC CICP regressions cover XYZ/ST 428, YCbCr and narrow RGB, absent storage NCLX
 and canonical output tagging. Unknown minimum versions stop after the two-byte
 minimum field, before interpreting any unknown writer field; a pinned Google
 parser and public baseline fallback exercise that order.
+Gray alternate regressions cover XYZ/Lab shapers, available output LUTs,
+integer/floating HDR and opacity, exact ICC/mono PIXI file round trips,
+independent CMM output values, nested derivations and unknown-version fallback.
+Both fully specified and unspecified requested RGB fields are checked.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
