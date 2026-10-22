@@ -91,6 +91,20 @@ TEST_CASE("Final Annex C bytes interoperate with upstream libultrahdr")
   }
 }
 
+TEST_CASE("Unknown minimum version stops before the writer field in the independent Google parser")
+{
+  const size_t tail_size = GENERATE(size_t{0}, size_t{1}, size_t{2}, size_t{3});
+  std::vector<uint8_t> data{0, 1};
+  data.resize(2 + tail_size, 0);
+  ultrahdr::uhdr_gainmap_metadata_frac google;
+  const auto independent = ultrahdr::uhdr_gainmap_metadata_frac::decodeGainmapMetadata(data, &google);
+  REQUIRE(independent.error_code == UHDR_CODEC_UNSUPPORTED_FEATURE);
+  const auto parsed = parse_gain_map_metadata(data);
+  CHECK(parsed.status == GainMapMetadataParseStatus::unsupported_minimum_version);
+  CHECK(parsed.bytes_consumed == 2);
+  CHECK_FALSE(parsed.metadata);
+}
+
 TEST_CASE("ISO reconstructed HDR pixels agree with upstream libultrahdr")
 {
   const bool mono = GENERATE(false, true);

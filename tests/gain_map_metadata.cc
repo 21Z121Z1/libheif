@@ -193,12 +193,12 @@ TEST_CASE("gain map metadata unknown minimum version is not parsed")
   REQUIRE(!parsed.metadata.has_value());
   REQUIRE(!parsed.error);
   REQUIRE(parsed.version.minimum_version == 1);
-  REQUIRE(parsed.version.writer_version == 1);
-  REQUIRE(parsed.bytes_consumed == 4);
+  REQUIRE(parsed.version.writer_version == 0); // The unknown layout is not interpreted.
+  REQUIRE(parsed.bytes_consumed == 2);
 }
 
 
-TEST_CASE("gain map writer version below minimum is malformed")
+TEST_CASE("Unknown minimum version takes precedence over writer version validation")
 {
   const std::vector<uint8_t> data = {
       0x00, 0x01, 0x00, 0x00
@@ -207,8 +207,23 @@ TEST_CASE("gain map writer version below minimum is malformed")
   GainMapMetadataParseResult parsed =
       parse_gain_map_metadata(data);
 
-  REQUIRE(parsed.status == GainMapMetadataParseStatus::malformed);
-  REQUIRE(parsed.error.error_code == heif_error_Invalid_input);
+  REQUIRE(parsed.status == GainMapMetadataParseStatus::unsupported_minimum_version);
+  REQUIRE(!parsed.error);
+  REQUIRE(parsed.bytes_consumed == 2);
+}
+
+TEST_CASE("Unknown minimum version does not require a recognizable writer field")
+{
+  const uint16_t minimum = GENERATE(uint16_t{1}, uint16_t{2}, uint16_t{65535});
+  const size_t tail_size = GENERATE(size_t{0}, size_t{1}, size_t{2}, size_t{3}, size_t{4});
+  std::vector<uint8_t> data{static_cast<uint8_t>(minimum >> 8), static_cast<uint8_t>(minimum)};
+  data.resize(2 + tail_size, 0);
+  const auto parsed = parse_gain_map_metadata(data);
+  CHECK(parsed.status == GainMapMetadataParseStatus::unsupported_minimum_version);
+  CHECK(parsed.version.minimum_version == minimum);
+  CHECK(parsed.bytes_consumed == 2);
+  CHECK_FALSE(parsed.metadata);
+  CHECK_FALSE(parsed.error);
 }
 
 
@@ -363,6 +378,10 @@ TEST_CASE("gain map metadata serializer rejects invalid metadata")
           heif_error_Unsupported_feature);
   REQUIRE(unsupported.error().sub_error_code ==
           heif_suberror_Unsupported_data_version);
+  metadata.version.writer_version = 0;
+  auto invalid_writer = serialize_gain_map_metadata(metadata);
+  REQUIRE_FALSE(invalid_writer);
+  REQUIRE(invalid_writer.error().error_code == heif_error_Invalid_input);
 }
 
 
@@ -417,7 +436,7 @@ TEST_CASE("ToneMapImage propagates unknown minimum version")
   REQUIRE(parsed.status ==
           ToneMapImageParseStatus::unsupported_minimum_version);
   REQUIRE(!parsed.tone_map_image.has_value());
-  REQUIRE(parsed.bytes_consumed == 5);
+  REQUIRE(parsed.bytes_consumed == 3);
 }
 
 

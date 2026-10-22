@@ -320,27 +320,26 @@ GainMapMetadataParseResult parse_gain_map_metadata(
   GainMapByteReader reader(data);
   GainMapVersion version;
 
-  if (!reader.read_u16(&version.minimum_version) ||
-      !reader.read_u16(&version.writer_version)) {
+  if (!reader.read_u16(&version.minimum_version)) {
     return malformed_result(
         version, reader.position(), truncated_metadata_error());
   }
 
-  if (version.writer_version < version.minimum_version) {
-    return malformed_result(
-        version,
-        reader.position(),
-        invalid_metadata_error(
-            "Gain map writer_version is smaller than minimum_version"));
-  }
-
   if (version.minimum_version != 0) {
+    // C.2.3 requires baseline fallback as soon as the minimum version is
+    // unrecognized. The remaining layout, including writer_version, is not
+    // interpreted or required to match the version-0 structure.
     GainMapMetadataParseResult result;
     result.status =
         GainMapMetadataParseStatus::unsupported_minimum_version;
     result.version = version;
     result.bytes_consumed = reader.position();
     return result;
+  }
+
+  if (!reader.read_u16(&version.writer_version)) {
+    return malformed_result(
+        version, reader.position(), truncated_metadata_error());
   }
 
   GainMapMetadata metadata;
