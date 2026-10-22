@@ -27,7 +27,10 @@
 #include "catch_amalgamated.hpp"
 #include "gain_map_color.h"
 #include "gain_map_reconstruction.h"
+#include "libheif/heif_components.h"
+#include "libheif/heif_experimental.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -259,6 +262,38 @@ TEST_CASE("Gray ICC shapers convert through PCS into the alternate RGB applicati
   REQUIRE_FALSE(GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bad)));
 }
 
+TEST_CASE("Public NCLX APIs preserve the defined H.273 matrix code points")
+{
+  const uint16_t matrix = GENERATE(uint16_t{15}, uint16_t{16}, uint16_t{17});
+  auto* profile = heif_nclx_color_profile_alloc();
+  REQUIRE(profile);
+  const auto set = heif_nclx_color_profile_set_matrix_coefficients(profile, matrix);
+  CHECK(set.code == heif_error_Ok);
+  CHECK(static_cast<uint16_t>(profile->matrix_coefficients) == matrix);
+  heif_nclx_color_profile_free(profile);
+  nclx_profile stored;
+  stored.set_colour_primaries(9);
+  stored.set_transfer_characteristics(16);
+  stored.set_matrix_coefficients(matrix);
+  profile = nullptr;
+  const auto get = stored.get_nclx_color_profile(&profile);
+  CHECK_FALSE(get);
+  if (profile) { CHECK(static_cast<uint16_t>(profile->matrix_coefficients) == matrix); }
+  heif_nclx_color_profile_free(profile);
+}
+
+TEST_CASE("Public NCLX matrix setters keep reserved code points unsupported")
+{
+  const uint16_t matrix = GENERATE(uint16_t{3}, uint16_t{18}, uint16_t{255}, uint16_t{65535});
+  auto* profile = heif_nclx_color_profile_alloc();
+  REQUIRE(profile);
+  const auto error = heif_nclx_color_profile_set_matrix_coefficients(profile, matrix);
+  CHECK(error.code == heif_error_Invalid_input);
+  CHECK(error.subcode == heif_suberror_Unknown_NCLX_matrix_coefficients);
+  CHECK(profile->matrix_coefficients == heif_matrix_coefficients_unspecified);
+  heif_nclx_color_profile_free(profile);
+}
+
 TEST_CASE("ICC CICP tag maps Display-P3 PQ directly")
 {
   const auto bytes = make_icc({
@@ -271,6 +306,160 @@ TEST_CASE("ICC CICP tag maps Display-P3 PQ directly")
   REQUIRE(result->m_transfer_characteristics == 16);
   REQUIRE(result->m_matrix_coefficients == 0);
   REQUIRE(result->m_full_range_flag);
+}
+
+TEST_CASE("ICC CICP rejects profile classes forbidden by ICC 9.2.17")
+{
+  const auto profile_class = GENERATE("prtr", "spac", "link", "abst", "nmcl");
+  INFO(profile_class);
+  auto bytes = make_icc({{signature("cicp"), cicp_tag(12, 16, 0, 1)}});
+  set_u32(bytes, 12, signature(profile_class));
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto nclx = gain_map_nclx_from_icc(*profile);
+  CHECK_FALSE(nclx);
+  if (!nclx) { CHECK(nclx.error().error_code == heif_error_Invalid_input); }
+  auto colour = GainMapColour::from_icc(profile);
+  CHECK_FALSE(colour);
+  if (!colour) { CHECK(colour.error().error_code == heif_error_Invalid_input); }
+}
+
+TEST_CASE("ICC CICP XYZ encoding retains the declared ST 428 colour transform")
+{
+  const auto profile_class = GENERATE("mntr", "scnr");
+  auto bytes = make_icc({{signature("cicp"), cicp_tag(10, 17, 0, 1)}});
+  set_u32(bytes, 12, signature(profile_class));
+  set_u32(bytes, 16, signature("XYZ "));
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto nclx = gain_map_nclx_from_icc(*profile);
+  REQUIRE(nclx);
+  CHECK(nclx->m_colour_primaries == 10);
+  CHECK(nclx->m_transfer_characteristics == 17);
+  CHECK(nclx->m_matrix_coefficients == 0);
+  auto colour = GainMapColour::from_icc(profile);
+  REQUIRE(colour);
+  CHECK(colour->has_application_primaries());
+  CHECK(colour->icc_profile() == profile);
+  const GainMapRGB signal{0.2, 0.4, 0.6};
+  auto linear = colour->decode(signal);
+  REQUIRE(linear);
+  for (size_t c = 0; c < 3; ++c) {
+    // H.273 Table 3: ST 428 decodes to absolute XYZ luminance, then
+    // ISO reference white is normalized to 203 cd/m2.
+    CHECK((*linear)[c] == Catch::Approx(std::pow(signal[c], 2.6) * 52.37 / 203).margin(1e-12));
+  }
+  auto encoded = colour->encode(*linear);
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; ++c) {
+    CHECK((*encoded)[c] == Catch::Approx(signal[c]).margin(1e-12));
+  }
+}
+
+TEST_CASE("ICC CICP validates the profile data space and its matrix")
+{
+  const auto data_space = GENERATE("RGB ", "XYZ ", "YCbr", "GRAY", "CMYK", "Lab ");
+  const bool rgb_or_xyz = signature(data_space) == signature("RGB ") ||
+                          signature(data_space) == signature("XYZ ");
+  auto bytes = make_icc({{signature("cicp"), cicp_tag(1, 13, rgb_or_xyz ? 1 : 0, 1)}});
+  set_u32(bytes, 16, signature(data_space));
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto colour = GainMapColour::from_icc(profile);
+  REQUIRE_FALSE(colour);
+  CHECK(colour.error().error_code == heif_error_Invalid_input);
+}
+
+TEST_CASE("YCbCr ICC CICP reconstructs through declared RGB colourimetry")
+{
+  const int matrix = GENERATE(0, 9, 10, 12, 13, 14, 15);
+  const int bits = GENERATE(8, 10, 12, 16);
+  const bool missing_storage = GENERATE(false, true);
+  const bool use_base = GENERATE(false, true);
+  const bool icc_alternate = GENERATE(false, true);
+  const double headroom = GENERATE(0.0, 1.0, 2.0);
+  auto bytes = make_icc({{signature("cicp"), cicp_tag(9, 16, static_cast<uint8_t>(matrix), 0)}});
+  if (matrix != 0) { set_u32(bytes, 16, signature("YCbr")); }
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto baseline = GainMapColour::from_icc(profile);
+  REQUIRE(baseline);
+  CHECK(baseline->icc_profile() == profile);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(2, 2, matrix == 0 ? heif_colorspace_RGB : heif_colorspace_YCbCr, heif_chroma_444);
+  const auto channels = matrix == 0 ? std::array{heif_channel_R, heif_channel_G, heif_channel_B} :
+                                     std::array{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const auto codewords = matrix == 0 || matrix == 9 ? std::array<uint8_t, 3>{128, 96, 160} :
+                                                    std::array<uint8_t, 3>{128, 128, 128};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 2, 2, bits, nullptr));
+    size_t stride = 0;
+    auto* plane = base->get_channel_memory(channels[c], &stride);
+    for (size_t y = 0; y < 2; ++y) {
+      if (bits == 8) { std::fill_n(plane + y * stride, 2, codewords[c]); }
+      else {
+        std::fill_n(reinterpret_cast<uint16_t*>(plane + y * stride), 2,
+                    static_cast<uint16_t>(codewords[c] << (bits - 8)));
+      }
+    }
+  }
+  nclx_profile storage = nclx_profile::undefined();
+  storage.set_matrix_coefficients(static_cast<uint16_t>(matrix));
+  storage.set_full_range_flag(false);
+  if (!missing_storage) { base->set_color_profile_nclx(storage); }
+  base->set_color_profile_icc(profile);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  size_t stride = 0;
+  gain->get_channel_memory(heif_channel_Y, &stride)[0] = 128;
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  metadata.use_base_colour_space = use_base;
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c + 1), 1};
+    metadata.channels[c].gamma = {3, 2};
+    metadata.channels[c].base_offset = {1, 64};
+    metadata.channels[c].alternate_offset = {1, 128};
+  }
+  nclx_profile linear;
+  linear.set_colour_primaries(9);
+  linear.set_transfer_characteristics(8);
+  linear.set_matrix_coefficients(0);
+  linear.set_full_range_flag(true);
+  const GainMapColour alternate = icc_alternate ? *baseline : GainMapColour(linear);
+  const auto options = std::unique_ptr<heif_decoding_options, decltype(&heif_decoding_options_free)>(
+      heif_decoding_options_alloc(), heif_decoding_options_free);
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options,
+                                     nullptr, *baseline, headroom, true);
+  REQUIRE(result);
+  const double y = (128.0 - 16) / 219;
+  const double cb = (double(codewords[1]) - 128) / 224;
+  const double cr = (double(codewords[2]) - 128) / 224;
+  const double red = y + 2 * (1 - 0.2627) * cr;
+  const double blue = y + 2 * (1 - 0.0593) * cb;
+  const GainMapRGB rgb = matrix == 0 ? GainMapRGB{y, (96.0 - 16) / 219, (160.0 - 16) / 219} :
+      GainMapRGB{red, (y - 0.2627 * red - 0.0593 * blue) / (1 - 0.2627 - 0.0593), blue};
+  for (size_t c = 0; c < 3; ++c) {
+    const double p = std::pow(rgb[c], 32.0 / 2523);
+    const double decoded = std::pow(std::max(p - 3424.0 / 4096, 0.0) /
+        (2413.0 / 128 - 2392.0 / 128 * p), 16384.0 / 2610) * 10000 / 203;
+    const double log_gain = static_cast<double>(c + 1) * std::pow(128.0 / 255, 2.0 / 3);
+    double expected = (decoded + 1.0 / 64) * std::exp2(headroom / 2 * log_gain) - 1.0 / 128;
+    if (icc_alternate) {
+      const double q = std::pow(expected * 203 / 10000, 2610.0 / 16384);
+      expected = std::pow((3424.0 / 4096 + 2413.0 / 128 * q) /
+          (1 + 2392.0 / 128 * q), 2523.0 / 32);
+    }
+    const auto* plane = (*result)->get_channel_memory<float>(static_cast<heif_channel>(heif_channel_R + c), &stride);
+    REQUIRE(plane);
+    CHECK(plane[0] == Catch::Approx(expected).margin(2e-6));
+  }
+  CHECK((*result)->get_color_profile_nclx().m_colour_primaries == 9);
+  CHECK((*result)->get_color_profile_nclx().m_transfer_characteristics == (icc_alternate ? 16 : 8));
+  CHECK((*result)->get_color_profile_nclx().m_matrix_coefficients == 0);
+  CHECK((*result)->get_color_profile_nclx().get_full_range_flag());
+  // The item's ICC bytes describe YCbCr narrow range, while reconstructed
+  // samples are normalized RGB. Its original profile stays on the item.
+  CHECK_FALSE((*result)->get_color_profile_icc());
 }
 
 TEST_CASE("Nominal diffuse white sets the HDR reference normalization")
@@ -582,6 +771,322 @@ TEST_CASE("ICC storage NCLX does not clip relative RGB before its actual transfe
 }
 
 #if LIBHEIF_TEST_LCMS
+namespace {
+std::shared_ptr<const color_profile_raw> cmyk_lut_profile(bool lab)
+{
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Pipeline = std::unique_ptr<cmsPipeline, decltype(&cmsPipelineFree)>;
+  Profile profile(cmsCreateProfilePlaceholder(nullptr), cmsCloseProfile);
+  REQUIRE(profile);
+  cmsSetProfileVersion(profile.get(), 4.3);
+  cmsSetDeviceClass(profile.get(), cmsSigOutputClass);
+  cmsSetColorSpace(profile.get(), cmsSigCmykData);
+  cmsSetPCS(profile.get(), lab ? cmsSigLabData : cmsSigXYZData);
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigMediaWhitePointTag, cmsD50_XYZ()));
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(identity);
+  cmsToneCurve* curves[4] = {identity.get(), identity.get(), identity.get(), identity.get()};
+  Pipeline pipeline(cmsPipelineAlloc(nullptr, 4, 3), cmsPipelineFree);
+  REQUIRE(pipeline);
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 4, curves)));
+  auto* clut = cmsStageAllocCLut16bit(nullptr, 3, 4, 3, nullptr);
+  REQUIRE(clut);
+  REQUIRE(cmsStageSampleCLut16bit(clut,
+      [](const cmsUInt16Number in[], cmsUInt16Number out[], void* context) -> int {
+        const double black = in[3] / 65535.0;
+        const double r = (1 - in[0] / 65535.0) * (1 - black);
+        const double g = (1 - in[1] / 65535.0) * (1 - black);
+        const double b = (1 - in[2] / 65535.0) * (1 - black);
+        // A deliberately asymmetric, D50-adapted RGB basis. The four-channel
+        // transform cannot be reproduced by dropping K or relabeling CMY as RGB.
+        cmsCIEXYZ xyz{0.4360747 * r + 0.3850649 * g + 0.1430804 * b,
+                      0.2225045 * r + 0.7168786 * g + 0.0606169 * b,
+                      0.0139322 * r + 0.0971045 * g + 0.7141733 * b};
+        if (*static_cast<bool*>(context)) {
+          cmsCIELab value{};
+          cmsXYZ2Lab(cmsD50_XYZ(), &value, &xyz);
+          cmsFloat2LabEncoded(out, &value);
+        }
+        else {
+          const double values[3] = {xyz.X, xyz.Y, xyz.Z};
+          for (size_t c = 0; c < 3; ++c) {
+            out[c] = static_cast<uint16_t>(std::round(values[c] * 32768));
+          }
+        }
+        return 1;
+      }, &lab, 0));
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, clut));
+  REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, curves)));
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB1Tag, pipeline.get()));
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  return std::make_shared<color_profile_raw>(signature("prof"), bytes);
+}
+}  // namespace
+
+TEST_CASE("CMYK ICC baselines reconstruct in the declared alternate RGB application space")
+{
+  const bool lab = GENERATE(false, true);
+  const bool premultiplied = GENERATE(false, true);
+  const int bits = GENERATE(8, 16, 32, 64);
+  const bool floating = GENERATE(false, true);
+  if (floating && bits < 32) { return; }
+  const auto profile = cmyk_lut_profile(lab);
+  auto colour = GainMapColour::from_icc(profile);
+#if LIBHEIF_HAVE_LCMS2
+  REQUIRE(colour);
+  REQUIRE_FALSE(colour->has_application_primaries());
+  REQUIRE_FALSE(colour->decode({0.1, 0.2, 0.3}));
+  REQUIRE_FALSE(colour->encode({0.1, 0.2, 0.3}));
+  REQUIRE_FALSE(colour->decode_cmyk({0.1, NAN, 0.3, 0.4}));
+  nclx_profile nclx;
+  nclx.set_colour_primaries(9);
+  nclx.set_transfer_characteristics(8);
+  nclx.set_matrix_coefficients(0);
+  nclx.set_full_range_flag(true);
+  const GainMapColour alternate(nclx);
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  Profile input(cmsOpenProfileFromMem(profile->get_data().data(),
+      static_cast<cmsUInt32Number>(profile->get_data().size())), cmsCloseProfile);
+  Profile xyz(cmsCreateXYZProfile(), cmsCloseProfile);
+  REQUIRE(input);
+  REQUIRE(xyz);
+  Transform reference(cmsCreateTransform(input.get(), TYPE_CMYK_DBL, xyz.get(), TYPE_XYZ_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE), cmsDeleteTransform);
+  REQUIRE(reference);
+  auto matrix = colour->matrix_to(alternate);
+  REQUIRE(matrix);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(3, 2, heif_colorspace_custom, heif_chroma_planar);
+  base->set_color_profile_icc(profile);
+  base->set_premultiplied_alpha(premultiplied);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 3, 2, 32, nullptr, heif_component_datatype_floating_point));
+  size_t alpha_stride = 0;
+  auto* alpha = base->get_channel_memory<float>(heif_channel_Alpha, &alpha_stride);
+  for (size_t y = 0; y < 2; ++y) { std::fill_n(alpha + y * alpha_stride / sizeof(float), 3, 0.5f); }
+  const std::array<uint16_t, 4> types{heif_cmpd_component_type_cyan, heif_cmpd_component_type_magenta,
+                                    heif_cmpd_component_type_yellow, heif_cmpd_component_type_key_black};
+  // Reorder the storage planes so component types, rather than position/ID,
+  // determine CMYK order. Each component has a different value.
+  const std::array<double, 4> samples{0, 0.5, 1, 0.5};
+  std::array<double, 4> actual{};
+  for (size_t c : {3u, 1u, 0u, 2u}) {
+    const auto datatype = floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer;
+    auto id = base->add_component(3, 2, types[c], datatype, bits, nullptr);
+    REQUIRE(id);
+    size_t stride = 0;
+    auto* plane = base->get_component(*id, &stride);
+    const double fraction = samples[c] * (premultiplied ? 0.5 : 1);
+    const double value = floating ? fraction : std::round(fraction * (std::ldexp(1.0, bits) - 1));
+    actual[c] = (floating ? value : value / (std::ldexp(1.0, bits) - 1)) * (premultiplied ? 2 : 1);
+    for (size_t y = 0; y < 2; ++y) {
+      auto* row = plane + y * stride;
+      for (size_t x = 0; x < 3; ++x) {
+        if (floating && bits == 32) { reinterpret_cast<float*>(row)[x] = static_cast<float>(value); }
+        else if (floating) { reinterpret_cast<double*>(row)[x] = value; }
+        else if (bits == 8) { row[x] = static_cast<uint8_t>(value); }
+        else if (bits == 16) { reinterpret_cast<uint16_t*>(row)[x] = static_cast<uint16_t>(value); }
+        else if (bits == 32) { reinterpret_cast<uint32_t*>(row)[x] = static_cast<uint32_t>(value); }
+        else { reinterpret_cast<uint64_t*>(row)[x] = fraction == 1 ? UINT64_MAX : static_cast<uint64_t>(value); }
+      }
+    }
+  }
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->get_channel_memory(heif_channel_Y, nullptr)[0] = 255;
+  gain->set_color_profile_nclx(nclx);
+  GainMapMetadata metadata;
+  metadata.use_base_colour_space = false;
+  metadata.channel_count = 3;
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 2};
+    metadata.channels[c].gain_map_max = metadata.channels[c].gain_map_min;
+  }
+  auto* options = heif_decoding_options_alloc();
+  auto result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, *colour,
+                                     std::nullopt, true);
+  REQUIRE(result);
+  REQUIRE((*result)->is_premultiplied_alpha() == premultiplied);
+  REQUIRE((*result)->get_channel_memory<float>(heif_channel_Alpha, nullptr)[0] == 0.5f);
+  for (auto& value : actual) { value *= 100; } // Little CMS floating CMYK is in percent.
+  GainMapRGB pcs{};
+  cmsDoTransform(reference.get(), actual.data(), pcs.data(), 1);
+  const auto rgb = gain_map_transform(*matrix, pcs);
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < 3; ++c) {
+    size_t stride = 0;
+    const auto* out = (*result)->get_channel_memory<float>(channels[c], &stride);
+    for (size_t y = 0; y < 2; ++y) {
+      for (size_t x = 0; x < 3; ++x) {
+        REQUIRE(out[y * stride / sizeof(float) + x] ==
+            Catch::Approx(rgb[c] * std::exp2(double(c) / 2) * (premultiplied ? 0.5 : 1)).margin(1e-5));
+      }
+    }
+  }
+  metadata.use_base_colour_space = true;
+  REQUIRE_FALSE(reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr, *colour));
+  metadata.use_base_colour_space = false;
+  // Each malformed layout must fail before sample access; none may silently
+  // drop K, guess the component order or read beyond a short plane.
+  for (int defect = 0; defect < 6; ++defect) {
+    auto invalid = std::make_shared<HeifPixelImage>();
+    invalid->create(3, 2, heif_colorspace_custom, heif_chroma_planar);
+    const size_t count = defect == 0 ? 3 : defect == 1 || defect == 5 ? 5 : 4;
+    for (size_t c = 0; c < count; ++c) {
+      const uint16_t type = c == 4 ? defect == 5 ? heif_cmpd_component_type_depth : types[0] : types[c];
+      const auto datatype = defect == 3 && c == 2 ? heif_component_datatype_signed_integer :
+                            defect == 4 && c == 1 ? heif_component_datatype_complex_number :
+                                                   heif_component_datatype_unsigned_integer;
+      REQUIRE(invalid->add_component(defect == 2 && c == 2 ? 2 : 3, 2, type, datatype, 32, nullptr));
+    }
+    REQUIRE_FALSE(reconstruct_tone_map(invalid, gain, metadata, alternate, *options, nullptr, *colour));
+  }
+  heif_decoding_options_free(options);
+#else
+  REQUIRE_FALSE(colour);
+  REQUIRE(colour.error().error_code == heif_error_Unsupported_feature);
+#endif
+}
+
+#if HEIF_ENABLE_EXPERIMENTAL_FEATURES
+TEST_CASE("Serialized CMYK ICC baselines match independent RGB colour management")
+{
+  const bool lab = GENERATE(false, true);
+  const int bits = GENERATE(8, 16);
+  const double target = GENERATE(0.0, 1.0, 2.0);
+  const auto profile = cmyk_lut_profile(lab);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  heif_encoder* encoder = nullptr;
+  const auto available = heif_context_get_encoder_for_format(ctx, heif_compression_uncompressed, &encoder);
+  if (available.code != heif_error_Ok) {
+    heif_context_free(ctx);
+    SKIP("Uncompressed encoder unavailable");
+  }
+  heif_image* pixels = nullptr;
+  REQUIRE(heif_image_create(2, 2, heif_colorspace_custom, heif_chroma_planar, &pixels).code == heif_error_Ok);
+  const std::array<double, 4> samples{0.1, 0.3, 0.5, 0.2};
+  const double max = std::ldexp(1.0, bits) - 1;
+  std::array<double, 4> actual{};
+  for (size_t c : {2u, 0u, 3u, 1u}) {
+    uint32_t id = 0;
+    REQUIRE(heif_image_add_component(pixels, 2, 2, static_cast<uint16_t>(heif_cmpd_component_type_cyan + c),
+        heif_component_datatype_unsigned_integer, bits, &id).code == heif_error_Ok);
+    size_t stride = 0;
+    auto* plane = heif_image_get_component(pixels, id, &stride);
+    const auto code = static_cast<uint16_t>(std::round(samples[c] * max));
+    actual[c] = code * 100 / max;
+    for (size_t y = 0; y < 2; ++y) {
+      if (bits == 8) { std::fill_n(plane + y * stride, 2, static_cast<uint8_t>(code)); }
+      else { std::fill_n(reinterpret_cast<uint16_t*>(plane + y * stride), 2, code); }
+    }
+  }
+  const auto& icc = profile->get_data();
+  REQUIRE(heif_image_set_raw_color_profile(pixels, "prof", icc.data(), icc.size()).code == heif_error_Ok);
+  heif_image_handle* base = nullptr;
+  auto error = heif_context_encode_image(ctx, pixels, encoder, nullptr, &base);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  heif_image_release(pixels);
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &pixels).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(pixels, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  size_t stride = 0;
+  heif_image_get_plane2(pixels, heif_channel_Y, &stride)[0] = 255;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, pixels, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(pixels);
+  heif_color_profile_nclx alternate{};
+  alternate.version = 1;
+  alternate.color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
+  alternate.transfer_characteristics = heif_transfer_characteristic_linear;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  alternate.full_range_flag = 1;
+  auto* options = heif_tone_map_options_alloc();
+  REQUIRE(options);
+  options->alternate_nclx = &alternate;
+  heif_gain_map_metadata metadata{};
+  metadata.struct_version = 1;
+  metadata.channel_count = 3;
+  metadata.base_hdr_headroom = {0, 1};
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 2};
+    metadata.channels[c].gain_map_max = metadata.channels[c].gain_map_min;
+    metadata.channels[c].gamma = {1, 1};
+    metadata.channels[c].base_offset = {0, 1};
+    metadata.channels[c].alternate_offset = {0, 1};
+  }
+  heif_image_handle* tmap = nullptr;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, options, &tmap).code == heif_error_Ok);
+  std::vector<uint8_t> bytes;
+  heif_writer writer{};
+  writer.writer_api_version = 1;
+  writer.write = [](heif_context*, const void* data, size_t size, void* context) -> heif_error {
+    auto& out = *static_cast<std::vector<uint8_t>*>(context);
+    const auto* first = static_cast<const uint8_t*>(data);
+    out.insert(out.end(), first, first + size);
+    return {heif_error_Ok, heif_suberror_Unspecified, nullptr};
+  };
+  REQUIRE(heif_context_write(ctx, &writer, &bytes).code == heif_error_Ok);
+  auto* reopened = heif_context_alloc();
+  REQUIRE(reopened);
+  REQUIRE(heif_context_read_from_memory_without_copy(reopened, bytes.data(), bytes.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* read_tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(reopened, heif_image_handle_get_item_id(tmap), &read_tmap).code == heif_error_Ok);
+  heif_image_handle* read_base = nullptr;
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(read_tmap, &read_base).code == heif_error_Ok);
+  std::vector<uint8_t> read_icc(heif_image_handle_get_raw_color_profile_size(read_base));
+  REQUIRE(read_icc.size() == icc.size());
+  REQUIRE(heif_image_handle_get_raw_color_profile(read_base, read_icc.data()).code == heif_error_Ok);
+  REQUIRE(read_icc == icc);
+  pixels = nullptr;
+  error = heif_decode_tone_map_image_float32(read_tmap, &pixels, nullptr, target, heif_gain_map_resampling_phase_co_sited);
+#if LIBHEIF_HAVE_LCMS2
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  Profile input(cmsOpenProfileFromMem(icc.data(), static_cast<cmsUInt32Number>(icc.size())), cmsCloseProfile);
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  const cmsCIExyY white{0.3127, 0.3290, 1};
+  const cmsCIExyYTRIPLE primaries{{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  Profile output(cmsCreateRGBProfile(&white, &primaries, curves), cmsCloseProfile);
+  Transform cmm(cmsCreateTransform(input.get(), TYPE_CMYK_DBL, output.get(), TYPE_RGB_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE), cmsDeleteTransform);
+  REQUIRE(cmm);
+  GainMapRGB reference{};
+  cmsDoTransform(cmm.get(), actual.data(), reference.data(), 1);
+  for (size_t c = 0; c < 3; ++c) {
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(pixels,
+        static_cast<heif_channel>(heif_channel_R + c), &stride));
+    REQUIRE(plane);
+    REQUIRE(plane[0] == Catch::Approx(reference[c] * std::exp2(double(c) * target / 4)).margin(0.00015));
+  }
+#else
+  REQUIRE(error.code == heif_error_Unsupported_feature);
+  REQUIRE_FALSE(pixels);
+#endif
+  heif_image_release(pixels);
+  heif_image_handle_release(read_base);
+  heif_image_handle_release(read_tmap);
+  heif_context_free(reopened);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_tone_map_options_free(options);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+#endif
+
 TEST_CASE("Serialized gray ICC XYZ and Lab shapers match independent Little CMS")
 {
   const bool lab = GENERATE(false, true);

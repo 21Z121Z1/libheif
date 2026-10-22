@@ -66,11 +66,22 @@ public:
   static Result<GainMapColour> from_icc(const std::shared_ptr<const color_profile_raw>& profile,
                                       uint32_t diffuse_white = 0);
   Result<GainMapRGB> decode(const GainMapRGB& signal) const;
+  Result<GainMapRGB> decode_cmyk(const std::array<double, 4>& signal) const;
   Result<GainMapRGB> encode(const GainMapRGB& linear) const;
+  bool uses_cmyk() const;
   Result<GainMapMatrix> matrix_to(const GainMapColour& target) const;
   bool has_application_primaries() const;
   const nclx_profile& raster_profile() const { return m_nclx; }
   const std::shared_ptr<const color_profile_raw>& icc_profile() const { return m_profile; }
+  const nclx_profile* cicp_profile() const { return m_profile && !m_matrix_trc ? &m_nclx : nullptr; }
+  std::shared_ptr<const color_profile_raw> canonical_icc_profile() const
+  {
+    // CICP describes the ICC data encoding. Matrix/range inversion produces
+    // normalized RGB, so a YCbCr or narrow-range profile no longer labels it.
+    if (m_profile && !m_matrix_trc &&
+        (m_nclx.m_matrix_coefficients != 0 || !m_nclx.get_full_range_flag())) { return {}; }
+    return m_profile;
+  }
   uint32_t nominal_diffuse_white() const { return m_diffuse_white; }
 
 private:

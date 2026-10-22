@@ -82,7 +82,7 @@ Error UncompressedImageCodec::get_heif_chroma_uncompressed(const std::shared_ptr
 
 
   // each 1-bit represents an existing component in the image
-  uint16_t componentSet = 0;
+  uint32_t componentSet = 0;
 
   for (Box_uncC::Component component : uncC->get_components()) {
     uint32_t component_index = component.component_index;
@@ -134,6 +134,16 @@ Error UncompressedImageCodec::get_heif_chroma_uncompressed(const std::shared_ptr
     // TODO - we should look up the components
     *out_chroma = heif_chroma_planar;
     *out_colourspace = heif_colorspace_filter_array;
+  }
+
+  constexpr uint32_t cmyk = (1u << heif_cmpd_component_type_cyan) |
+                            (1u << heif_cmpd_component_type_magenta) |
+                            (1u << heif_cmpd_component_type_yellow) |
+                            (1u << heif_cmpd_component_type_key_black);
+  if ((componentSet & ~(1u << heif_cmpd_component_type_alpha)) == cmyk &&
+      uncC->get_sampling_type() == sampling_mode_no_subsampling) {
+    *out_chroma = heif_chroma_planar;
+    *out_colourspace = heif_colorspace_custom;
   }
 
   // TODO: more combinations
@@ -561,7 +571,8 @@ Error UncompressedImageCodec::check_header_validity(std::optional<const std::sha
       }
 
       uint16_t component_type = cmpd->get_components()[comp.component_index].component_type;
-      if (component_type > 7 && component_type != heif_cmpd_component_type_padded && component_type != heif_cmpd_component_type_filter_array) {
+      const bool cmyk = component_type >= heif_cmpd_component_type_cyan && component_type <= heif_cmpd_component_type_key_black;
+      if (component_type > 7 && !cmyk && component_type != heif_cmpd_component_type_padded && component_type != heif_cmpd_component_type_filter_array) {
         std::stringstream sstr;
         sstr << "Uncompressed image with component_type " << ((int) component_type) << " is not implemented yet";
         return {heif_error_Unsupported_feature,

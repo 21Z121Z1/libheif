@@ -566,16 +566,19 @@ Result<nclx_profile> nclx_from_cicp(const IccView& view, const IccTag& tag)
     return malformed_icc();
   }
 
-  // ICC.1:2022 requires MatrixCoefficients=0 for RGB/XYZ CICP profiles.
-  if ((view.data_space == icc_sig('R', 'G', 'B', ' ') ||
-       view.data_space == icc_sig('X', 'Y', 'Z', ' ')) &&
-      matrix != 0) {
+  // ICC.1:2022 9.2.17 permits CICP only in input/display profiles with
+  // RGB, YCbCr or XYZ data. Do not bypass these rules via the fast path.
+  const bool rgb = view.data_space == icc_sig('R', 'G', 'B', ' ');
+  const bool xyz = view.data_space == icc_sig('X', 'Y', 'Z', ' ');
+  const bool ycbcr = view.data_space == icc_sig('Y', 'C', 'b', 'r');
+  if ((view.profile_class != icc_sig('s', 'c', 'n', 'r') &&
+       view.profile_class != icc_sig('m', 'n', 't', 'r')) || (!rgb && !xyz && !ycbcr)) {
     return malformed_icc();
   }
-  if (view.data_space != icc_sig('R', 'G', 'B', ' ')) {
-    return unsupported_icc();
+  // ICC.1:2022 requires MatrixCoefficients=0 for RGB/XYZ CICP profiles.
+  if (((rgb || xyz) && matrix != 0) || (ycbcr && matrix == 0)) {
+    return malformed_icc();
   }
-
   auto supported_primaries = to_xyz(primaries);
   if (!supported_primaries || !gain_map_supports_transfer(transfer)) {
     return unsupported_icc();
@@ -912,6 +915,7 @@ struct GainMapIccColour
   GainMapMatrix to_pcs;
   bool lut = false;
   bool gray = false;
+  bool cmyk = false;
   bool application_primaries = true;
 #if HAVE_LCMS2
   cmsContext context = nullptr;
@@ -1084,7 +1088,8 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     return result;
   }
   const bool gray = view->data_space == icc_sig('G', 'R', 'A', 'Y');
-  if ((!gray && view->data_space != icc_sig('R', 'G', 'B', ' ')) ||
+  const bool cmyk = view->data_space == icc_sig('C', 'M', 'Y', 'K');
+  if ((!gray && !cmyk && view->data_space != icc_sig('R', 'G', 'B', ' ')) ||
       (view->pcs != icc_sig('X', 'Y', 'Z', ' ') && view->pcs != icc_sig('L', 'a', 'b', ' ')) ||
       (view->profile_class != icc_sig('m', 'n', 't', 'r') &&
        view->profile_class != icc_sig('s', 'c', 'n', 'r') &&
@@ -1106,24 +1111,26 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     }
   }
   if (lut && !decode_lut && !encode_lut) { return unsupported_icc(); }
+  if (cmyk && !decode_lut) { return unsupported_icc(); }
   // ICC.1:2022 8.7 defines ColorSpace profiles through LUT transforms.
   if (view->profile_class == icc_sig('s', 'p', 'a', 'c') && !lut) { return unsupported_icc(); }
   auto transform = std::make_shared<GainMapIccColour>();
   transform->view = *view;
   transform->lut = lut;
   transform->gray = gray;
+  transform->cmyk = cmyk;
   size_t colourants = 0;
   for (char name : {'r', 'g', 'b'}) {
     colourants += view->find(icc_sig(name, 'X', 'Y', 'Z')) != nullptr;
   }
   const auto* chromaticity = view->find(icc_sig('c', 'h', 'r', 'm'));
   const auto* chad = view->find(icc_sig('c', 'h', 'a', 'd'));
-  if (!gray && colourants == 0 && lut && chromaticity && chad) {
+  if (!gray && !cmyk && colourants == 0 && lut && chromaticity && chad) {
     auto matrix = chromaticity_to_pcs(*view, *chromaticity, *chad);
     if (!matrix) { return matrix.error(); }
     transform->to_pcs = *matrix;
   }
-  else if (gray || (colourants == 0 && lut)) {
+  else if (gray || cmyk || (colourants == 0 && lut)) {
     // PCS is an intermediate representation, never a guessed RGB application
     // space. It suffices when the other item supplies the application primaries.
     transform->to_pcs = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
@@ -1164,12 +1171,12 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     transform->xyz_profile = cmsCreateXYZProfileTHR(transform->context);
     if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
     constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
-    const auto format = gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL;
+    const auto format = cmyk ? TYPE_CMYK_DBL : gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL;
     if (decode_lut) {
       transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, format,
           transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
-    if (encode_lut && !gray) {
+    if (encode_lut && !gray && !cmyk) {
       transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
           transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
@@ -1191,6 +1198,7 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
 
 Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
 {
+  if (uses_cmyk()) { return unsupported_icc(); }
   if (!m_matrix_trc) {
     auto result = gain_map_decode_rgb(signal, m_nclx);
     if (!result) { return result.error(); }
@@ -1252,7 +1260,7 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
   }
   // Canonical tone-map output is RGB. A gray ICC cannot describe those
   // samples or supply ISO's application primaries, even for achromatic gain.
-  if (m_matrix_trc->gray) { return unsupported_icc(); }
+  if (m_matrix_trc->gray || m_matrix_trc->cmyk) { return unsupported_icc(); }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {
@@ -1271,6 +1279,32 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     result[c] = *value;
   }
   return result;
+}
+
+bool GainMapColour::uses_cmyk() const
+{
+  return m_matrix_trc && m_matrix_trc->cmyk;
+}
+
+Result<GainMapRGB> GainMapColour::decode_cmyk(const std::array<double, 4>& signal) const
+{
+#if HAVE_LCMS2
+  if (!uses_cmyk() || !m_matrix_trc->decode_lut) { return unsupported_icc(); }
+  std::array<double, 4> percent{};
+  for (size_t c = 0; c < signal.size(); ++c) {
+    if (!std::isfinite(signal[c])) { return invalid_value(); }
+    // ICC device CMYK is normalized in the raster; Little CMS's floating
+    // CMYK formatter uses 0..100 percent. All four channels enter the CMM.
+    percent[c] = signal[c] * 100;
+    if (!std::isfinite(percent[c])) { return invalid_value(); }
+  }
+  GainMapRGB result{};
+  cmsDoTransform(m_matrix_trc->decode_lut, percent.data(), result.data(), 1);
+  for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+  return result;
+#else
+  return unsupported_icc();
+#endif
 }
 
 bool GainMapColour::has_application_primaries() const

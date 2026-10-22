@@ -730,17 +730,19 @@ ImageItem::add_color_profile(const std::shared_ptr<const HeifPixelImage>& image,
   std::vector<std::shared_ptr<Box_colr> > colr_boxes;
 
   if (input_class == heif_image_input_class_normal || input_class == heif_image_input_class_thumbnail) {
-    // No color profile for non-visual images (e.g. elevation data)
-    if (image->get_colorspace() == heif_colorspace_custom) {
+    auto icc_profile = image->get_color_profile_icc();
+    // Custom components may be visual (e.g. CMYK with an explicit ICC).
+    // Unlabelled custom data, such as elevation, has no colour description.
+    if (image->get_colorspace() == heif_colorspace_custom && !icc_profile) {
       return colr_boxes;
     }
 
-    auto icc_profile = image->get_color_profile_icc();
     if (icc_profile) {
       auto colr = std::make_shared<Box_colr>();
       colr->set_color_profile(icc_profile);
       colr_boxes.push_back(colr);
     }
+    if (image->get_colorspace() == heif_colorspace_custom) { return colr_boxes; }
 
 
     // save nclx profile
@@ -1507,7 +1509,9 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
   }
 
   auto icc = get_color_profile_icc();
-  if (use_item_colour && icc) {
+  if (use_item_colour && icc && get_infe_type() != fourcc("tmap")) {
+    // Tone-map reconstruction already attaches the profile matching its
+    // normalized RGB samples; the item's ICC may describe YCbCr storage.
     img->set_color_profile_icc(icc);
   }
 

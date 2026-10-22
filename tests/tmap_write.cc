@@ -595,6 +595,8 @@ TEST_CASE("Gain-map encoder rejects ambiguous YCbCr and preserves primary on err
 
 TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reconstruction")
 {
+  const bool ycbcr = GENERATE(false, true);
+  const bool full_range = GENERATE(false, true);
   auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
@@ -609,13 +611,14 @@ TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reco
   std::vector<uint8_t> icc(156, 0);
   icc[3] = 156;
   std::memcpy(icc.data() + 12, "mntrRGB XYZ ", 12);
+  if (ycbcr) { std::memcpy(icc.data() + 16, "YCbr", 4); }
   std::memcpy(icc.data() + 36, "acsp", 4);
   icc[131] = 1;
   std::memcpy(icc.data() + 132, "cicp", 4);
   icc[139] = 144;
   icc[143] = 12;
   std::memcpy(icc.data() + 144, "cicp", 4);
-  icc[152] = 9; icc[153] = 16; icc[154] = 0; icc[155] = 1;
+  icc[152] = 9; icc[153] = 16; icc[154] = ycbcr ? 9 : 0; icc[155] = full_range ? 1 : 0;
   auto* options = heif_tone_map_options_alloc();
   options->alternate_icc_type = heif_color_profile_type_prof;
   options->alternate_icc = icc.data();
@@ -638,7 +641,15 @@ TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reco
                                        heif_chroma_undefined, nullptr);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
-  REQUIRE(heif_image_get_color_profile_type(decoded) == heif_color_profile_type_prof);
+  REQUIRE(heif_image_get_color_profile_type(decoded) ==
+      (ycbcr || !full_range ? heif_color_profile_type_nclx : heif_color_profile_type_prof));
+  heif_color_profile_nclx* canonical = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(decoded, &canonical).code == heif_error_Ok);
+  CHECK(canonical->color_primaries == heif_color_primaries_ITU_R_BT_2020_2_and_2100_0);
+  CHECK(canonical->transfer_characteristics == heif_transfer_characteristic_ITU_R_BT_2100_0_PQ);
+  CHECK(canonical->matrix_coefficients == heif_matrix_coefficients_RGB_GBR);
+  CHECK(canonical->full_range_flag);
+  heif_nclx_color_profile_free(canonical);
   REQUIRE(heif_image_get_bits_per_pixel_range(decoded, heif_channel_R) == 16);
   heif_image_release(decoded);
   heif_image_handle_release(read_tmap);
@@ -651,6 +662,121 @@ TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reco
   heif_context_free(ctx);
 }
 
+
+TEST_CASE("ICC CICP baselines retain matrix range and colourimetry after serialization")
+{
+  const int matrix = GENERATE(0, 9, 10, 12, 13, 14, 15);
+  const int bits = GENERATE(8, 16);
+  const bool storage_colr = GENERATE(false, true);
+  INFO("matrix=" << matrix << " bits=" << bits << " storage NCLX=" << storage_colr);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  auto storage = make_nclx(heif_color_primaries_unspecified, heif_transfer_characteristic_unspecified,
+                            static_cast<heif_matrix_coefficients>(matrix), false);
+  heif_image* image = nullptr;
+  REQUIRE(heif_image_create(2, 2, matrix == 0 ? heif_colorspace_RGB : heif_colorspace_YCbCr,
+                            heif_chroma_444, &image).code == heif_error_Ok);
+  const auto channels = matrix == 0 ? std::array{heif_channel_R, heif_channel_G, heif_channel_B} :
+                                     std::array{heif_channel_Y, heif_channel_Cb, heif_channel_Cr};
+  const auto codewords = matrix == 0 || matrix == 9 ? std::array<uint8_t, 3>{128, 96, 160} :
+                                                    std::array<uint8_t, 3>{128, 128, 128};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE(heif_image_add_plane(image, channels[c], 2, 2, bits).code == heif_error_Ok);
+    size_t stride = 0;
+    auto* plane = heif_image_get_plane2(image, channels[c], &stride);
+    for (size_t y = 0; y < 2; ++y) {
+      if (bits == 8) { std::fill_n(plane + y * stride, 2, codewords[c]); }
+      else {
+        std::fill_n(reinterpret_cast<uint16_t*>(plane + y * stride), 2,
+                    static_cast<uint16_t>(codewords[c] << (bits - 8)));
+      }
+    }
+  }
+  REQUIRE(heif_image_set_nclx_color_profile(image, &storage).code == heif_error_Ok);
+  std::vector<uint8_t> icc(156, 0);
+  icc[3] = 156;
+  std::memcpy(icc.data() + 12, matrix == 0 ? "mntrRGB XYZ " : "mntrYCbrXYZ ", 12);
+  std::memcpy(icc.data() + 36, "acsp", 4);
+  icc[131] = 1;
+  std::memcpy(icc.data() + 132, "cicp", 4);
+  icc[139] = 144;
+  icc[143] = 12;
+  std::memcpy(icc.data() + 144, "cicp", 4);
+  icc[152] = 9; icc[153] = 16; icc[154] = static_cast<uint8_t>(matrix);
+  REQUIRE(heif_image_set_raw_color_profile(image, "prof", icc.data(), icc.size()).code == heif_error_Ok);
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = &storage;
+  encoding->save_two_colr_boxes_when_ICC_and_nclx_available = storage_colr;
+  encoding->macOS_compatibility_workaround_no_nclx_profile = !storage_colr;
+  heif_image_handle* base = nullptr;
+  const auto encoded_base = heif_context_encode_image(ctx, image, encoder, encoding, &base);
+  INFO(encoded_base.message);
+  REQUIRE(encoded_base.code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
+  heif_image_release(image);
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &image).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(image, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  size_t stride = 0;
+  heif_image_get_plane2(image, heif_channel_Y, &stride)[0] = 128;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, image, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(image);
+  auto metadata = make_metadata();
+  metadata.channels[0].gain_map_min = {0, 1};
+  metadata.channels[0].gain_map_max = {0, 1};
+  auto alternate = make_nclx(heif_color_primaries_ITU_R_BT_2020_2_and_2100_0,
+      heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
+  auto options = make_options(&alternate);
+  heif_image_handle* tmap = nullptr;
+  const auto added = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, &options, &tmap);
+  INFO(added.message);
+  REQUIRE(added.code == heif_error_Ok);
+  const auto encoded = write_context(ctx);
+  auto* read_ctx = reopen(encoded);
+  heif_image_handle* read_tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(read_ctx, heif_image_handle_get_item_id(tmap), &read_tmap).code == heif_error_Ok);
+  heif_image_handle* read_base = nullptr;
+  REQUIRE(heif_image_handle_get_tone_map_base_image_handle(read_tmap, &read_base).code == heif_error_Ok);
+  std::vector<uint8_t> read_icc(heif_image_handle_get_raw_color_profile_size(read_base));
+  REQUIRE(heif_image_handle_get_raw_color_profile(read_base, read_icc.data()).code == heif_error_Ok);
+  CHECK(read_icc == icc);
+  heif_color_profile_nclx* read_storage = nullptr;
+  const auto storage_result = heif_image_handle_get_nclx_color_profile(read_base, &read_storage);
+  CHECK(storage_result.code == (storage_colr ? heif_error_Ok : heif_error_Color_profile_does_not_exist));
+  heif_nclx_color_profile_free(read_storage);
+  image = nullptr;
+  const auto decoded = heif_decode_tone_map_image_float32(read_tmap, &image, nullptr, 2,
+      heif_gain_map_resampling_phase_co_sited);
+  INFO(decoded.message);
+  REQUIRE(decoded.code == heif_error_Ok);
+  const double y = (128.0 - 16) / 219;
+  const double cb = (double(codewords[1]) - 128) / 224;
+  const double cr = (double(codewords[2]) - 128) / 224;
+  const double red = y + 2 * (1 - 0.2627) * cr;
+  const double blue = y + 2 * (1 - 0.0593) * cb;
+  const auto rgb = matrix == 0 ? std::array{y, (96.0 - 16) / 219, (160.0 - 16) / 219} :
+      std::array{red, (y - 0.2627 * red - 0.0593 * blue) / (1 - 0.2627 - 0.0593), blue};
+  for (size_t c = 0; c < 3; ++c) {
+    const double p = std::pow(rgb[c], 32.0 / 2523);
+    const double expected = std::pow(std::max(p - 3424.0 / 4096, 0.0) /
+        (2413.0 / 128 - 2392.0 / 128 * p), 16384.0 / 2610) * 10000 / 203;
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(
+        image, static_cast<heif_channel>(heif_channel_R + c), &stride));
+    REQUIRE(plane);
+    CHECK(plane[0] == Catch::Approx(expected).margin(2e-6));
+  }
+  heif_image_release(image);
+  heif_image_handle_release(read_base);
+  heif_image_handle_release(read_tmap);
+  heif_context_free(read_ctx);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
 
 TEST_CASE("tmap brand cannot be written without a tone-map item")
 {

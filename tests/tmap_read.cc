@@ -1648,6 +1648,36 @@ TEST_CASE("tmap writer rejects invalid existing colour associations before mutat
   heif_context_free(ctx);
 }
 
+TEST_CASE("Unknown minimum version ignores the unsupported writer layout before baseline fallback")
+{
+  const bool floating = GENERATE(false, true);
+  auto file = build_tmap_file(2, 0, 1);
+  const auto payload = make_tone_map_payload(0, 1);
+  const auto found = std::search(file.begin(), file.end(), payload.begin(), payload.end());
+  REQUIRE(found != file.end());
+  found[3] = 0;
+  found[4] = 0;
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  CHECK(heif_image_handle_get_gain_map_metadata_status(tmap) ==
+        heif_gain_map_metadata_status_unsupported_minimum_version);
+  heif_image* image = nullptr;
+  const auto error = floating ? heif_decode_tone_map_image_float32(tmap, &image, nullptr, 2,
+                                    heif_gain_map_resampling_phase_co_sited) :
+                                heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  size_t stride = 0;
+  const auto* plane = heif_image_get_plane_readonly2(image, floating ? heif_channel_R : heif_channel_Y, &stride);
+  REQUIRE(plane);
+  if (floating) { CHECK(reinterpret_cast<const float*>(plane)[0] == Catch::Approx(127.0 / 255).margin(1e-7)); }
+  else { CHECK(plane[0] == 127); }
+  heif_image_release(image);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 TEST_CASE("Unknown minimum version ignores invalid alternate colour associations")
 {
   const bool duplicate = GENERATE(false, true);
@@ -1677,6 +1707,78 @@ TEST_CASE("Unknown minimum version ignores invalid alternate colour associations
   heif_image_release(pixels);
   heif_image_handle_release(tmap);
   heif_context_free(ctx);
+}
+
+TEST_CASE("XYZ CICP tone-map files reconstruct and retain their actual alternate encoding")
+{
+  const bool floating = GENERATE(false, true);
+  const bool forbidden_class = GENERATE(false, true);
+  std::vector<uint8_t> icc(144, 0);
+  const auto patch = [&icc](size_t offset, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) { icc[offset + i] = static_cast<uint8_t>(value >> ((3 - i) * 8)); }
+  };
+  patch(8, 0x04400000);
+  patch(12, fourcc(forbidden_class ? "link" : "mntr"));
+  patch(16, fourcc("XYZ "));
+  patch(20, fourcc("XYZ "));
+  patch(36, fourcc("acsp"));
+  patch(128, 1);
+  patch(132, fourcc("cicp"));
+  patch(136, 144);
+  patch(140, 12);
+  append_fourcc(icc, "cicp");
+  put_u32_be(icc, 0);
+  icc.insert(icc.end(), {10, 17, 0, 1});
+  patch(0, static_cast<uint32_t>(icc.size()));
+  GainMapMetadata metadata;
+  metadata.channel_count = 3;
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 1};
+    metadata.channels[c].gain_map_max = {static_cast<int32_t>(c), 1};
+  }
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false,
+                                   &metadata, false, &icc, &icc);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  heif_image* image = nullptr;
+  const auto error = floating ? heif_decode_tone_map_image_float32(tmap, &image, nullptr, 2,
+                                    heif_gain_map_resampling_phase_co_sited) :
+                                heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, nullptr);
+  INFO(error.message);
+  if (forbidden_class) {
+    CHECK(error.code == heif_error_Invalid_input);
+    CHECK(image == nullptr);
+  }
+  else {
+    REQUIRE(error.code == heif_error_Ok);
+    REQUIRE(image);
+    for (size_t c = 0; c < 3; ++c) {
+      size_t stride = 0;
+      const auto* plane = heif_image_get_plane_readonly2(image, static_cast<heif_channel>(heif_channel_R + c), &stride);
+      REQUIRE(plane);
+      const double expected = 127.0 / 255 * std::exp2(double(c) / 2.6);
+      if (floating) {
+        CHECK(reinterpret_cast<const float*>(plane)[0] == Catch::Approx(expected).margin(1e-6));
+      }
+      else {
+        CHECK(reinterpret_cast<const uint16_t*>(plane)[0] == Catch::Approx(expected * 65535).margin(1));
+      }
+    }
+    heif_color_profile_nclx* nclx = nullptr;
+    REQUIRE(heif_image_get_nclx_color_profile(image, &nclx).code == heif_error_Ok);
+    CHECK(nclx->color_primaries == heif_color_primaries_SMPTE_ST_428_1);
+    CHECK(nclx->transfer_characteristics == heif_transfer_characteristic_SMPTE_ST_428_1);
+    CHECK(nclx->matrix_coefficients == heif_matrix_coefficients_RGB_GBR);
+    CHECK(nclx->full_range_flag);
+    heif_nclx_color_profile_free(nclx);
+    std::vector<uint8_t> actual(heif_image_get_raw_color_profile_size(image));
+    REQUIRE(heif_image_get_raw_color_profile(image, actual.data()).code == heif_error_Ok);
+    CHECK(actual == icc);
+  }
+  heif_image_release(image);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
 }
 
 TEST_CASE("Gray ICC baseline files use the declared alternate RGB primaries")
