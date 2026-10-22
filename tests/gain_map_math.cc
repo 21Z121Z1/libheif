@@ -1378,27 +1378,26 @@ TEST_CASE("Wide unsigned RGB is normalized without a 16-bit intermediate")
 TEST_CASE("Floating gain samples are unnormalized before interpolation")
 {
   const int bits = GENERATE(32, 64);
-  const int layout = GENERATE(0, 1, 2); // Mono, interleaved RGB, full-range GBR.
-  const bool interleaved = layout == 1;
+  const int layout = GENERATE(0, 1, 2); // Mono, planar RGB, full-range GBR.
+  const bool rgb = layout == 1;
   auto gain = std::make_shared<HeifPixelImage>();
-  gain->create(2, 1, interleaved ? heif_colorspace_RGB : layout == 2 ? heif_colorspace_YCbCr : heif_colorspace_monochrome,
-                interleaved ? heif_chroma_interleaved_RGB : layout == 2 ? heif_chroma_444 : heif_chroma_monochrome);
-  const auto channel = interleaved ? heif_channel_interleaved : heif_channel_Y;
+  gain->create(2, 1, rgb ? heif_colorspace_RGB : layout == 2 ? heif_colorspace_YCbCr : heif_colorspace_monochrome,
+                layout != 0 ? heif_chroma_444 : heif_chroma_monochrome);
+  const auto channel = rgb ? heif_channel_R : heif_channel_Y;
   REQUIRE_FALSE(gain->add_channel(channel, 2, 1, bits, nullptr, heif_component_datatype_floating_point));
   const double g0 = bits == 32 ? static_cast<double>(float{1.0f / 3}) : 1.0 / 3;
-  const size_t components = interleaved ? 3 : 1;
-  for (size_t c = 0; c < components; ++c) {
-    if (bits == 32) {
-      auto* plane = gain->get_channel_memory<float>(channel, nullptr);
-      plane[c] = static_cast<float>(g0); plane[components + c] = 0.75f;
-    }
-    else {
-      auto* plane = gain->get_channel_memory<double>(channel, nullptr);
-      plane[c] = g0; plane[components + c] = 0.75;
-    }
+  if (bits == 32) {
+    auto* plane = gain->get_channel_memory<float>(channel, nullptr);
+    plane[0] = static_cast<float>(g0); plane[1] = 0.75f;
   }
-  if (layout == 2) {
-    for (auto other : {heif_channel_Cb, heif_channel_Cr}) {
+  else {
+    auto* plane = gain->get_channel_memory<double>(channel, nullptr);
+    plane[0] = g0; plane[1] = 0.75;
+  }
+  if (layout != 0) {
+    const auto others = rgb ? std::array{heif_channel_G, heif_channel_B} :
+                              std::array{heif_channel_Cb, heif_channel_Cr};
+    for (auto other : others) {
       REQUIRE_FALSE(gain->copy_new_channel_from(gain, channel, other, nullptr));
     }
   }
@@ -1629,24 +1628,25 @@ TEST_CASE("Interleaved integer RGB keeps byte order, range and premultiplied opa
   }
 }
 
-TEST_CASE("Typed interleaved RGB retains floating headroom and wide integer precision")
+TEST_CASE("Typed planar RGB retains floating headroom and wide integer precision")
 {
   const bool floating = GENERATE(false, true);
   const bool alpha = GENERATE(false, true);
-  const int bits = alpha ? 64 : 32; // RGBA32 is the API's legacy alias for RGBA8.
+  const int bits = GENERATE(32, 64);
   auto base = std::make_shared<HeifPixelImage>();
-  base->create(2, 2, heif_colorspace_RGB, alpha ? heif_chroma_interleaved_RGBA : heif_chroma_interleaved_RGB);
-  REQUIRE_FALSE(base->add_channel(heif_channel_interleaved, 2, 2, bits, nullptr,
-                                  floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer));
+  base->create(2, 2, heif_colorspace_RGB, heif_chroma_444);
   auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
   base->set_color_profile_nclx(profile);
-  size_t stride = 0;
-  auto* data = base->get_channel_memory(heif_channel_interleaved, &stride);
+  const std::array channels{heif_channel_R, heif_channel_G, heif_channel_B, heif_channel_Alpha};
   const size_t components = alpha ? 4 : 3;
-  for (uint32_t y = 0; y < 2; ++y) {
-    for (uint32_t x = 0; x < 2; ++x) {
-      for (size_t c = 0; c < components; ++c) {
-        auto* p = data + size_t(y) * stride + (x * components + c) * static_cast<size_t>(bits / 8);
+  for (size_t c = 0; c < components; ++c) {
+    REQUIRE_FALSE(base->add_channel(channels[c], 2, 2, bits, nullptr,
+                                    floating ? heif_component_datatype_floating_point : heif_component_datatype_unsigned_integer));
+    size_t stride = 0;
+    auto* data = base->get_channel_memory(channels[c], &stride);
+    for (uint32_t y = 0; y < 2; ++y) {
+      for (uint32_t x = 0; x < 2; ++x) {
+        auto* p = data + size_t(y) * stride + x * static_cast<size_t>(bits / 8);
         const double value = c == 3 ? 0.5 : static_cast<double>(x + y + c + 1) * 0.5;
         if (floating && bits == 32) { const float f = static_cast<float>(value); std::memcpy(p, &f, sizeof(f)); }
         else if (floating) { std::memcpy(p, &value, sizeof(value)); }

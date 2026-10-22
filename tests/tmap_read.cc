@@ -2011,11 +2011,14 @@ TEST_CASE("Unknown minimum metadata version decodes baseline without alternate c
   std::vector<uint8_t> file = build_tmap_file(2, 0, 1);
   heif_context* ctx = nullptr;
   auto* tmap = open_tmap(&ctx, file);
+  REQUIRE(heif_image_handle_get_luma_bits_per_pixel(tmap) == -1);
+  REQUIRE(heif_image_handle_get_chroma_bits_per_pixel(tmap) == -1);
   heif_image* image = nullptr;
   const auto error = heif_decode_image(tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
   INFO(error.message);
   REQUIRE(error.code == heif_error_Ok);
   REQUIRE(image);
+  REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_Y) == 8);
   heif_color_profile_nclx* profile = nullptr;
   REQUIRE(heif_image_get_nclx_color_profile(image, &profile).code == heif_error_Ok);
   REQUIRE(profile->color_primaries == heif_color_primaries_ITU_R_BT_709_5);

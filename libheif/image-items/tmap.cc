@@ -592,6 +592,17 @@ bool ImageItem_tmap::use_item_color_profile_for_decoding() const
   return read_tone_map_image().status != ToneMapImageParseStatus::unsupported_minimum_version;
 }
 
+int ImageItem_tmap::get_luma_bits_per_pixel() const
+{
+  // An unknown minimum version returns the baseline at its native depth, not
+  // the usual 16-bit reconstruction. Do not advertise a depth that could make
+  // callers read past an 8-bit baseline plane. Resolving the baseline here
+  // would recurse through unvalidated derived-image references; its actual
+  // depth remains available on the decoded image. Coded children still pass
+  // the ordinary signaled-versus-decoded bit-depth check during decoding.
+  return read_tone_map_image().status == ToneMapImageParseStatus::unsupported_minimum_version ? -1 : 16;
+}
+
 Error ImageItem_tmap::get_coded_image_colorspace(heif_colorspace* colorspace, heif_chroma* chroma) const
 {
   if (colorspace) { *colorspace = heif_colorspace_RGB; }
