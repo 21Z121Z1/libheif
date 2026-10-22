@@ -1462,6 +1462,40 @@ TEST_CASE("tmap geometry follows transformed inputs rather than their coded ispe
   heif_context_free(ctx);
 }
 
+TEST_CASE("tmap writer refuses unresolved raw colour properties before mutation")
+{
+  const bool on_gain = GENERATE(false, true);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
+  const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
+      heif_transfer_characteristic_IEC_61966_2_1,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
+      heif_transfer_characteristic_unspecified,
+      heif_matrix_coefficients_ITU_R_BT_709_5, true);
+  auto* base = encode_image_with_profile(ctx, encoder, baseline);
+  auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
+  heif_encoder_release(encoder);
+  // A different matrix keeps this raw box distinct from either encoded colr.
+  const std::vector<uint8_t> raw{'n', 'c', 'l', 'x', 0, 2, 0, 2, 0, 5, 0x80};
+  REQUIRE(heif_item_add_raw_property(ctx, heif_image_handle_get_item_id(on_gain ? gain : base),
+      heif_fourcc('c', 'o', 'l', 'r'), nullptr, raw.data(), raw.size(), 0, nullptr).code == heif_error_Ok);
+  const auto count = heif_context_get_number_of_items(ctx);
+  auto metadata = make_metadata();
+  auto options = make_options(&baseline);
+  heif_image_handle* output = nullptr;
+  const auto error = heif_context_add_tone_map_derived_image(ctx, base, gain,
+      &metadata, &options, &output);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Unsupported_feature);
+  REQUIRE(output == nullptr);
+  REQUIRE(heif_context_get_number_of_items(ctx) == count);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_context_free(ctx);
+}
+
 TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
 {
   auto* ctx = heif_context_alloc();

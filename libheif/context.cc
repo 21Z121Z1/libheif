@@ -862,7 +862,14 @@ Error HeifContext::interpret_heif_file_images()
       auto colr = std::dynamic_pointer_cast<Box_colr>(prop);
       if (colr) {
         auto profile = colr->get_color_profile();
-        image->set_color_profile(profile);
+        // Load the description without registering another property. Identical
+        // profiles at distinct ipco indices must retain their original ipma.
+        if (auto nclx = std::dynamic_pointer_cast<const color_profile_nclx>(profile)) {
+          image->ImageDescription::set_color_profile_nclx(nclx->get_nclx_color_profile());
+        }
+        else if (auto icc = std::dynamic_pointer_cast<const color_profile_raw>(profile)) {
+          image->ImageDescription::set_color_profile_icc(icc);
+        }
         continue;
       }
 
@@ -1169,6 +1176,11 @@ Error HeifContext::interpret_heif_file_images()
     }
 
     if (infe_box->get_item_type_4cc() == fourcc("grid")) {
+      // A grid's explicit colour description takes precedence over its tiles.
+      // Inherit only when the grid itself has no associated colour property.
+      if (image->get_property<Box_colr>()) {
+        continue;
+      }
       std::vector<heif_item_id> image_references = iref_box->get_references(id, fourcc("dimg"));
 
       if (image_references.empty()) {
@@ -1184,11 +1196,11 @@ Error HeifContext::interpret_heif_file_images()
 
       auto tile_img = iter->second;
       if (image->get_color_profile_icc() == nullptr && tile_img->get_color_profile_icc()) {
-        image->set_color_profile(tile_img->get_color_profile_icc());
+        image->ImageDescription::set_color_profile_icc(tile_img->get_color_profile_icc());
       }
 
       if (!image->has_nclx_color_profile() && tile_img->has_nclx_color_profile()) {
-        image->set_color_profile_nclx(tile_img->get_color_profile_nclx());
+        image->ImageDescription::set_color_profile_nclx(tile_img->get_color_profile_nclx());
       }
     }
   }

@@ -129,13 +129,34 @@ Error require_colour_property(const ImageItem& item, bool nclx_only, const char*
 {
   auto properties = item.get_properties();
   if (!properties) { return properties.error(); }
+  size_t count = 0;
+  bool has_nclx = false;
+  bool has_icc = false;
   for (const auto& property : *properties) {
+    if (property->get_short_type() != fourcc("colr")) { continue; }
     auto colr = std::dynamic_pointer_cast<Box_colr>(property);
-    if (colr && (!nclx_only || colr->get_color_profile_type() == fourcc("nclx"))) {
-      return Error::Ok;
+    if (!colr) {
+      // Raw known boxes are not interpreted until reopening. Do not ignore a
+      // potentially conflicting colour description beside a parsed property.
+      return {heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion,
+              "Tone-map inputs require parsed colour properties"};
     }
+    ++count;
+    const auto type = colr->get_color_profile_type();
+    has_nclx |= type == fourcc("nclx");
+    has_icc |= type == fourcc("prof") || type == fourcc("rICC");
   }
-  return {heif_error_Invalid_input, heif_suberror_Unspecified, message};
+  if (count == 0 || (nclx_only && !has_nclx)) {
+    return {heif_error_Invalid_input, heif_suberror_Unspecified, message};
+  }
+  // HEIF 6.5.5 permits one colr or an ICC plus storage NCLX (CP=2/TC=2).
+  const auto nclx = item.get_color_profile_nclx();
+  if (count > 2 || (count == 2 && (!has_nclx || !has_icc ||
+      nclx.m_colour_primaries != 2 || nclx.m_transfer_characteristics != 2))) {
+    return {heif_error_Invalid_input, heif_suberror_Unspecified,
+            "Tone-map colour properties must be one colr or an ICC with CP=2/TC=2 NCLX"};
+  }
+  return Error::Ok;
 }
 
 Error validate_tone_map_inputs(

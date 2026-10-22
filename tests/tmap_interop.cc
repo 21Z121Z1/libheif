@@ -100,7 +100,7 @@ TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
   heif_context_free(ctx);
 }
 
-TEST_CASE("Stock libultrahdr and libheif exchange ISO containers and HDR pixels")
+TEST_CASE("Stock libultrahdr exchange preserves pixels and rejects invalid source colour pairs")
 {
   const char* directory = std::getenv("LIBHEIF_TMAP_ULTRAHDR_DIR");
   if (!directory) { return; }
@@ -109,7 +109,7 @@ TEST_CASE("Stock libultrahdr and libheif exchange ISO containers and HDR pixels"
                           "google-mono.heic", "google-rgb.heic",
                           "google-mono.avif", "google-rgb.avif"}) {
     INFO(name);
-    const auto path = std::filesystem::path(directory) / name;
+    auto path = std::filesystem::path(directory) / name;
     const bool rgb = std::string(name).find("rgb") != std::string::npos;
     const bool google = std::string(name).find("google") == 0;
     auto* ctx = heif_context_alloc();
@@ -128,6 +128,29 @@ TEST_CASE("Stock libultrahdr and libheif exchange ISO containers and HDR pixels"
     REQUIRE(heif_context_get_image_handle(ctx, tmaps.front(), &handle).code == heif_error_Ok);
     heif_gain_map_metadata metadata{};
     metadata.struct_version = 1;
+    if (google) {
+      // Preserve the pinned producer original: its ICC + CP=1/TC=13 NCLX
+      // violates HEIF 6.5.5. A separately named single-NCLX projection retains
+      // all coded bytes and gain metadata; the script checks Google's pixels
+      // are identical. Neither file is silently repaired by the reader.
+      error = heif_image_handle_get_gain_map_metadata(handle, &metadata);
+      INFO(error.message);
+      REQUIRE(error.code == heif_error_Invalid_input);
+      REQUIRE(std::string(error.message).find("Tone-map colour properties") != std::string::npos);
+      heif_image* invalid_pixels = nullptr;
+      error = heif_decode_tone_map_image_float32(handle, &invalid_pixels, nullptr, 32,
+                                               heif_gain_map_resampling_phase_co_sited);
+      REQUIRE(error.code == heif_error_Invalid_input);
+      REQUIRE(invalid_pixels == nullptr);
+      heif_image_handle_release(handle);
+      heif_context_free(ctx);
+      path = path.parent_path() / (path.stem().string() + "-nclx-only" + path.extension().string());
+      ctx = heif_context_alloc();
+      REQUIRE(ctx);
+      REQUIRE(heif_context_read_from_file(ctx, path.string().c_str(), nullptr).code == heif_error_Ok);
+      REQUIRE(heif_context_get_image_handle(ctx, tmaps.front(), &handle).code == heif_error_Ok);
+    }
+    INFO(path.filename().string());
     REQUIRE(heif_image_handle_get_gain_map_metadata(handle, &metadata).code == heif_error_Ok);
     REQUIRE(metadata.channel_count == (rgb ? 3 : 1));
     auto* profile = heif_nclx_color_profile_alloc();
@@ -183,7 +206,7 @@ TEST_CASE("Stock libultrahdr and libheif exchange ISO containers and HDR pixels"
         }
       }
     }
-    std::cout << name << " stock libultrahdr/libheif maxLinearError=" << maximum_error << '\n';
+    std::cout << path.filename().string() << " stock libultrahdr/libheif maxLinearError=" << maximum_error << '\n';
     heif_image_release(pixels);
     heif_decoding_options_free(options);
     heif_nclx_color_profile_free(profile);

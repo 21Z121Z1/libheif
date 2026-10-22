@@ -32,6 +32,8 @@
 #include "libheif/heif_tiling.h"
 #include "libheif/heif_color.h"
 #include "libheif/heif_security.h"
+#include "libheif/heif_items.h"
+#include "libheif/heif_properties.h"
 #include "test_utils.h"
 
 #include <algorithm>
@@ -119,7 +121,9 @@ std::vector<uint8_t> build_tmap_file(
     bool alternate_full_range = true,
     uint16_t alternate_transfer = 16,
     bool wide_gain = false,
-    bool rotate_gain = false)
+    bool rotate_gain = false,
+    uint8_t duplicate_colour_role = 0,
+    bool grid_base = false)
 {
   constexpr uint32_t width = 2;
   constexpr uint32_t height = 2;
@@ -149,13 +153,13 @@ std::vector<uint8_t> build_tmap_file(
   auto pitm = make_box("pitm", pitm_payload, true);
 
   std::vector<uint8_t> iinf_payload;
-  const uint16_t item_count = premultiplied_base ? 4 : 3;
+  const uint16_t item_count = premultiplied_base || grid_base ? 4 : 3;
   put_u16_be(iinf_payload, item_count);
   for (uint16_t id = 1; id <= item_count; ++id) {
     std::vector<uint8_t> infe;
     put_u16_be(infe, id);
     put_u16_be(infe, 0);
-    append_fourcc(infe, id == 3 ? "tmap" : "mski");
+    append_fourcc(infe, id == 3 ? "tmap" : (id == 1 && grid_base ? "grid" : "mski"));
     infe.push_back(0);
     append(iinf_payload,
            make_box("infe", infe, true, 2, id == 2 || id == 4 ? 1 : 0));
@@ -168,7 +172,7 @@ std::vector<uint8_t> build_tmap_file(
   auto ispe = make_box("ispe", ispe_payload, true);
 
   auto mskC = make_box("mskC", std::vector<uint8_t>{8}, true);
-  auto base_colr = baseline_icc ? make_nclx(2, 2, 1, true) : make_nclx(1, baseline_transfer, 1, true);
+  auto base_colr = baseline_icc && !grid_base ? make_nclx(2, 2, 1, true) : make_nclx(1, baseline_transfer, 1, true);
   auto gain_colr =
       make_nclx(gain_primaries, gain_transfer, 2, true);
   auto tmap_colr = alternate_icc ? make_nclx(2, 2, 0, alternate_full_range) :
@@ -223,29 +227,41 @@ std::vector<uint8_t> build_tmap_file(
   put_u32_be(ipma_payload, item_count);
 
   put_u16_be(ipma_payload, 1);
-  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_base ? 1 : 0) + (baseline_icc ? 1 : 0) + (diffuse_whites ? 1 : 0)));
-  ipma_payload.push_back(0x80 | 1);
-  ipma_payload.push_back(0x80 | 2);
-  ipma_payload.push_back(3);
-  if (rotate_base) {
-    ipma_payload.push_back(0x80 | 6);
+  if (grid_base) {
+    ipma_payload.push_back(baseline_icc ? 2 : 1);
+    ipma_payload.push_back(0x80 | 1);
+    if (baseline_icc) { ipma_payload.push_back(baseline_icc_property); }
   }
-  if (baseline_icc) { ipma_payload.push_back(baseline_icc_property); }
-  if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[0]); }
+  else {
+    ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_base ? 1 : 0) + (baseline_icc ? 1 : 0) +
+                                               (diffuse_whites ? 1 : 0) + (duplicate_colour_role == 1 ? 1 : 0)));
+    ipma_payload.push_back(0x80 | 1);
+    ipma_payload.push_back(0x80 | 2);
+    ipma_payload.push_back(3);
+    if (duplicate_colour_role == 1) { ipma_payload.push_back(3); }
+    if (rotate_base) {
+      ipma_payload.push_back(0x80 | 6);
+    }
+    if (baseline_icc) { ipma_payload.push_back(baseline_icc_property); }
+    if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[0]); }
+  }
 
   put_u16_be(ipma_payload, 2);
-  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_gain ? 1 : 0)));
+  ipma_payload.push_back(static_cast<uint8_t>(3 + (rotate_gain ? 1 : 0) + (duplicate_colour_role == 2 ? 1 : 0)));
   ipma_payload.push_back(0x80 | gain_ispe_property);
   ipma_payload.push_back(0x80 | 2);
   ipma_payload.push_back(4);
+  if (duplicate_colour_role == 2) { ipma_payload.push_back(4); }
   if (rotate_gain) {
     ipma_payload.push_back(0x80 | 6);
   }
 
   put_u16_be(ipma_payload, 3);
-  ipma_payload.push_back(static_cast<uint8_t>((alternate_icc ? 3 : 2) + (diffuse_whites ? 1 : 0)));
+  ipma_payload.push_back(static_cast<uint8_t>((alternate_icc ? 3 : 2) + (diffuse_whites ? 1 : 0) +
+                                             (duplicate_colour_role == 3 ? 1 : 0)));
   ipma_payload.push_back(0x80 | 1);
   ipma_payload.push_back(5);
+  if (duplicate_colour_role == 3) { ipma_payload.push_back(5); }
   if (alternate_icc) { ipma_payload.push_back(alternate_icc_property); }
   if (diffuse_whites) { ipma_payload.push_back(diffuse_white_properties[1]); }
   if (premultiplied_base) {
@@ -254,6 +270,13 @@ std::vector<uint8_t> build_tmap_file(
     ipma_payload.push_back(0x80 | 1);
     ipma_payload.push_back(0x80 | 2);
     ipma_payload.push_back(0x80 | (rotate_base || rotate_gain ? 7 : 6));
+  }
+  else if (grid_base) {
+    put_u16_be(ipma_payload, 4);
+    ipma_payload.push_back(3);
+    ipma_payload.push_back(0x80 | 1);
+    ipma_payload.push_back(0x80 | 2);
+    ipma_payload.push_back(3);
   }
 
   auto ipma = make_box("ipma", ipma_payload, true);
@@ -280,11 +303,19 @@ std::vector<uint8_t> build_tmap_file(
     const std::array<uint8_t, 4> samples{255, 0, 191, 64};
     std::copy(samples.begin(), samples.end(), idat_payload.begin() + width * height);
   }
+  if (grid_base) {
+    idat_payload.erase(idat_payload.begin(), idat_payload.begin() + width * height);
+    const std::array<uint8_t, 8> grid{0, 0, 0, 0, 0, width, 0, height};
+    idat_payload.insert(idat_payload.begin(), grid.begin(), grid.end());
+  }
   idat_payload.insert(
       idat_payload.end(), tmap_payload.begin(), tmap_payload.end());
   if (premultiplied_base) {
     std::fill_n(idat_payload.begin(), width * height, uint8_t{51});
     append(idat_payload, std::vector<uint8_t>{0, 85, 85, 255});
+  }
+  else if (grid_base) {
+    append(idat_payload, std::vector<uint8_t>(width * height, 0x7F));
   }
   auto idat = make_box("idat", idat_payload);
 
@@ -294,7 +325,7 @@ std::vector<uint8_t> build_tmap_file(
   put_u16_be(iloc_payload, item_count);
 
   const uint32_t item_lengths[4] = {
-      width * height,
+      grid_base ? 8 : width * height,
       gain_width * height,
       static_cast<uint32_t>(tmap_payload.size()),
       width * height
@@ -325,6 +356,13 @@ std::vector<uint8_t> build_tmap_file(
   }
   std::vector<uint8_t> iref_payload;
   append(iref_payload, make_box("dimg", dimg_payload));
+  if (grid_base) {
+    std::vector<uint8_t> grid_dimg;
+    put_u16_be(grid_dimg, 1);
+    put_u16_be(grid_dimg, 1);
+    put_u16_be(grid_dimg, 4);
+    append(iref_payload, make_box("dimg", grid_dimg));
+  }
   if (duplicate_dimg_entry) {
     std::vector<uint8_t> duplicate_payload;
     put_u16_be(duplicate_payload, 3);
@@ -1394,6 +1432,12 @@ TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline 
                                    &metadata, false, &icc, alternate_icc ? &icc : nullptr);
   heif_context* context = nullptr;
   auto* tmap = open_tmap(&context, file);
+  // Both items use identical ICC bytes at different property indices. Loading
+  // their descriptions must preserve the original two associations per item.
+  REQUIRE(heif_item_get_properties_of_type(context, 1,
+      static_cast<heif_item_property_type>(heif_fourcc('c', 'o', 'l', 'r')), nullptr, 0) == 2);
+  REQUIRE(heif_item_get_properties_of_type(context, 3,
+      static_cast<heif_item_property_type>(heif_fourcc('c', 'o', 'l', 'r')), nullptr, 0) == (alternate_icc ? 2 : 1));
   auto* options = heif_decoding_options_alloc();
   REQUIRE(options);
   auto* requested = heif_nclx_color_profile_alloc();
@@ -1424,6 +1468,215 @@ TEST_CASE("Dual ICC and storage NCLX use ICC colourimetry for tmap and baseline 
   heif_decoding_options_free(options);
   heif_image_handle_release(tmap);
   heif_context_free(context);
+}
+
+TEST_CASE("Inherited grid colour does not invent a required tmap baseline association")
+{
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, nullptr,
+      false, nullptr, nullptr, 13, nullptr, 9, true, 16, false, false, 0, true);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  CHECK(heif_item_get_properties_of_type(context, 1,
+      static_cast<heif_item_property_type>(heif_fourcc('c', 'o', 'l', 'r')), nullptr, 0) == 0);
+
+  // Ordinary grid decoding can inherit a tile description. HEIF's tmap input
+  // requires a colr associated with the grid itself, not just its coded tile.
+  heif_image_handle* base = nullptr;
+  REQUIRE(heif_context_get_image_handle(context, 1, &base).code == heif_error_Ok);
+  heif_image* pixels = nullptr;
+  auto error = heif_decode_image(base, &pixels, heif_colorspace_undefined,
+      heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(pixels);
+  heif_color_profile_nclx* colour = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(pixels, &colour).code == heif_error_Ok);
+  REQUIRE(colour->color_primaries == heif_color_primaries_ITU_R_BT_709_5);
+  REQUIRE(colour->transfer_characteristics == heif_transfer_characteristic_IEC_61966_2_1);
+  heif_nclx_color_profile_free(colour);
+  heif_image_release(pixels);
+
+  pixels = nullptr;
+  error = heif_decode_image(tmap, &pixels, heif_colorspace_RGB, heif_chroma_444, nullptr);
+  INFO(error.message);
+  CHECK(error.code == heif_error_Invalid_input);
+  CHECK(pixels == nullptr);
+  if (pixels) { heif_image_release(pixels); }
+  heif_image_handle_release(base);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("Grid baseline uses its associated ICC instead of inheriting tile NCLX")
+{
+  const auto icc = make_custom_gamma_icc();
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata,
+      false, &icc, nullptr, 13, nullptr, 9, true, 16, false, false, 0, true);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  REQUIRE(heif_item_get_properties_of_type(context, 1,
+      static_cast<heif_item_property_type>(heif_fourcc('c', 'o', 'l', 'r')), nullptr, 0) == 1);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  options->output_image_nclx_profile = requested;
+  heif_image* pixels = nullptr;
+  const auto error = heif_decode_image(tmap, &pixels, heif_colorspace_RGB,
+      heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(pixels);
+  const double expected = std::pow(127.0 / 255, 2) * 2;
+  for (const auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t stride = 0;
+    const auto* plane = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(pixels, channel, &stride));
+    REQUIRE(plane);
+    CHECK(plane[0] == Catch::Approx(expected * 65535).margin(5));
+  }
+  heif_image_release(pixels);
+  heif_nclx_color_profile_free(requested);
+  options->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
+TEST_CASE("tmap rejects conflicting ICC and NCLX colour descriptions")
+{
+  const bool alternate = GENERATE(false, true);
+  const int conflict = GENERATE(1, 2, 3);
+  const auto icc = make_custom_gamma_icc();
+  auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, nullptr, false,
+      alternate ? nullptr : &icc, alternate ? &icc : nullptr);
+  const std::vector<uint8_t> nclx{'n', 'c', 'l', 'x', 0, 2, 0, 2, 0,
+                                  static_cast<uint8_t>(alternate ? 0 : 1), 0x80};
+  const auto found = std::search(file.begin(), file.end(), nclx.begin(), nclx.end());
+  REQUIRE(found != file.end());
+  if (conflict & 1) { found[5] = 1; }
+  if (conflict & 2) { found[7] = 13; }
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* pixels = nullptr;
+  const auto error = heif_decode_image(tmap, &pixels, heif_colorspace_RGB,
+      heif_chroma_444, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(pixels == nullptr);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("tmap rejects duplicate colour associations on each image role")
+{
+  const uint8_t role = GENERATE(uint8_t{1}, uint8_t{2}, uint8_t{3});
+  const bool icc_pair = GENERATE(false, true);
+  const auto icc = make_custom_gamma_icc();
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, nullptr, false,
+      icc_pair ? &icc : nullptr, icc_pair ? &icc : nullptr, 13, nullptr, 9,
+      true, 16, false, false, role);
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* pixels = nullptr;
+  const auto error = heif_decode_image(tmap, &pixels, heif_colorspace_RGB,
+      heif_chroma_444, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(pixels == nullptr);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("tmap writer rejects invalid existing colour associations before mutation")
+{
+  const int invalid = GENERATE(1, 2, 3, 4, 5);
+  const auto icc = make_custom_gamma_icc();
+  auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, nullptr, false,
+      &icc, nullptr, 13, nullptr, 9, true, 16, false, false,
+      invalid >= 4 ? static_cast<uint8_t>(invalid - 3) : 0);
+  if (invalid < 4) {
+    const std::vector<uint8_t> nclx{'n', 'c', 'l', 'x', 0, 2, 0, 2, 0, 1, 0x80};
+    const auto found = std::search(file.begin(), file.end(), nclx.begin(), nclx.end());
+    REQUIRE(found != file.end());
+    if (invalid & 1) { found[5] = 1; }
+    if (invalid & 2) { found[7] = 13; }
+  }
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image_handle* base = nullptr;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_get_image_handle(ctx, 1, &base).code == heif_error_Ok);
+  REQUIRE(heif_context_get_image_handle(ctx, 2, &gain).code == heif_error_Ok);
+  heif_gain_map_metadata metadata{};
+  metadata.struct_version = 1;
+  metadata.channel_count = 1;
+  metadata.use_base_colour_space = 1;
+  metadata.base_hdr_headroom = {0, 1};
+  metadata.alternate_hdr_headroom = {2, 1};
+  metadata.channels[0].gain_map_min = {-1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  metadata.channels[0].gamma = {1, 1};
+  metadata.channels[0].base_offset = {0, 1};
+  metadata.channels[0].alternate_offset = {0, 1};
+  heif_color_profile_nclx alternate{};
+  alternate.version = 1;
+  alternate.color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  alternate.transfer_characteristics = heif_transfer_characteristic_linear;
+  alternate.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  alternate.full_range_flag = 1;
+  heif_tone_map_options options{};
+  options.version = 1;
+  options.alternate_nclx = &alternate;
+  const auto count = heif_context_get_number_of_items(ctx);
+  heif_image_handle* output = nullptr;
+  const auto error = heif_context_add_tone_map_derived_image(ctx, base, gain,
+      &metadata, &options, &output);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(output == nullptr);
+  REQUIRE(heif_context_get_number_of_items(ctx) == count);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
+}
+
+TEST_CASE("Unknown minimum version ignores invalid alternate colour associations")
+{
+  const bool duplicate = GENERATE(false, true);
+  const auto icc = make_custom_gamma_icc();
+  auto file = build_tmap_file(2, 0, 1, 2, 2, 1, false, false, nullptr, false,
+      nullptr, &icc, 13, nullptr, 9, true, 16, false, false, duplicate ? 3 : 0);
+  if (!duplicate) {
+    const std::vector<uint8_t> nclx{'n', 'c', 'l', 'x', 0, 2, 0, 2, 0, 0, 0x80};
+    const auto found = std::search(file.begin(), file.end(), nclx.begin(), nclx.end());
+    REQUIRE(found != file.end());
+    found[5] = 1;
+    found[7] = 13;
+  }
+  heif_context* ctx = nullptr;
+  auto* tmap = open_tmap(&ctx, file);
+  heif_image* pixels = nullptr;
+  const auto error = heif_decode_image(tmap, &pixels, heif_colorspace_undefined,
+      heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(heif_image_get_bits_per_pixel_range(pixels, heif_channel_Y) == 8);
+  heif_color_profile_nclx* colour = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(pixels, &colour).code == heif_error_Ok);
+  REQUIRE(colour->color_primaries == heif_color_primaries_ITU_R_BT_709_5);
+  REQUIRE(colour->transfer_characteristics == heif_transfer_characteristic_IEC_61966_2_1);
+  heif_nclx_color_profile_free(colour);
+  heif_image_release(pixels);
+  heif_image_handle_release(tmap);
+  heif_context_free(ctx);
 }
 
 TEST_CASE("Gray ICC baseline files use the declared alternate RGB primaries")
