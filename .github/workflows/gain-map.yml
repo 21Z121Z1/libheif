@@ -1,6 +1,20 @@
 name: gain-map-conformance
 
 on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Published starting commit for candidate validation
+        type: string
+        default: ''
+      source_bundle:
+        description: Optional Git bundle artifact from the calling workflow
+        type: string
+        default: ''
+      source_sha:
+        description: Exact candidate commit inside the source bundle
+        type: string
+        default: ''
   pull_request:
     branches: [master]
   push:
@@ -19,7 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
+          ref: ${{ inputs.source_ref }}
           persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        if: inputs.source_bundle != ''
+        with:
+          artifact: ${{ inputs.source_bundle }}
+          sha: ${{ inputs.source_sha }}
       - name: Build independent pinned libultrahdr
         run: |
           sudo apt-get update
@@ -46,7 +66,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
+          ref: ${{ inputs.source_ref }}
           persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        if: inputs.source_bundle != ''
+        with:
+          artifact: ${{ inputs.source_bundle }}
+          sha: ${{ inputs.source_sha }}
       - name: Build HEVC reader and writer
         run: |
           brew install cmake ninja pkg-config libde265 x265 aom dav1d ffmpeg little-cms2
@@ -107,7 +133,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
+          ref: ${{ inputs.source_ref }}
           persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        if: inputs.source_bundle != ''
+        with:
+          artifact: ${{ inputs.source_bundle }}
+          sha: ${{ inputs.source_sha }}
       - name: Build with ASan and UBSan
         run: |
           sudo apt-get update
@@ -162,7 +194,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
+          ref: ${{ inputs.source_ref }}
           persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        if: inputs.source_bundle != ''
+        with:
+          artifact: ${{ inputs.source_bundle }}
+          sha: ${{ inputs.source_sha }}
       - name: Install HEVC codecs
         run: |
           sudo apt-get update
@@ -182,7 +220,7 @@ jobs:
             build-interop/tests/tmap_write 'Generate synthetic HEVC tmap files for independent consumers'
           python3 scripts/check-tmap-samples.py \
             --library build-interop/libheif/libheif.so \
-            --revision "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --revision "$(git rev-parse HEAD)" \
             --output build-interop/sample-report.json --expect-files 2 build-interop/synthetic
           python3 - <<'PY'
           import json
