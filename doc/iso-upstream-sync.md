@@ -20,12 +20,13 @@ record the actual checked-out SHA and run with read-only repository permissions:
 - The ordinary Linux test suite on both the fork baseline and ISO integration.
 - Existing lint/license checks and the ordinary fuzzer on the ISO candidate.
 
-Only the publication job has `contents: write`. It verifies the bundle and
-ancestry, rechecks both remote heads, then performs one atomic, non-forced push.
-The existing ISO PR updates with its maintained branch. There is no separate
-bot PR. Validation runs inside this workflow because pushes made with the
-default `GITHUB_TOKEN` do not automatically run the usual push CI. Manual
-validation also exercises publication of the unchanged refs.
+Only the publication job receives the repository-scoped SSH deploy key from
+`ISO_SYNC_SSH_KEY`; all `GITHUB_TOKEN` permissions remain read-only. The job
+verifies the bundle and ancestry, rechecks both remote heads, then performs one
+atomic, non-forced push. The existing ISO PR updates with its maintained branch.
+There is no separate bot PR. Validation runs before publication inside this
+workflow; an SSH push can also start the ordinary repository CI. Manual
+validation exercises publication of unchanged refs as well.
 
 A merge conflict, failed gate or concurrent branch update leaves both remote
 branches unchanged. The failed Actions run and retained source/conflict artifact
@@ -33,12 +34,12 @@ identify the problem. Resolve it on the affected maintained branch and rerun the
 workflow. Repository rules or token permissions may also refuse publication;
 that is a failed run, never a successful synchronization.
 
-The default token cannot introduce new workflow-file content. If an upstream
-integration needs that permission, configure the optional `ISO_SYNC_TOKEN`
-repository secret with a token restricted to this repository and Contents/Workflows
-write permissions. It is passed only to the publication job. Without that secret,
-the validation still runs and a refused publication retains both old branch heads.
-See GitHub's [workflow permission documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps).
+The default token cannot introduce new workflow-file content. The dedicated
+write deploy key also handles upstream changes to workflow files, without a
+personal account token. Its public key is named `ISO upstream sync publisher`
+in this repository's Deploy keys settings. It can be revoked there and rotated
+together with the `ISO_SYNC_SSH_KEY` Actions secret. See GitHub's
+[deploy key documentation](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys).
 
 This maintenance gate is not a full ISO conformance certification. It does not
 replace private image archives, physical-display/Photos validation, or the
