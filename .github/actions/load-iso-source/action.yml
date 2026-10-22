@@ -1,0 +1,28 @@
+name: Load exact ISO synchronization source
+description: Restore the candidate commit from this run's immutable Git bundle
+inputs:
+  artifact:
+    description: Source artifact name from the prepare job
+    required: true
+  sha:
+    description: Full commit SHA selected by the prepare job
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/iso-sync-source
+    - name: Select the exact candidate commit
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.sha }}
+        SOURCE_BUNDLE: ${{ runner.temp }}/iso-sync-source/source.bundle
+      run: |
+        [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+        git bundle verify "$SOURCE_BUNDLE"
+        git fetch "$SOURCE_BUNDLE" 'refs/heads/codex/iso-sync-*:refs/remotes/iso-sync/*'
+        git checkout --detach "$SOURCE_SHA"
+        test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        printf 'Tested source: `%s`\n' "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
