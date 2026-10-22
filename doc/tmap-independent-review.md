@@ -1,5 +1,31 @@
 # Independent ISO gain-map implementation review
 
+## 2026-10-23 colour-association correction
+
+The integration PR at `88b50610` omitted the colour-association fix already
+present in local review commit `355de68c`. Replaying its seven focused reader
+cases produced six failures. A grid with an explicit gamma-2 ICC inherited its
+tile's sRGB NCLX and reconstructed RGB16 as 27817 instead of approximately
+32511. Reading identical profiles at separate property indices also appended
+associations, and conflicting ICC/NCLX pairs were accepted.
+
+The integration fix loads descriptions without registering properties, retains
+explicit grid colour, and validates every original colour association. The
+existing unknown-minimum-version baseline fallback remains unchanged. Reader
+and writer regressions cover the pixel result, ownership, malformed pairs and
+preflight failure without item mutation.
+
+The pinned Google HEIF workaround also emits a conflicting baseline ICC/NCLX
+pair. Its four original HEIC/AVIF files are now negative tests. Separately named
+single-NCLX projections remove one non-essential ICC association byte, retain
+all coded payloads and gain metadata, and must produce exactly the same Google
+HDR reference pixels. Positive container comparisons use these projections;
+the raw Google metadata/math oracle is unchanged. Earlier container results
+below are historical and do not prove that the original producer files comply
+with HEIF 6.5.5.
+
+## Earlier independent comparisons
+
 The following revisions were read directly from their official repositories on
 2026-10-04. The English ISO 2025 publications decide differences between
 implementations. This review supplies cross-checks, not a general conformance

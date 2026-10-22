@@ -8,6 +8,13 @@ operation. RGB LUT profiles use optional Little CMS.
 It is not a complete implementation of every colour profile
 allowed by HEIF.
 
+Colour validation uses the item's original property associations. Each image
+role permits one `colr`, or an ICC profile paired with storage NCLX whose
+primaries and transfer are both 2. Loading a description does not register new
+properties. A grid's explicit colour description takes precedence over its
+tiles; ordinary grids without a description may inherit one, but inheritance
+does not satisfy the required association on a tmap baseline.
+
 ## Reconstruction
 
 Ordinary `heif_decode_image()` on a supported `tmap` applies the complete gain
@@ -128,8 +135,9 @@ extended-transfer samples are retained through linear gain application.
 Floating gain values undergo the same logical normalization and inverse gamma
 as integer gains. Opacity must be finite and within [0,1]; its original value
 is used before final output quantization. Interleaved RGB/RGBA samples use their
-actual pixel stride and embedded alpha, including native wide integer/float
-storage. RRGGBB(AA) layouts use their declared 16-bit byte order and coded depth.
+actual pixel stride and embedded alpha. The upstream byte-interleaved
+RGB/RGBA construction API requires eight bits per component; wide integer/float
+inputs use planar components. RRGGBB(AA) layouts use their declared 16-bit byte order and coded depth.
 No intermediate RGB raster is needed for these layouts. GBR storage maps
 Cr/Y/Cb directly to R/G/B, including mixed component types. Unsigned 1-32-bit
 YCbCr inversions use double-precision RGB planes
@@ -190,7 +198,10 @@ request linear RGB or PQ. Linear RGB retains negative out-of-gamut components
 as well as values above reference white. Its identity transfer does not clip floating samples;
 integer output still clips at the final representable boundary.
 Its alpha plane reports its own datatype and depth; an unknown minimum
-version returns the baseline converted to floating RGB.
+version returns the baseline converted to floating RGB. For unknown-minimum-version
+fallback, handle bit-depth queries return -1 because the baseline can have a
+different native depth. Query the decoded image for its actual component depth;
+the baseline codec still undergoes the upstream signaled-depth validation.
 Its explicit phase argument selects co-sited or centered gain-map bilinear
 sampling for all derived nodes. Ordinary integer decode keeps the ISO 6.2.2
 preferred co-sited phase. Centered is a consumer choice, matching the local
@@ -259,7 +270,7 @@ when available. The review series retains visibility consistency checks and
 C-boundary exception guards without exposing an arbitrary internal group graph.
 
 ISO 21496-1 4.4 recommends at least eight bits per gain component ("should",
-not "shall"). Full-range monochrome and RGB (planar or byte interleaved) inputs below eight bits
+not "shall"). Full-range monochrome and planar RGB inputs below eight bits
 are now expanded by their normalized values to a common unsigned depth of at
 least eight bits before codec encoding. Each level rounds to the nearest
 representable value; the caller's raster remains unchanged. Mixed planar
@@ -267,6 +278,8 @@ depths use the largest depth, with a minimum of eight. Low-depth YCbCr
 or limited-range inputs are still explicitly rejected rather than
 guessing their zero point or layout. Reconstruction supports lower-depth
 full-range samples; bit depth alone does not make a file non-conforming.
+Byte-interleaved RGB/RGBA inputs must satisfy the upstream eight-bit layout
+contract and are rejected at plane construction for other component depths.
 
 ## Remaining limitations
 
@@ -383,12 +396,16 @@ Its HEIF integration still targets the historical PR #1503 API: this proves
 ISO metadata and gain-operation interoperability; that private API still needs
 an adapter for drop-in integration.
 The Mac job also builds stock libultrahdr with its own pinned libheif/PR #1503
-workaround. Its mono/RGB HEIC and AVIF files are decoded through this branch's
-public floating API and compared with independently decoded Google half-float
-pixels. Google also decodes this branch's two synthetic HEIC files. All six
-comparisons check the constructed HDR intentions and use the same pixel
-tolerance as the raw oracle. This verifies bidirectional container compatibility
-without importing the old private API into libheif.
+workaround. That producer combines baseline ICC with NCLX CP=1/TC=13, contrary
+to HEIF 6.5.5. The original mono/RGB HEIC and AVIF files are retained as four
+negative cases. The harness creates separately named `-nclx-only` fixtures by
+clearing exactly one non-essential ICC association byte; coded payloads,
+extents, gain metadata and NCLX remain unchanged. Google must decode each
+projection to byte-identical HDR reference pixels. The four projections and
+this branch's two synthetic HEIC files are then compared through the public
+floating API, using the same pixel tolerance as the raw oracle. These six
+positive exchanges demonstrate scoped compatibility, not acceptance of the
+unmodified invalid producer files or an independent HEIF graph implementation.
 The published `gainmap_hevc_16x16.heic` fixture declares a 64x64 tmap but crops
 its base to 16x16; canonical decode correctly rejects this inconsistent geometry.
 
