@@ -59,8 +59,15 @@ HLG uses the BT.2100 reference display (1000 cd/m2, zero black, system gamma
 1.2), including its RGB-luminance-dependent OOTF, with the same 203 cd/m2
 default reference white. Other HLG viewing conditions are not configurable yet.
 
-For ICC-described base or alternate items, an ICC `cicp` tag uses the supported
-CICP subset and HDR reference-white convention above. RGB input/display
+For ICC-described base or alternate items, an input/display ICC `cicp` tag with
+RGB, XYZ or YCbCr data uses the supported CICP transforms and HDR reference-white convention
+above. XYZ/ST 428 retains its XYZ basis and absolute-luminance normalization.
+ICC.1:2022 9.2.17's profile-class/data-space restrictions and 10.3's matrix
+rules are checked before the CICP fast path. Storage matrix/range inversion
+uses the original raster description; CICP supplies unspecified primaries and
+transfer values needed by derived, constant-luminance and LMS matrices.
+When no storage NCLX is present, a matching RGB/YCbCr CICP description also
+supplies the sample range. RGB input/display
 matrix/TRC profiles use their stored D50 PCS colourants and each channel's
 monotone `curveType` or supported `parametricCurveType` (types 0-4), without matching them
 to a CICP approximation. Sampled curves use linear interpolation; inverse
@@ -81,6 +88,14 @@ take precedence over the shaper. Unequal RGB samples cannot silently be decoded
 as gray. Gray profiles cannot define RGB application primaries or describe the
 canonical RGB alternate output. Unknown-version baseline fallback can still
 convert a gray baseline to explicitly requested RGB NCLX.
+
+CMYK input/output ICC LUT profiles use Little CMS to convert all four device
+components through XYZ PCS into the alternate's declared RGB application
+primaries. The uncompressed codec preserves the explicit ICC and the four
+declared cyan, magenta, yellow and black components, including their order and
+depth. Reconstruction reads normalized unsigned 1-64-bit or float32/64 planar
+components directly; no CMY-to-RGB approximation or dropped black channel is
+used. CMYK cannot supply RGB application primaries or describe the RGB alternate.
 
 When Little CMS 2.10 or newer is detected (`WITH_LCMS2=ON`, the default), RGB
 input, display, output and ColorSpace (`spac`) LUT profiles use their relative-colorimetric CMM
@@ -109,9 +124,13 @@ the decoded raster, retaining RGB excursions for the actual ICC transfer instead
 of clipping them according to unspecified storage TC=2. A matrix/TRC alternate retains its original ICC and uses
 CP=2/TC=2 for the RGB raster instead of inventing a CICP encoding. Unknown-version
 baseline fallback also honours ICC during requested output conversion.
-Device-link, CMYK and other unsupported non-RGB transforms are not approximated. A LUT tag does not
+Other unsupported non-RGB transforms are not approximated. DeviceLink is not an
+embedded image profile under ICC.1:2022 8.6. A LUT tag does not
 silently fall back to the matrix/TRC model. The original ICC property remains
-available on the canonical decoded image.
+available on the image handle. A full-range RGB/XYZ alternate can also retain
+its ICC on the decoded raster. A YCbCr or narrow-range CICP alternate becomes
+full-range RGB NCLX after storage inversion, so its original ICC is retained
+only on the item; attaching it to those changed samples would mislabel them.
 
 Gain samples are clipped to the logical [0,1] range, inverse-gamma transformed,
 then unnormalized to log2 gains before co-sited bilinear resampling with edge
@@ -285,12 +304,22 @@ contract and are rejected at plane construction for other component depths.
 
 - ICC profiles without RGB colourants or explicit chromaticity/adaptation cannot supply the selected
   application primaries; RGB LUTs may still convert through PCS to/from the
-  other item's application space. Gray baselines also convert through PCS;
-  device-link, CMYK and other non-RGB, and non-monotone shaper
-  transforms remain unsupported. ISO Annex B requires a resolved linear RGB
+  other item's application space. Gray and CMYK baselines also convert through PCS.
+  Other non-RGB and non-monotone shaper transforms remain unsupported.
+  ISO Annex B requires a resolved linear RGB
   application space. Supported RGB LUTs use the optional
   CMM described above; matrix/TRC and CICP profiles need no CMM dependency.
-- HLG is limited to the reference viewing conditions described above.
+- HLG uses the reference viewing conditions described above. Non-reference
+  display rendering is a consumer policy, with no parameter in Annex C or the
+  HEIF `tmap` metadata. This is a display-rendering limit, not an unparsed file field.
+- Annex B.2 converts to the RGB encoding of the alternate. Gray or CMYK
+  profiles cannot label that RGB output; a baseline in either space needs
+  the alternate's RGB application primaries. This requirement is distinct from
+  supporting gray/CMYK baselines through colour management.
+- B.2 recommends gamut mapping for a smaller alternate gamut, without
+  specifying a mapping algorithm. Canonical float output preserves the ISO
+  arithmetic, including out-of-gamut components. Integer output clips at its
+  representable boundary; a perceptual gamut-mapping policy remains with the consumer.
 - YCbCr raster conversion supports explicit linear matrices 0, 1, 4, 5, 6, 7
   and 9, plus matrix 12 when the raster's primaries are defined. YCgCo (8),
   YCgCo-R, -Re (16), -Ro (17), and ST 2085 (11) use their H.273 inverse
@@ -353,6 +382,14 @@ for both experimental modes, with the runtime CMM independently enabled and
 disabled. Serialized ICC v2 LUT16 and v4 LUT profiles also have independently
 known gamma, gain and offset expectations, including LUT precedence, conversion
 without optional colourants and input-only transforms.
+The same oracle exercises CMYK XYZ/Lab baselines, all four device channels,
+reordered component IDs, integer and floating storage, opacity and invalid
+component layouts. Public uncompressed file round trips compare the reconstructed
+RGB directly against independent CMYK-to-RGB CMM transforms at three headrooms.
+ICC CICP regressions cover XYZ/ST 428, YCbCr and narrow RGB, absent storage NCLX,
+and canonical output tagging. Unknown minimum versions stop after the two-byte
+minimum field, before interpreting any unknown writer field; a pinned Google
+parser and public baseline fallback exercise that order.
 
 The `gain-map-conformance` workflow runs experimental OFF and ON builds with
 ASan/UBSan, leak detection, public C-header and stable API-symbol checks. It
