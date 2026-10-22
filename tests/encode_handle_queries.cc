@@ -24,12 +24,9 @@
   SOFTWARE.
 */
 
-// A heif_context is used either for reading or for writing. The decoder object of an image
-// item is only created when the item is read from a file, so an image that was added to the
-// context by encoding has none. Decoding such an image, and also the plain queries for its
-// bit depth, colorspace and alpha channel on the handle that heif_context_encode_image()
-// returns, dereferenced the missing decoder and crashed. This is not a supported use of the
-// API, but it has to fail with an error.
+// Encoded image handles initialize their decoder configuration and input extent
+// before being returned. Queries must work before serialization, and decoding
+// must succeed when a decoder plugin is available or fail without a null dereference.
 
 #include "catch_amalgamated.hpp"
 #include "libheif/heif.h"
@@ -83,7 +80,7 @@ const char* format_name(heif_compression_format format)
 } // namespace
 
 
-TEST_CASE("queries and decoding on the handle of an encoded image fail without crashing")
+TEST_CASE("queries and decoding on encoded image handles work before serialization")
 {
   int num_formats_tested = 0;
 
@@ -120,40 +117,38 @@ TEST_CASE("queries and decoding on the handle of an encoded image fail without c
     CHECK(heif_image_handle_get_width(handle) == W);
     CHECK(heif_image_handle_get_height(handle) == H);
 
-    // --- these need the decoder of the image item, which an encoded image does not have
+    // --- these use the initialized decoder configuration
 
-    // The bit depth is unknown (-1).
-    CHECK(heif_image_handle_get_luma_bits_per_pixel(handle) == -1);
-    CHECK(heif_image_handle_get_chroma_bits_per_pixel(handle) == -1);
+    CHECK(heif_image_handle_get_luma_bits_per_pixel(handle) == 8);
+    CHECK(heif_image_handle_get_chroma_bits_per_pixel(handle) == 8);
 
     heif_colorspace colorspace;
     heif_chroma chroma;
     err = heif_image_handle_get_preferred_decoding_colorspace(handle, &colorspace, &chroma);
-    CHECK(err.code != heif_error_Ok);
+    CHECK(err.code == heif_error_Ok);
 
     CHECK(heif_image_handle_has_alpha_channel(handle) == 0);
 
-    // The uncompressed codec happens to decode from an encoding context. That is not
-    // required. What is required is that no format crashes and that a failure is
-    // reported together with a null image.
+    const bool can_decode = heif_have_decoder_for_format(format) || format == heif_compression_uncompressed;
     heif_image* decoded = nullptr;
     err = heif_decode_image(handle, &decoded, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
-    if (format != heif_compression_uncompressed) {
-      CHECK(err.code != heif_error_Ok);
-    }
+    INFO(err.message);
+    CHECK((err.code == heif_error_Ok) == can_decode);
     CHECK((err.code == heif_error_Ok) == (decoded != nullptr));
     if (decoded) {
+      CHECK(heif_image_get_primary_width(decoded) == W);
+      CHECK(heif_image_get_primary_height(decoded) == H);
       heif_image_release(decoded);
     }
 
     decoded = nullptr;
     err = heif_image_handle_decode_image_tile(handle, &decoded, heif_colorspace_undefined, heif_chroma_undefined,
                                               nullptr, 0, 0);
-    if (format != heif_compression_uncompressed) {
-      CHECK(err.code != heif_error_Ok);
-    }
+    CHECK((err.code == heif_error_Ok) == can_decode);
     CHECK((err.code == heif_error_Ok) == (decoded != nullptr));
     if (decoded) {
+      CHECK(heif_image_get_primary_width(decoded) == W);
+      CHECK(heif_image_get_primary_height(decoded) == H);
       heif_image_release(decoded);
     }
 
@@ -162,7 +157,7 @@ TEST_CASE("queries and decoding on the handle of an encoded image fail without c
     heif_image_handle* primary = nullptr;
     err = heif_context_get_primary_image_handle(ctx, &primary);
     REQUIRE(err.code == heif_error_Ok);
-    CHECK(heif_image_handle_get_luma_bits_per_pixel(primary) == -1);
+    CHECK(heif_image_handle_get_luma_bits_per_pixel(primary) == 8);
     CHECK(heif_image_handle_has_alpha_channel(primary) == 0);
     heif_image_handle_release(primary);
 
