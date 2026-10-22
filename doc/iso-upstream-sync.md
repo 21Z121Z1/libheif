@@ -23,14 +23,22 @@ record the actual checked-out SHA and run with read-only repository permissions:
 Only the publication job has `contents: write`. It verifies the bundle and
 ancestry, rechecks both remote heads, then performs one atomic, non-forced push.
 The existing ISO PR updates with its maintained branch. There is no separate
-bot PR or personal-token secret. Validation runs inside this workflow because
-pushes made with `GITHUB_TOKEN` do not automatically run the usual push CI.
+bot PR. Validation runs inside this workflow because pushes made with the
+default `GITHUB_TOKEN` do not automatically run the usual push CI. Manual
+validation also exercises publication of the unchanged refs.
 
 A merge conflict, failed gate or concurrent branch update leaves both remote
 branches unchanged. The failed Actions run and retained source/conflict artifact
 identify the problem. Resolve it on the affected maintained branch and rerun the
 workflow. Repository rules or token permissions may also refuse publication;
 that is a failed run, never a successful synchronization.
+
+The default token cannot introduce new workflow-file content. If an upstream
+integration needs that permission, configure the optional `ISO_SYNC_TOKEN`
+repository secret with a token restricted to this repository and Contents/Workflows
+write permissions. It is passed only to the publication job. Without that secret,
+the validation still runs and a refused publication retains both old branch heads.
+See GitHub's [workflow permission documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps).
 
 This maintenance gate is not a full ISO conformance certification. It does not
 replace private image archives, physical-display/Photos validation, or the
