@@ -30,6 +30,14 @@ elif [ -z "$WORK" ]; then
 	exit 1
 fi
 
+# Record the source actually compiled inside the OSS-Fuzz project container.
+# A fork's CI supplies the expected head; a mismatch must stop the build.
+LIBHEIF_FUZZ_SOURCE_HEAD="$(git -c safe.directory="$SRC/libheif" -C "$SRC/libheif" rev-parse HEAD)"
+if [ -f "$SRC/libheif/.cifuzz-expected-head" ]; then
+	test "$LIBHEIF_FUZZ_SOURCE_HEAD" = "$(cat "$SRC/libheif/.cifuzz-expected-head")"
+fi
+echo "libheif fuzz source: $LIBHEIF_FUZZ_SOURCE_HEAD"
+
 # Install build dependencies.
 
 apt-get update
@@ -367,6 +375,8 @@ PKG_CONFIG="pkg-config --static" PKG_CONFIG_PATH="$DEPS_PATH/lib/pkgconfig:$DEPS
 make -j"$(nproc)"
 
 cp fuzzing/*_fuzzer "$OUT"
+test -x "$OUT/gain_map_fuzzer"
+printf '%s\n' "$LIBHEIF_FUZZ_SOURCE_HEAD" > "$OUT/libheif-source-head.txt"
 cp ../fuzzing/data/dictionary.txt "$OUT/box-fuzzer.dict"
 cp ../fuzzing/data/dictionary.txt "$OUT/file-fuzzer.dict"
 
