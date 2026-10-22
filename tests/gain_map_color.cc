@@ -29,6 +29,7 @@
 #include "gain_map_reconstruction.h"
 #include "libheif/heif_components.h"
 #include "libheif/heif_experimental.h"
+#include "libheif/heif_items.h"
 
 #include <algorithm>
 #include <array>
@@ -223,7 +224,10 @@ TEST_CASE("Gray ICC shapers convert through PCS into the alternate RGB applicati
   }
   REQUIRE_FALSE(gray->decode({0.2, 0.3, 0.2}));
   REQUIRE_FALSE(gray->decode({NAN, NAN, NAN}));
-  REQUIRE_FALSE(gray->encode({0.1, 0.1, 0.1}));
+  auto encoded_gray = gray->encode({0.9642 * 0.25, 0.25, 0.8249 * 0.25});
+  REQUIRE(encoded_gray);
+  const double encoded_connection = lab ? (116 * std::cbrt(0.25) - 16) / 100 : 0.25;
+  for (double value : *encoded_gray) { REQUIRE(value == Catch::Approx(std::sqrt(encoded_connection)).margin(1e-12)); }
   auto base = std::make_shared<HeifPixelImage>();
   base->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
   REQUIRE_FALSE(base->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
@@ -260,6 +264,70 @@ TEST_CASE("Gray ICC shapers convert through PCS into the alternate RGB applicati
   auto bad = make_icc({{signature("kTRC"), sampled_trc_tag({0, 32768, 16384, 65535})}});
   set_u32(bad, 16, signature("GRAY"));
   REQUIRE_FALSE(GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bad)));
+}
+
+TEST_CASE("Gray ICC alternates retain their actual mono encoding and opacity")
+{
+  const bool lab = GENERATE(false, true);
+  const bool floating = GENERATE(false, true);
+  const bool premultiplied = GENERATE(false, true);
+  const double target = GENERATE(0.0, 1.0, 2.0);
+  auto bytes = make_icc({{signature("kTRC"), sampled_trc_tag({512})}});
+  set_u32(bytes, 16, signature("GRAY"));
+  set_u32(bytes, 20, signature(lab ? "Lab " : "XYZ "));
+  auto gray = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+  REQUIRE(gray);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(2, 2, heif_colorspace_RGB, heif_chroma_444);
+  nclx_profile nclx;
+  nclx.set_colour_primaries(9);
+  nclx.set_transfer_characteristics(8);
+  nclx.set_matrix_coefficients(0);
+  nclx.set_full_range_flag(true);
+  base->set_color_profile_nclx(nclx);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B, heif_channel_Alpha}) {
+    REQUIRE_FALSE(base->add_channel(channel, 2, 2, 32, nullptr, heif_component_datatype_floating_point));
+    size_t stride = 0;
+    auto* plane = base->get_channel_memory<float>(channel, &stride);
+    const float value = channel == heif_channel_Alpha || !premultiplied ? 0.5f : 0.25f;
+    for (size_t y = 0; y < 2; ++y) { std::fill_n(plane + y * stride / sizeof(float), 2, value); }
+  }
+  base->set_premultiplied_alpha(premultiplied);
+  auto gain = std::make_shared<HeifPixelImage>();
+  gain->create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome);
+  REQUIRE_FALSE(gain->add_channel(heif_channel_Y, 1, 1, 8, nullptr));
+  gain->get_channel_memory(heif_channel_Y, nullptr)[0] = 255;
+  GainMapMetadata metadata;
+  metadata.use_base_colour_space = true;
+  metadata.alternate_hdr_headroom = {2, 1};
+  metadata.channels[0].gain_map_min = {2, 1};
+  metadata.channels[0].gain_map_max = {2, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto result = reconstruct_tone_map(base, gain, metadata, *gray, *options, nullptr,
+                                    std::nullopt, target, floating);
+  REQUIRE(result);
+  REQUIRE((*result)->get_colorspace() == heif_colorspace_monochrome);
+  REQUIRE((*result)->get_chroma_format() == heif_chroma_monochrome);
+  REQUIRE((*result)->get_color_profile_icc()->get_data() == bytes);
+  REQUIRE((*result)->is_premultiplied_alpha() == premultiplied);
+  const double luminance = 0.5 * std::exp2(target);
+  const double connection = lab ? (116 * std::cbrt(luminance) - 16) / 100 : luminance;
+  const double encoded = std::sqrt(connection);
+  const double expected = (floating ? encoded : std::clamp(encoded, 0.0, 1.0)) * (premultiplied ? 0.5 : 1);
+  size_t stride = 0;
+  const auto* plane = (*result)->get_channel_memory(heif_channel_Y, &stride);
+  for (size_t y = 0; y < 2; ++y) {
+    for (size_t x = 0; x < 2; ++x) {
+      const auto* row = plane + y * stride;
+      const double actual = floating ? reinterpret_cast<const float*>(row)[x] :
+                                      reinterpret_cast<const uint16_t*>(row)[x] / 65535.0;
+      REQUIRE(actual == Catch::Approx(expected).margin(floating ? 1e-6 : 1.0 / 65535));
+    }
+  }
+  metadata.use_base_colour_space = false;
+  REQUIRE_FALSE(reconstruct_tone_map(base, gain, metadata, *gray, *options, nullptr));
+  heif_decoding_options_free(options);
 }
 
 TEST_CASE("Public NCLX APIs preserve the defined H.273 matrix code points")
@@ -780,10 +848,18 @@ std::shared_ptr<const color_profile_raw> cmyk_lut_profile(bool lab)
   Profile profile(cmsCreateProfilePlaceholder(nullptr), cmsCloseProfile);
   REQUIRE(profile);
   cmsSetProfileVersion(profile.get(), 4.3);
-  cmsSetDeviceClass(profile.get(), cmsSigOutputClass);
+  cmsSetDeviceClass(profile.get(), cmsSigInputClass);
   cmsSetColorSpace(profile.get(), cmsSigCmykData);
   cmsSetPCS(profile.get(), lab ? cmsSigLabData : cmsSigXYZData);
   REQUIRE(cmsWriteTag(profile.get(), cmsSigMediaWhitePointTag, cmsD50_XYZ()));
+  const auto text_tag = [&](cmsTagSignature tag, const char* text) {
+    std::unique_ptr<cmsMLU, decltype(&cmsMLUfree)> value(cmsMLUalloc(nullptr, 1), cmsMLUfree);
+    REQUIRE(value);
+    REQUIRE(cmsMLUsetASCII(value.get(), "en", "US", text));
+    REQUIRE(cmsWriteTag(profile.get(), tag, value.get()));
+  };
+  text_tag(cmsSigProfileDescriptionTag, "libheif synthetic CMYK input fixture");
+  text_tag(cmsSigCopyrightTag, "Copyright 2026 libheif contributors");
   Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
   REQUIRE(identity);
   cmsToneCurve* curves[4] = {identity.get(), identity.get(), identity.get(), identity.get()};
@@ -818,6 +894,7 @@ std::shared_ptr<const color_profile_raw> cmyk_lut_profile(bool lab)
       }, &lab, 0));
   REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, clut));
   REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, curves)));
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB0Tag, pipeline.get()));
   REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB1Tag, pipeline.get()));
   cmsUInt32Number size = 0;
   REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
@@ -830,13 +907,13 @@ std::shared_ptr<const color_profile_raw> cmyk_lut_profile(bool lab)
 TEST_CASE("CMYK ICC baselines reconstruct in the declared alternate RGB application space")
 {
   const bool lab = GENERATE(false, true);
-  const bool premultiplied = GENERATE(false, true);
   const int bits = GENERATE(8, 16, 32, 64);
   const bool floating = GENERATE(false, true);
   if (floating && bits < 32) { return; }
   const auto profile = cmyk_lut_profile(lab);
   auto colour = GainMapColour::from_icc(profile);
 #if LIBHEIF_HAVE_LCMS2
+  const bool premultiplied = GENERATE(false, true);
   REQUIRE(colour);
   REQUIRE_FALSE(colour->has_application_primaries());
   REQUIRE_FALSE(colour->decode({0.1, 0.2, 0.3}));
@@ -1087,6 +1164,258 @@ TEST_CASE("Serialized CMYK ICC baselines match independent RGB colour management
 }
 #endif
 
+#if HEIF_ENABLE_EXPERIMENTAL_FEATURES
+TEST_CASE("Gray ICC alternate files preserve mono samples and colour manage requested RGB")
+{
+  const bool lab = GENERATE(false, true);
+  const bool pixi = GENERATE(false, true);
+  const double target = GENERATE(0.0, 1.0, 2.0);
+  const int requested = GENERATE(0, 1, 2); // Default, BT.2020, unspecified RGB fields.
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  Curve gamma(cmsBuildGamma(nullptr, 2), cmsFreeToneCurve);
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(gamma);
+  REQUIRE(identity);
+  Profile gray(cmsCreateGrayProfile(cmsD50_xyY(), gamma.get()), cmsCloseProfile);
+  REQUIRE(gray);
+  cmsSetProfileVersion(gray.get(), 4.4);
+  if (lab) { cmsSetPCS(gray.get(), cmsSigLabData); }
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(gray.get(), nullptr, &size));
+  std::vector<uint8_t> icc(size);
+  REQUIRE(cmsSaveProfileToMem(gray.get(), icc.data(), &size));
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  heif_encoder* encoder = nullptr;
+  const auto available = heif_context_get_encoder_for_format(ctx, heif_compression_uncompressed, &encoder);
+  if (available.code != heif_error_Ok) {
+    heif_context_free(ctx);
+    SKIP("Uncompressed encoder unavailable");
+  }
+  heif_color_profile_nclx base_profile{};
+  base_profile.version = 1;
+  base_profile.color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
+  base_profile.transfer_characteristics = heif_transfer_characteristic_linear;
+  base_profile.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  base_profile.full_range_flag = 1;
+  heif_image* image = nullptr;
+  REQUIRE(heif_image_create(2, 2, heif_colorspace_RGB, heif_chroma_444, &image).code == heif_error_Ok);
+  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE(heif_image_add_plane(image, channels[c], 2, 2, 8).code == heif_error_Ok);
+    size_t stride = 0;
+    auto* plane = heif_image_get_plane2(image, channels[c], &stride);
+    for (size_t y = 0; y < 2; ++y) { std::fill_n(plane + y * stride, 2, static_cast<uint8_t>(64 + c * 32)); }
+  }
+  REQUIRE(heif_image_set_nclx_color_profile(image, &base_profile).code == heif_error_Ok);
+  heif_image_handle* base = nullptr;
+  auto* encoding = heif_encoding_options_alloc();
+  REQUIRE(encoding);
+  encoding->output_nclx_profile = &base_profile;
+  REQUIRE(heif_context_encode_image(ctx, image, encoder, encoding, &base).code == heif_error_Ok);
+  heif_encoding_options_free(encoding);
+  heif_image_release(image);
+  REQUIRE(heif_image_create(1, 1, heif_colorspace_monochrome, heif_chroma_monochrome, &image).code == heif_error_Ok);
+  REQUIRE(heif_image_add_plane(image, heif_channel_Y, 1, 1, 8).code == heif_error_Ok);
+  size_t stride = 0;
+  heif_image_get_plane2(image, heif_channel_Y, &stride)[0] = 255;
+  heif_image_handle* gain = nullptr;
+  REQUIRE(heif_context_encode_gain_map_image(ctx, image, encoder, nullptr, nullptr, &gain).code == heif_error_Ok);
+  heif_image_release(image);
+  heif_gain_map_metadata metadata{};
+  metadata.struct_version = 1;
+  metadata.channel_count = 3;
+  metadata.use_base_colour_space = 1;
+  metadata.base_hdr_headroom = {0, 1};
+  metadata.alternate_hdr_headroom = {2, 1};
+  for (size_t c = 0; c < 3; ++c) {
+    metadata.channels[c].gain_map_min = {static_cast<int32_t>(c), 2};
+    metadata.channels[c].gain_map_max = metadata.channels[c].gain_map_min;
+    metadata.channels[c].gamma = {1, 1};
+    metadata.channels[c].base_offset = {0, 1};
+    metadata.channels[c].alternate_offset = {0, 1};
+  }
+  auto* options = heif_tone_map_options_alloc();
+  REQUIRE(options);
+  options->alternate_icc_type = heif_color_profile_type_prof;
+  options->alternate_icc = icc.data();
+  options->alternate_icc_size = icc.size();
+  options->pixi_num_channels = 3;
+  for (auto& depth : options->pixi_bits_per_channel) { depth = 12; }
+  const auto count = heif_context_get_number_of_items(ctx);
+  heif_image_handle* tmap = nullptr;
+  const auto invalid_hint = heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, options, &tmap);
+  INFO(invalid_hint.message);
+  REQUIRE(invalid_hint.code == heif_error_Usage_error);
+  REQUIRE_FALSE(tmap);
+  REQUIRE(heif_context_get_number_of_items(ctx) == count);
+  options->pixi_num_channels = pixi ? 1 : 0;
+  REQUIRE(heif_context_add_tone_map_derived_image(ctx, base, gain, &metadata, options, &tmap).code == heif_error_Ok);
+  heif_image_handle* nested = nullptr;
+  if (!lab && pixi && requested == 0) {
+    auto nested_metadata = metadata;
+    nested_metadata.use_base_colour_space = 0;
+    nested_metadata.channel_count = 1;
+    nested_metadata.channels[0].gain_map_min = {1, 1};
+    nested_metadata.channels[0].gain_map_max = {1, 1};
+    auto* nested_options = heif_tone_map_options_alloc();
+    REQUIRE(nested_options);
+    nested_options->alternate_nclx = &base_profile;
+    nested_options->create_altr_group = 0;
+    REQUIRE(heif_context_add_tone_map_derived_image(ctx, tmap, gain, &nested_metadata,
+        nested_options, &nested).code == heif_error_Ok);
+    heif_tone_map_options_free(nested_options);
+  }
+  std::vector<uint8_t> bytes;
+  heif_writer writer{};
+  writer.writer_api_version = 1;
+  writer.write = [](heif_context*, const void* data, size_t length, void* context) -> heif_error {
+    auto& out = *static_cast<std::vector<uint8_t>*>(context);
+    const auto* first = static_cast<const uint8_t*>(data);
+    out.insert(out.end(), first, first + length);
+    return {heif_error_Ok, heif_suberror_Unspecified, nullptr};
+  };
+  REQUIRE(heif_context_write(ctx, &writer, &bytes).code == heif_error_Ok);
+  auto* reopened = heif_context_alloc();
+  REQUIRE(reopened);
+  REQUIRE(heif_context_read_from_memory_without_copy(reopened, bytes.data(), bytes.size(), nullptr).code == heif_error_Ok);
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_get_image_handle(reopened, heif_image_handle_get_item_id(tmap), &handle).code == heif_error_Ok);
+  heif_colorspace colours;
+  heif_chroma chroma;
+  REQUIRE(heif_image_handle_get_preferred_decoding_colorspace(handle, &colours, &chroma).code == heif_error_Ok);
+  REQUIRE(colours == heif_colorspace_monochrome);
+  REQUIRE(chroma == heif_chroma_monochrome);
+  REQUIRE(heif_image_handle_get_luma_bits_per_pixel(handle) == -1);
+  const auto decoded_mono = heif_decode_tone_map_image(handle, &image, heif_colorspace_monochrome,
+      heif_chroma_monochrome, nullptr, target);
+  INFO(decoded_mono.message);
+  REQUIRE(decoded_mono.code == heif_error_Ok);
+  REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_Y) == 16);
+  std::vector<uint8_t> decoded_icc(heif_image_get_raw_color_profile_size(image));
+  REQUIRE(decoded_icc.size() == icc.size());
+  REQUIRE(heif_image_get_raw_color_profile(image, decoded_icc.data()).code == heif_error_Ok);
+  REQUIRE(decoded_icc == icc);
+  const cmsCIExyY white{0.3127, 0.3290, 1};
+  const cmsCIExyYTRIPLE bt2020{{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+  const cmsCIExyYTRIPLE bt709{{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}};
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  Profile source(cmsCreateRGBProfile(&white, &bt2020, curves), cmsCloseProfile);
+  Profile output(cmsCreateRGBProfile(&white, requested == 1 ? &bt2020 : &bt709, curves), cmsCloseProfile);
+  REQUIRE(source);
+  REQUIRE(output);
+  constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
+  Transform forward(cmsCreateTransform(source.get(), TYPE_RGB_DBL, gray.get(), TYPE_GRAY_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, flags), cmsDeleteTransform);
+  Transform reverse(cmsCreateTransform(gray.get(), TYPE_GRAY_DBL, output.get(), TYPE_RGB_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, flags), cmsDeleteTransform);
+  REQUIRE(forward);
+  REQUIRE(reverse);
+  GainMapRGB applied{};
+  for (size_t c = 0; c < 3; ++c) { applied[c] = (64.0 + double(c) * 32) / 255 * std::exp2(double(c) * target / 4); }
+  double encoded_gray = 0;
+  cmsDoTransform(forward.get(), applied.data(), &encoded_gray, 1);
+  const auto* mono = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_Y, &stride));
+  REQUIRE(mono);
+  REQUIRE(mono[0] / 65535.0 == Catch::Approx(encoded_gray).margin(0.00015));
+  heif_image_release(image);
+  auto requested_profile = base_profile;
+  if (requested == 2) {
+    requested_profile.color_primaries = heif_color_primaries_unspecified;
+    requested_profile.transfer_characteristics = heif_transfer_characteristic_unspecified;
+  }
+  auto* decoding = heif_decoding_options_alloc();
+  REQUIRE(decoding);
+  if (requested) { decoding->output_image_nclx_profile = &requested_profile; }
+  const auto decoded = heif_decode_tone_map_image_float32(handle, &image, decoding, target,
+      heif_gain_map_resampling_phase_co_sited);
+  INFO(decoded.message);
+  REQUIRE(decoded.code == heif_error_Ok);
+  REQUIRE(heif_image_get_raw_color_profile_size(image) == 0);
+  heif_color_profile_nclx* nclx = nullptr;
+  REQUIRE(heif_image_get_nclx_color_profile(image, &nclx).code == heif_error_Ok);
+  REQUIRE(nclx->color_primaries == (requested == 1 ? heif_color_primaries_ITU_R_BT_2020_2_and_2100_0 : heif_color_primaries_ITU_R_BT_709_5));
+  REQUIRE(nclx->transfer_characteristics == heif_transfer_characteristic_linear);
+  REQUIRE(nclx->matrix_coefficients == heif_matrix_coefficients_RGB_GBR);
+  REQUIRE(nclx->full_range_flag);
+  heif_nclx_color_profile_free(nclx);
+  GainMapRGB reference{};
+  cmsDoTransform(reverse.get(), &encoded_gray, reference.data(), 1);
+  for (size_t c = 0; c < 3; ++c) {
+    const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(image, channels[c], &stride));
+    REQUIRE(plane);
+    REQUIRE(plane[0] == Catch::Approx(reference[c]).margin(0.00015));
+  }
+  heif_image_release(image);
+  heif_decoding_options_free(decoding);
+  if (nested) {
+    heif_image_handle* read_nested = nullptr;
+    REQUIRE(heif_context_get_image_handle(reopened, heif_image_handle_get_item_id(nested), &read_nested).code == heif_error_Ok);
+    REQUIRE(heif_decode_tone_map_image_float32(read_nested, &image, nullptr, target,
+        heif_gain_map_resampling_phase_co_sited).code == heif_error_Ok);
+    GainMapRGB full{};
+    for (size_t c = 0; c < 3; ++c) { full[c] = (64.0 + double(c) * 32) / 255 * std::exp2(double(c) / 2); }
+    double full_gray = 0;
+    cmsDoTransform(forward.get(), full.data(), &full_gray, 1);
+    Transform to_base(cmsCreateTransform(gray.get(), TYPE_GRAY_DBL, source.get(), TYPE_RGB_DBL,
+        INTENT_RELATIVE_COLORIMETRIC, flags), cmsDeleteTransform);
+    REQUIRE(to_base);
+    cmsDoTransform(to_base.get(), &full_gray, reference.data(), 1);
+    for (size_t c = 0; c < 3; ++c) {
+      const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(image, channels[c], &stride));
+      REQUIRE(plane);
+      REQUIRE(plane[0] == Catch::Approx(reference[c] * std::exp2(target / 2)).margin(0.0003));
+    }
+    heif_image_release(image);
+    heif_image_handle_release(read_nested);
+    // An unknown minimum must ignore the gray alternate and return RGB base
+    // pixels, even though the item still declares a gray ICC and mono PIXI.
+    uint8_t* payload = nullptr;
+    size_t payload_size = 0;
+    REQUIRE(heif_item_get_item_data(reopened, heif_image_handle_get_item_id(handle), nullptr,
+        &payload, &payload_size).code == heif_error_Ok);
+    REQUIRE(payload_size > 5);
+    const auto found = std::search(bytes.begin(), bytes.end(), payload, payload + payload_size);
+    REQUIRE(found != bytes.end());
+    const size_t offset = static_cast<size_t>(found - bytes.begin());
+    heif_release_item_data(reopened, &payload);
+    auto future = bytes;
+    future[offset + 2] = 1; // Unknown minimum=1, uninterpreted writer=0.
+    auto* fallback_context = heif_context_alloc();
+    REQUIRE(fallback_context);
+    REQUIRE(heif_context_read_from_memory_without_copy(fallback_context, future.data(), future.size(), nullptr).code == heif_error_Ok);
+    heif_image_handle* fallback = nullptr;
+    REQUIRE(heif_context_get_image_handle(fallback_context, heif_image_handle_get_item_id(handle), &fallback).code == heif_error_Ok);
+    REQUIRE(heif_image_handle_get_gain_map_metadata_status(fallback) == heif_gain_map_metadata_status_unsupported_minimum_version);
+    REQUIRE(heif_decode_tone_map_image_float32(fallback, &image, nullptr, target,
+        heif_gain_map_resampling_phase_co_sited).code == heif_error_Ok);
+    REQUIRE(heif_image_get_nclx_color_profile(image, &nclx).code == heif_error_Ok);
+    REQUIRE(nclx->color_primaries == base_profile.color_primaries);
+    REQUIRE(nclx->transfer_characteristics == base_profile.transfer_characteristics);
+    heif_nclx_color_profile_free(nclx);
+    for (size_t c = 0; c < 3; ++c) {
+      const auto* plane = reinterpret_cast<const float*>(heif_image_get_plane_readonly2(image, channels[c], &stride));
+      REQUIRE(plane);
+      REQUIRE(plane[0] == Catch::Approx((64.0 + double(c) * 32) / 255).margin(1e-7));
+    }
+    heif_image_release(image);
+    heif_image_handle_release(fallback);
+    heif_context_free(fallback_context);
+    heif_image_handle_release(nested);
+  }
+  heif_image_handle_release(handle);
+  heif_context_free(reopened);
+  heif_image_handle_release(tmap);
+  heif_image_handle_release(gain);
+  heif_image_handle_release(base);
+  heif_tone_map_options_free(options);
+  heif_encoder_release(encoder);
+  heif_context_free(ctx);
+}
+#endif
+
 TEST_CASE("Serialized gray ICC XYZ and Lab shapers match independent Little CMS")
 {
   const bool lab = GENERATE(false, true);
@@ -1132,8 +1461,9 @@ TEST_CASE("Serialized gray ICC XYZ and Lab shapers match independent Little CMS"
   }
 }
 
-TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
+TEST_CASE("Gray ICC LUTs override shapers in the available transform directions")
 {
+  const bool output_direction = GENERATE(false, true);
   using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
   using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
   using Pipeline = std::unique_ptr<cmsPipeline, decltype(&cmsPipelineFree)>;
@@ -1163,6 +1493,23 @@ TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
   REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, clut));
   REQUIRE(cmsPipelineInsertStage(pipeline.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, curves)));
   REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB1Tag, pipeline.get()));
+  if (output_direction) {
+    Pipeline output(cmsPipelineAlloc(nullptr, 3, 1), cmsPipelineFree);
+    REQUIRE(output);
+    REQUIRE(cmsPipelineInsertStage(output.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 3, curves)));
+    auto* inverse = cmsStageAllocCLut16bit(nullptr, 9, 3, 1, nullptr);
+    REQUIRE(inverse);
+    REQUIRE(cmsStageSampleCLut16bit(inverse,
+        [](const cmsUInt16Number in[], cmsUInt16Number out[], void*) -> int {
+          // The output table deliberately differs from the gamma-2 shaper.
+          const double y = std::clamp(in[1] / 32768.0, 0.0, 1.0);
+          out[0] = static_cast<uint16_t>(std::round(std::cbrt(y) * 65535));
+          return 1;
+        }, nullptr, 0));
+    REQUIRE(cmsPipelineInsertStage(output.get(), cmsAT_END, inverse));
+    REQUIRE(cmsPipelineInsertStage(output.get(), cmsAT_END, cmsStageAllocToneCurves(nullptr, 1, curves)));
+    REQUIRE(cmsWriteTag(profile.get(), cmsSigBToA1Tag, output.get()));
+  }
   cmsUInt32Number size = 0;
   REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
   std::vector<uint8_t> bytes(size);
@@ -1182,7 +1529,32 @@ TEST_CASE("Gray ICC LUTs override the shaper and need only the input direction")
     const auto actual = gain_map_transform(*matrix, *pcs);
     for (double value : actual) { REQUIRE(value == Catch::Approx(sample).margin(0.0001)); }
   }
-  REQUIRE_FALSE(gray->encode({0.25, 0.25, 0.25}));
+  if (output_direction) {
+    using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+    Profile xyz(cmsCreateXYZProfile(), cmsCloseProfile);
+    REQUIRE(xyz);
+    Transform independent(cmsCreateTransform(xyz.get(), TYPE_XYZ_DBL, profile.get(), TYPE_GRAY_DBL,
+        INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE), cmsDeleteTransform);
+    REQUIRE(independent);
+    for (double y : {0.05, 0.25, 0.5, 0.9}) {
+      const GainMapRGB pcs{0.9642 * y, y, 0.8249 * y};
+      double expected = 0;
+      cmsDoTransform(independent.get(), pcs.data(), &expected, 1);
+      auto actual = gray->encode(pcs);
+      REQUIRE(actual);
+      for (double value : *actual) { REQUIRE(value == Catch::Approx(expected).margin(0.00003)); }
+    }
+    auto actual = gray->encode({0.9642 * 0.25, 0.25, 0.8249 * 0.25});
+    REQUIRE(actual);
+    REQUIRE(std::abs((*actual)[0] - 0.5) > 0.1); // Must not use the coexisting shaper.
+  }
+  else {
+    // ICC.1:2022 8.10.2(d) uses the required gray shaper when the output
+    // direction has no LUT. The input direction still uses its explicit LUT.
+    auto actual = gray->encode({0.9642 * 0.25, 0.25, 0.8249 * 0.25});
+    REQUIRE(actual);
+    for (double value : *actual) { REQUIRE(value == Catch::Approx(0.5).margin(0.0001)); }
+  }
 #else
   REQUIRE_FALSE(gray);
   REQUIRE(gray.error().error_code == heif_error_Unsupported_feature);
@@ -1293,6 +1665,87 @@ std::shared_ptr<const color_profile_raw> rgb_lut_profile(double version, double 
 }  // namespace
 
 #if LIBHEIF_HAVE_LCMS2
+TEST_CASE("ICC hybrid profiles use directional matrix TRC fallback")
+{
+  const bool input_lut = GENERATE(false, true);
+  const auto original = rgb_lut_profile(4.3, 2, true, true, cmsSigDisplayClass, true);
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  Profile profile(cmsOpenProfileFromMem(original->get_data().data(),
+      static_cast<cmsUInt32Number>(original->get_data().size())), cmsCloseProfile);
+  REQUIRE(profile);
+  REQUIRE(cmsWriteTag(profile.get(), input_lut ? cmsSigBToA1Tag : cmsSigAToB1Tag, nullptr));
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  auto colour = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+#if LIBHEIF_HAVE_LCMS2
+  using Curve = std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)>;
+  using Transform = std::unique_ptr<void, decltype(&cmsDeleteTransform)>;
+  REQUIRE(colour);
+  Curve identity(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+  REQUIRE(identity);
+  const cmsCIExyY white{0.3127, 0.3290, 1};
+  const cmsCIExyYTRIPLE primaries{{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}};
+  cmsToneCurve* curves[3] = {identity.get(), identity.get(), identity.get()};
+  Profile linear(cmsCreateRGBProfile(&white, &primaries, curves), cmsCloseProfile);
+  REQUIRE(linear);
+  constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
+  Transform forward(cmsCreateTransform(profile.get(), TYPE_RGB_DBL, linear.get(), TYPE_RGB_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, flags), cmsDeleteTransform);
+  Transform reverse(cmsCreateTransform(linear.get(), TYPE_RGB_DBL, profile.get(), TYPE_RGB_DBL,
+      INTENT_RELATIVE_COLORIMETRIC, flags), cmsDeleteTransform);
+  REQUIRE(forward);
+  REQUIRE(reverse);
+  const GainMapRGB signal{0.25, 0.5, 0.75};
+  const GainMapRGB values{0.0625, 0.25, 0.5625};
+  GainMapRGB reference{};
+  cmsDoTransform(forward.get(), signal.data(), reference.data(), 1);
+  auto decoded = colour->decode(signal);
+  REQUIRE(decoded);
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE((*decoded)[c] == Catch::Approx(reference[c]).margin(0.0001));
+    REQUIRE((*decoded)[c] == Catch::Approx(input_lut ? values[c] : signal[c]).margin(0.0001));
+  }
+  cmsDoTransform(reverse.get(), values.data(), reference.data(), 1);
+  auto encoded = colour->encode(values);
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE((*encoded)[c] == Catch::Approx(reference[c]).margin(0.0001));
+    REQUIRE((*encoded)[c] == Catch::Approx(input_lut ? values[c] : signal[c]).margin(0.0001));
+  }
+#else
+  REQUIRE_FALSE(colour);
+  REQUIRE(colour.error().error_code == heif_error_Unsupported_feature);
+#endif
+}
+
+TEST_CASE("ICC relative colourimetry ignores unrelated intent LUT tags")
+{
+  using Profile = std::unique_ptr<void, decltype(&cmsCloseProfile)>;
+  const auto original = rgb_lut_profile(4.3, 2, true, false, cmsSigDisplayClass, true);
+  Profile profile(cmsOpenProfileFromMem(original->get_data().data(),
+      static_cast<cmsUInt32Number>(original->get_data().size())), cmsCloseProfile);
+  REQUIRE(profile);
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB2Tag, cmsReadTag(profile.get(), cmsSigAToB1Tag)));
+  REQUIRE(cmsWriteTag(profile.get(), cmsSigAToB1Tag, nullptr));
+  cmsUInt32Number size = 0;
+  REQUIRE(cmsSaveProfileToMem(profile.get(), nullptr, &size));
+  std::vector<uint8_t> bytes(size);
+  REQUIRE(cmsSaveProfileToMem(profile.get(), bytes.data(), &size));
+  auto colour = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), bytes));
+  REQUIRE(colour); // The current relative-colourimetric directions need no CMM.
+  const GainMapRGB signal{0.25, 0.5, 0.75};
+  auto decoded = colour->decode(signal);
+  auto encoded = colour->encode(signal);
+  REQUIRE(decoded);
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; ++c) {
+    REQUIRE((*decoded)[c] == Catch::Approx(signal[c]).margin(1e-12));
+    REQUIRE((*encoded)[c] == Catch::Approx(signal[c]).margin(1e-12));
+  }
+}
+
 TEST_CASE("RGB ICC LUT chromaticity defines application primaries without XYZ colourants")
 {
   const auto profile_class = GENERATE(cmsSigDisplayClass, cmsSigColorSpaceClass);

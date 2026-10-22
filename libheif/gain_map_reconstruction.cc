@@ -638,12 +638,17 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
     return error;
   }
   auto output = std::make_shared<HeifPixelImage>();
-  output->create(width, height, heif_colorspace_RGB, heif_chroma_444);
-  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
+  const bool monochrome = alternate_colour.is_monochrome();
+  output->create(width, height, monochrome ? heif_colorspace_monochrome : heif_colorspace_RGB,
+                  monochrome ? heif_chroma_monochrome : heif_chroma_444);
+  const std::array<heif_channel, 3> channels = monochrome ?
+      std::array{heif_channel_Y, heif_channel_Y, heif_channel_Y} :
+      std::array{heif_channel_R, heif_channel_G, heif_channel_B};
+  const size_t output_channels = monochrome ? 1 : 3;
   std::array<uint16_t*, 3> out{};
   std::array<float*, 3> floating_out{};
   std::array<size_t, 3> strides{};
-  for (size_t c = 0; c < 3; ++c) {
+  for (size_t c = 0; c < output_channels; ++c) {
     if (auto error = output->add_channel(channels[c], width, height, defer_quantization ? 32 : 16, limits,
                                           defer_quantization ? heif_component_datatype_floating_point :
                                                                heif_component_datatype_unsigned_integer)) {
@@ -703,7 +708,7 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       linear = gain_map_transform(*after, linear);
       auto encoded = alternate_colour.encode(linear);
       if (!encoded) { return encoded.error(); }
-      for (size_t c = 0; c < 3; ++c) {
+      for (size_t c = 0; c < output_channels; ++c) {
         const size_t position = size_t(y) * strides[c] + x;
         if (defer_quantization) {
           const float value = static_cast<float>((*encoded)[c] * alpha);
@@ -739,15 +744,20 @@ Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
     const heif_decoding_options& options,
     const heif_security_limits* limits, bool floating)
 {
-  const std::array<heif_channel, 3> channels{heif_channel_R, heif_channel_G, heif_channel_B};
   const bool rgb = image->get_colorspace() == heif_colorspace_RGB && image->get_chroma_format() == heif_chroma_444;
+  const bool mono = image->get_colorspace() == heif_colorspace_monochrome && image->get_chroma_format() == heif_chroma_monochrome;
+  const bool mono_output = mono && !floating;
+  const std::array<heif_channel, 3> channels = mono_output ?
+      std::array{heif_channel_Y, heif_channel_Y, heif_channel_Y} :
+      std::array{heif_channel_R, heif_channel_G, heif_channel_B};
+  const size_t output_channels = mono_output ? 1 : 3;
   if (floating && rgb && std::all_of(channels.begin(), channels.end(), [&image](heif_channel channel) {
         return image->get_datatype(channel) == heif_component_datatype_floating_point &&
                image->get_bits_per_pixel(channel) == 32;
       })) {
     return image;
   }
-  if (!floating && (!rgb || image->get_datatype(heif_channel_R) != heif_component_datatype_floating_point)) {
+  if (!floating && (!(rgb || mono) || image->get_datatype(channels[0]) != heif_component_datatype_floating_point)) {
     return image; // Includes an unknown-version baseline fallback.
   }
   if (!limits) { limits = &global_security_limits; }
@@ -755,11 +765,12 @@ Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
   if (!prepared) { return prepared.error(); }
   const uint32_t width = image->get_width(), height = image->get_height();
   auto output = std::make_shared<HeifPixelImage>();
-  output->create(width, height, heif_colorspace_RGB, heif_chroma_444);
+  output->create(width, height, mono_output ? heif_colorspace_monochrome : heif_colorspace_RGB,
+                  mono_output ? heif_chroma_monochrome : heif_chroma_444);
   output->copy_metadata_from(*image);
   output->add_warnings(image->get_warnings());
   const RGBPlanes input(**prepared);
-  for (size_t c = 0; c < 3; ++c) {
+  for (size_t c = 0; c < output_channels; ++c) {
     if (auto error = output->add_channel(channels[c], width, height, floating ? 32 : 16, limits,
                                          floating ? heif_component_datatype_floating_point :
                                                     heif_component_datatype_unsigned_integer)) { return error; }

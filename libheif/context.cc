@@ -1663,11 +1663,37 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
   // --- convert to output chroma format
 
   auto output_options = options;
+  heif_color_profile_nclx non_rgb_output{};
   if (imgitem->get_infe_type() == fourcc("tmap")) {
     // Canonical tmap decoding describes the alternate, or the baseline for an
     // unknown minimum metadata version. Do not silently re-tag it as sRGB.
-    if (options.output_image_nclx_profile) {
-      auto converted = convert_tone_map_colour(img, *options.output_image_nclx_profile,
+    const auto* requested_output = options.output_image_nclx_profile;
+    const auto& icc = img->get_color_profile_icc();
+    const bool rgb_requested = tmap_output_float || out_colorspace == heif_colorspace_RGB || out_colorspace == heif_colorspace_YCbCr;
+    const auto icc_components = icc ? gain_map_icc_component_count(*icc) : 0;
+    const bool non_rgb_icc = icc_components == 1 || icc_components == 4;
+    if (rgb_requested && non_rgb_icc) {
+      // A gray/CMYK ICC cannot label RGB component samples. Explicit output
+      // fields take precedence; unspecified RGB fields use linear BT.709.
+      non_rgb_output.version = 1;
+      non_rgb_output.color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+      non_rgb_output.transfer_characteristics = heif_transfer_characteristic_linear;
+      non_rgb_output.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+      non_rgb_output.full_range_flag = 1;
+      if (requested_output) {
+        non_rgb_output = *requested_output;
+        if (non_rgb_output.color_primaries == heif_color_primaries_unspecified) {
+          non_rgb_output.color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+        }
+        if (non_rgb_output.transfer_characteristics == heif_transfer_characteristic_unspecified) {
+          non_rgb_output.transfer_characteristics = heif_transfer_characteristic_linear;
+        }
+        output_options.output_image_nclx_profile = &non_rgb_output;
+      }
+      requested_output = &non_rgb_output;
+    }
+    if (requested_output) {
+      auto converted = convert_tone_map_colour(img, *requested_output,
                                               options, get_security_limits(), tmap_output_float);
       if (!converted) { return converted.error(); }
       img = *converted;

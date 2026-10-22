@@ -136,6 +136,9 @@ typedef enum heif_gain_map_resampling_phase
 // output_image_nclx_profile selects primaries/transfer; storage matrix/range do
 // not apply to floating RGB. convert_hdr_to_8bit must be false. Unknown minimum
 // versions still return the baseline, converted to RGB float32.
+// A gray alternate, or gray/CMYK baseline fallback, is colour-managed to RGB.
+// RGB primaries/transfer omitted by the caller use linear BT.709 in that case;
+// the original non-RGB ICC remains available on its source item handle.
 // The selected gain-map phase applies to each derived node. Existing integer
 // decode uses co-sited sampling. Centered sampling is an explicit consumer choice;
 // it is not inferred from a producer name or recorded in Annex C metadata.
@@ -161,7 +164,7 @@ typedef struct heif_tone_map_options
   heif_content_light_level clli;
 
   // Optional reconstructed-colour-resolution hint. Zero channels omits PIXI;
-  // otherwise three colour components describe this writer's RGB alternate.
+  // otherwise one component describes a gray ICC alternate, or three an RGB alternate.
   // Bit depths are approximate precision, independent of input/decoded storage.
   uint8_t pixi_num_channels;
   uint8_t pixi_bits_per_channel[4];

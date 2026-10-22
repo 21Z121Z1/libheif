@@ -908,6 +908,18 @@ Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile)
   return nclx_from_matrix_trc(*view);
 }
 
+uint8_t gain_map_icc_component_count(const color_profile_raw& profile)
+{
+  auto view = parse_icc(profile);
+  if (!view) { return 0; }
+  if (view->data_space == icc_sig('G', 'R', 'A', 'Y')) { return 1; }
+  if (view->data_space == icc_sig('C', 'M', 'Y', 'K')) { return 4; }
+  if (view->data_space == icc_sig('R', 'G', 'B', ' ') ||
+      view->data_space == icc_sig('Y', 'C', 'b', 'r') ||
+      view->data_space == icc_sig('X', 'Y', 'Z', ' ')) { return 3; }
+  return 0;
+}
+
 struct GainMapIccColour
 {
   IccView view;
@@ -1097,20 +1109,14 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
        view->profile_class != icc_sig('s', 'p', 'a', 'c'))) {
     return unsupported_icc();
   }
-  // Respect ICC LUT precedence even when a matrix/TRC model is also present.
-  bool lut = false;
-  bool decode_lut = false, encode_lut = false;
-  for (char i : {'0', '1', '2', '3'}) {
-    for (uint32_t tag : {icc_sig('A', '2', 'B', i), icc_sig('B', '2', 'A', i),
-                         icc_sig('D', '2', 'B', i), icc_sig('B', '2', 'D', i)}) {
-      lut |= view->find(tag) != nullptr;
-    }
-    if (i == '0' || i == '1') {
-      decode_lut |= view->find(icc_sig('A', '2', 'B', i)) || view->find(icc_sig('D', '2', 'B', i));
-      encode_lut |= view->find(icc_sig('B', '2', 'A', i)) || view->find(icc_sig('B', '2', 'D', i));
-    }
-  }
-  if (lut && !decode_lut && !encode_lut) { return unsupported_icc(); }
+  // ICC.1:2022 8.10.2 selects tags by direction and rendering intent.
+  // Relative colourimetry uses D/B1, then A/B1, then A/B0; unrelated intent
+  // tags do not replace the required shaper model for this operation.
+  const bool decode_lut = view->find(icc_sig('D', '2', 'B', '1')) ||
+                          view->find(icc_sig('A', '2', 'B', '1')) || view->find(icc_sig('A', '2', 'B', '0'));
+  const bool encode_lut = view->find(icc_sig('B', '2', 'D', '1')) ||
+                          view->find(icc_sig('B', '2', 'A', '1')) || view->find(icc_sig('B', '2', 'A', '0'));
+  const bool lut = decode_lut || encode_lut;
   if (cmyk && !decode_lut) { return unsupported_icc(); }
   // ICC.1:2022 8.7 defines ColorSpace profiles through LUT transforms.
   if (view->profile_class == icc_sig('s', 'p', 'a', 'c') && !lut) { return unsupported_icc(); }
@@ -1172,13 +1178,13 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
     constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
     const auto format = cmyk ? TYPE_CMYK_DBL : gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL;
-    if (decode_lut) {
-      transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, format,
-          transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
-    }
-    if (encode_lut && !gray && !cmyk) {
+    // Let the CMM select each available direction independently, including
+    // 8.10.2(d)'s declared matrix/TRC fallback when that direction has no LUT.
+    transform->decode_lut = cmsCreateTransformTHR(transform->context, transform->lut_profile, format,
+        transform->xyz_profile, TYPE_XYZ_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+    if (!cmyk) {
       transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
-          transform->lut_profile, TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
+          transform->lut_profile, gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
     if (!transform->decode_lut && !transform->encode_lut) { return unsupported_icc(); }
     transform->from_pcs = inverse(transform->to_pcs);
@@ -1258,9 +1264,7 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     }
     return gain_map_encode_rgb(normalized, m_nclx);
   }
-  // Canonical tone-map output is RGB. A gray ICC cannot describe those
-  // samples or supply ISO's application primaries, even for achromatic gain.
-  if (m_matrix_trc->gray || m_matrix_trc->cmyk) { return unsupported_icc(); }
+  if (m_matrix_trc->cmyk) { return unsupported_icc(); }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {
@@ -1268,10 +1272,23 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     const auto pcs = gain_map_transform(m_matrix_trc->to_pcs, linear);
     for (double value : pcs) { if (!std::isfinite(value)) { return invalid_value(); } }
     cmsDoTransform(m_matrix_trc->encode_lut, pcs.data(), result.data(), 1);
+    if (m_matrix_trc->gray) { result.fill(result[0]); }
     for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
     return result;
   }
 #endif
+  if (m_matrix_trc->gray) {
+    for (double value : linear) { if (!std::isfinite(value)) { return invalid_value(); } }
+    double connection = std::max(linear[1], 0.0); // Relative Y in D50 PCS.
+    if (m_matrix_trc->view.pcs == icc_sig('L', 'a', 'b', ' ')) {
+      connection = connection <= 216.0 / 24389 ? connection * 24389 / 2700 :
+                                                (116 * std::cbrt(connection) - 16) / 100;
+    }
+    auto signal = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[0], connection);
+    if (!signal) { return signal.error(); }
+    if (!std::isfinite(*signal)) { return invalid_value(); }
+    return GainMapRGB{*signal, *signal, *signal};
+  }
   for (size_t c = 0; c < 3; ++c) {
     auto value = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[c], linear[c]);
     if (!value) { return value.error(); }
@@ -1284,6 +1301,11 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
 bool GainMapColour::uses_cmyk() const
 {
   return m_matrix_trc && m_matrix_trc->cmyk;
+}
+
+bool GainMapColour::is_monochrome() const
+{
+  return m_matrix_trc && m_matrix_trc->gray;
 }
 
 Result<GainMapRGB> GainMapColour::decode_cmyk(const std::array<double, 4>& signal) const

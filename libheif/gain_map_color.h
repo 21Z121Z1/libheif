@@ -52,6 +52,8 @@ Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value);
 
 Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile);
+// Declared sample components, without requiring an optional CMM transform.
+uint8_t gain_map_icc_component_count(const color_profile_raw& profile);
 
 struct GainMapIccColour;
 
@@ -69,6 +71,7 @@ public:
   Result<GainMapRGB> decode_cmyk(const std::array<double, 4>& signal) const;
   Result<GainMapRGB> encode(const GainMapRGB& linear) const;
   bool uses_cmyk() const;
+  bool is_monochrome() const;
   Result<GainMapMatrix> matrix_to(const GainMapColour& target) const;
   bool has_application_primaries() const;
   const nclx_profile& raster_profile() const { return m_nclx; }

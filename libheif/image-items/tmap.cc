@@ -400,11 +400,13 @@ ImageItem_tmap::add_new_tone_map_item(
     }
   }
 
-  if (!pixi_bits.empty() && pixi_bits.size() != 3) {
+  const auto alternate_icc = std::dynamic_pointer_cast<const color_profile_raw>(alternate_colour);
+  const size_t alternate_components = alternate_icc && gain_map_icc_component_count(*alternate_icc) == 1 ? 1 : 3;
+  if (!pixi_bits.empty() && pixi_bits.size() != alternate_components) {
     return Error{
         heif_error_Usage_error,
         heif_suberror_Invalid_parameter_value,
-        "Tone-map PIXI hint must describe three reconstructed colour components"
+        "Tone-map PIXI hint must match the declared alternate colour components"
     };
   }
   for (uint8_t bits : pixi_bits) {
@@ -600,12 +602,20 @@ int ImageItem_tmap::get_luma_bits_per_pixel() const
   // would recurse through unvalidated derived-image references; its actual
   // depth remains available on the decoded image. Coded children still pass
   // the ordinary signaled-versus-decoded bit-depth check during decoding.
-  return read_tone_map_image().status == ToneMapImageParseStatus::unsupported_minimum_version ? -1 : 16;
+  if (read_tone_map_image().status == ToneMapImageParseStatus::unsupported_minimum_version) { return -1; }
+  // Gray derived samples are floating point internally and quantized at the
+  // public boundary. PIXI is an approximate precision hint, not a coded depth.
+  // Report unknown so callers query the actual decoded component's datatype
+  // and depth instead of interpreting float32/uint16 Y through a guessed type.
+  const auto& icc = get_color_profile_icc();
+  return icc && gain_map_icc_component_count(*icc) == 1 ? -1 : 16;
 }
 
 Error ImageItem_tmap::get_coded_image_colorspace(heif_colorspace* colorspace, heif_chroma* chroma) const
 {
-  if (colorspace) { *colorspace = heif_colorspace_RGB; }
-  if (chroma) { *chroma = heif_chroma_444; }
+  const auto& icc = get_color_profile_icc();
+  const bool mono = icc && gain_map_icc_component_count(*icc) == 1;
+  if (colorspace) { *colorspace = mono ? heif_colorspace_monochrome : heif_colorspace_RGB; }
+  if (chroma) { *chroma = mono ? heif_chroma_monochrome : heif_chroma_444; }
   return Error::Ok;
 }
