@@ -127,7 +127,7 @@ jobs:
 
   publish:
     needs: [prepare, gain-map, core-tests, source-checks]
-    if: needs.prepare.outputs.changed == 'true'
+    if: needs.prepare.outputs.changed == 'true' || inputs.validate_current
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -136,7 +136,9 @@ jobs:
       # Only this job receives write credentials; it does not execute candidate code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: true
+          token: ${{ secrets.ISO_SYNC_TOKEN || github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: iso-sync-source
