@@ -24,7 +24,8 @@
 #include <cmath>
 #include <limits>
 
-namespace {
+namespace
+{
 Error numeric_error()
 {
   return {heif_error_Invalid_input, heif_suberror_Unspecified,

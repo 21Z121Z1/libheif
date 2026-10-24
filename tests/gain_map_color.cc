@@ -368,13 +368,14 @@ TEST_CASE("ICC CICP tag maps Display-P3 PQ directly")
   const auto bytes = make_icc({
       {signature("cicp"), cicp_tag(12, 16, 0, 1)}
   });
-  const color_profile_raw profile(signature("prof"), bytes);
-  auto result = gain_map_nclx_from_icc(profile);
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto result = GainMapColour::from_icc(profile);
   REQUIRE(result);
-  REQUIRE(result->m_colour_primaries == 12);
-  REQUIRE(result->m_transfer_characteristics == 16);
-  REQUIRE(result->m_matrix_coefficients == 0);
-  REQUIRE(result->m_full_range_flag);
+  CHECK(result->raster_profile().m_colour_primaries == 12);
+  CHECK(result->raster_profile().m_transfer_characteristics == 16);
+  CHECK(result->raster_profile().m_matrix_coefficients == 0);
+  CHECK(result->raster_profile().m_full_range_flag);
+  CHECK(result->icc_profile() == profile);
 }
 
 TEST_CASE("ICC CICP rejects profile classes forbidden by ICC 9.2.17")
@@ -384,12 +385,9 @@ TEST_CASE("ICC CICP rejects profile classes forbidden by ICC 9.2.17")
   auto bytes = make_icc({{signature("cicp"), cicp_tag(12, 16, 0, 1)}});
   set_u32(bytes, 12, signature(profile_class));
   const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
-  auto nclx = gain_map_nclx_from_icc(*profile);
-  CHECK_FALSE(nclx);
-  if (!nclx) { CHECK(nclx.error().error_code == heif_error_Invalid_input); }
   auto colour = GainMapColour::from_icc(profile);
-  CHECK_FALSE(colour);
-  if (!colour) { CHECK(colour.error().error_code == heif_error_Invalid_input); }
+  REQUIRE_FALSE(colour);
+  CHECK(colour.error().error_code == heif_error_Invalid_input);
 }
 
 TEST_CASE("ICC CICP XYZ encoding retains the declared ST 428 colour transform")
@@ -399,13 +397,11 @@ TEST_CASE("ICC CICP XYZ encoding retains the declared ST 428 colour transform")
   set_u32(bytes, 12, signature(profile_class));
   set_u32(bytes, 16, signature("XYZ "));
   const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
-  auto nclx = gain_map_nclx_from_icc(*profile);
-  REQUIRE(nclx);
-  CHECK(nclx->m_colour_primaries == 10);
-  CHECK(nclx->m_transfer_characteristics == 17);
-  CHECK(nclx->m_matrix_coefficients == 0);
   auto colour = GainMapColour::from_icc(profile);
   REQUIRE(colour);
+  CHECK(colour->raster_profile().m_colour_primaries == 10);
+  CHECK(colour->raster_profile().m_transfer_characteristics == 17);
+  CHECK(colour->raster_profile().m_matrix_coefficients == 0);
   CHECK(colour->has_application_primaries());
   CHECK(colour->icc_profile() == profile);
   const GainMapRGB signal{0.2, 0.4, 0.6};
@@ -563,7 +559,7 @@ TEST_CASE("Nominal diffuse white sets the HDR reference normalization")
   }
 }
 
-TEST_CASE("ICC matrix-shaper Display-P3 with sRGB TRC maps to CICP")
+TEST_CASE("ICC matrix-shaper Display-P3 retains its quantized colourants and TRC")
 {
   const std::array<std::array<double, 3>, 3> p3{{
       {0.4865709486, 0.2656676932, 0.1982172852},
@@ -586,13 +582,44 @@ TEST_CASE("ICC matrix-shaper Display-P3 with sRGB TRC maps to CICP")
       {signature("bTRC"), trc}
   });
 
-  const color_profile_raw profile(signature("prof"), bytes);
-  auto result = gain_map_nclx_from_icc(profile);
-  REQUIRE(result);
-  REQUIRE(result->m_colour_primaries == 12);
-  REQUIRE(result->m_transfer_characteristics == 13);
-  REQUIRE(result->m_matrix_coefficients == 0);
-  REQUIRE(result->m_full_range_flag);
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto colour = GainMapColour::from_icc(profile);
+  REQUIRE(colour);
+  CHECK(colour->icc_profile() == profile);
+  CHECK(colour->has_application_primaries());
+  CHECK(colour->raster_profile().m_colour_primaries == 2);
+  CHECK(colour->raster_profile().m_transfer_characteristics == 2);
+  CHECK(colour->raster_profile().m_matrix_coefficients == 0);
+  CHECK(colour->raster_profile().m_full_range_flag);
+
+  const auto quantize = [](double value) { return std::round(value * 65536) / 65536; };
+  const GainMapRGB signal{0.01, 0.25, 0.75};
+  auto linear = colour->decode(signal);
+  REQUIRE(linear);
+  for (size_t c = 0; c < 3; c++) {
+    const double expected = signal[c] >= quantize(0.04045) ?
+        std::pow(quantize(1.0 / 1.055) * signal[c] + quantize(0.055 / 1.055), quantize(2.4)) :
+        quantize(1.0 / 12.92) * signal[c];
+    CHECK((*linear)[c] == Catch::Approx(expected).margin(1e-12));
+  }
+  auto encoded = colour->encode(*linear);
+  REQUIRE(encoded);
+  for (size_t c = 0; c < 3; c++) {
+    CHECK((*encoded)[c] == Catch::Approx(signal[c]).margin(1e-12));
+  }
+
+  // Gray uses D50 PCS coordinates, exposing the stored colourant matrix here.
+  auto gray_bytes = make_icc({{signature("kTRC"), sampled_trc_tag({256})}});
+  set_u32(gray_bytes, 16, signature("GRAY"));
+  auto gray = GainMapColour::from_icc(std::make_shared<color_profile_raw>(signature("prof"), gray_bytes));
+  REQUIRE(gray);
+  auto to_pcs = colour->matrix_to(*gray);
+  REQUIRE(to_pcs);
+  for (size_t row = 0; row < 3; row++) {
+    for (size_t c = 0; c < 3; c++) {
+      CHECK((*to_pcs)[row][c] == Catch::Approx(quantize(adapted[row][c])).margin(1e-12));
+    }
+  }
 }
 
 TEST_CASE("ICC tag bounds are checked before colour interpretation")
@@ -601,8 +628,8 @@ TEST_CASE("ICC tag bounds are checked before colour interpretation")
       {signature("cicp"), cicp_tag(12, 16, 0, 1)}
   });
   set_u32(bytes, 136, 0xFFFFFF00U);
-  const color_profile_raw profile(signature("prof"), bytes);
-  auto result = gain_map_nclx_from_icc(profile);
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto result = GainMapColour::from_icc(profile);
   REQUIRE_FALSE(result);
   REQUIRE(result.error().error_code == heif_error_Invalid_input);
 }
@@ -614,8 +641,8 @@ TEST_CASE("Arbitrary ICC LUT profile is not guessed as CICP")
   const auto bytes = make_icc({
       {signature("A2B0"), lut}
   });
-  const color_profile_raw profile(signature("prof"), bytes);
-  auto result = gain_map_nclx_from_icc(profile);
+  const auto profile = std::make_shared<color_profile_raw>(signature("prof"), bytes);
+  auto result = GainMapColour::from_icc(profile);
   REQUIRE_FALSE(result);
   REQUIRE(result.error().error_code == heif_error_Unsupported_feature);
   REQUIRE(result.error().sub_error_code ==
@@ -641,7 +668,6 @@ std::shared_ptr<const color_profile_raw> matrix_profile(const std::array<std::ve
 TEST_CASE("ICC reconstruction retains custom primaries and unequal channel TRCs")
 {
   const auto profile = matrix_profile({sampled_trc_tag({256}), sampled_trc_tag({512}), sampled_trc_tag({768})});
-  REQUIRE_FALSE(gain_map_nclx_from_icc(*profile));
   auto colour = GainMapColour::from_icc(profile);
   REQUIRE(colour);
   auto decoded = colour->decode({0.5, 0.5, 0.5});

@@ -362,7 +362,9 @@ heif_error heif_context_encode_gain_map_image(
     heif_image_handle** out_gain)
 {
   return exception_guard([&]() -> heif_error {
-    if (out_gain) { *out_gain = nullptr; }
+    if (out_gain) {
+      *out_gain = nullptr;
+    }
     if (!ctx || !gain_pixels || !gain_pixels->image || !encoder) {
       return heif_error_null_pointer_argument;
     }
@@ -478,8 +480,12 @@ heif_error heif_context_encode_gain_map_image(
             }
             const auto normalized = static_cast<uint16_t>(
                 (uint64_t(value) * output_maximum + input_maximum / 2) / input_maximum);
-            if (encoded_depth <= 8) { output_row[x] = static_cast<uint8_t>(normalized); }
-            else { reinterpret_cast<uint16_t*>(output_row)[x] = normalized; }
+            if (encoded_depth <= 8) {
+              output_row[x] = static_cast<uint8_t>(normalized);
+            }
+            else {
+              reinterpret_cast<uint16_t*>(output_row)[x] = normalized;
+            }
           }
         }
       }
@@ -487,7 +493,9 @@ heif_error heif_context_encode_gain_map_image(
     nclx_profile nclx;
     nclx.set_from_heif_color_profile_nclx(&signalling);
     pixels->set_color_profile_nclx(nclx);
-    if (source->has_chroma_location()) { pixels->set_chroma_location(source->get_chroma_location()); }
+    if (source->has_chroma_location()) {
+      pixels->set_chroma_location(source->get_chroma_location());
+    }
 
     std::unique_ptr<heif_encoding_options, decltype(&heif_encoding_options_free)> options(
         heif_encoding_options_alloc(), heif_encoding_options_free);
@@ -499,7 +507,9 @@ heif_error heif_context_encode_gain_map_image(
     options->save_alpha_channel = false;
     auto result = ctx->context->encode_image(pixels, encoder, *options,
                                              heif_image_input_class_normal);
-    if (!result) { return result.error_struct(ctx->context.get()); }
+    if (!result) {
+      return result.error_struct(ctx->context.get());
+    }
     // Ordinary RGB-to-YCbCr conversion fills unspecified CP/TC with sRGB
     // defaults in its working raster. The emitted colr retains our exact
     // signalling; the writer-side handle must describe that same property.
@@ -629,7 +639,9 @@ heif_error heif_context_add_tone_map_derived_image(
       if (auto groups = file->get_grpl_box()) {
         for (const auto& box : groups->get_all_child_boxes()) {
           auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box);
-          if (!group || group->get_short_type() != fourcc("altr")) { continue; }
+          if (!group || group->get_short_type() != fourcc("altr")) {
+            continue;
+          }
           for (auto id : group->get_item_ids()) {
             if (id == base->image->get_id()) {
               return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
@@ -676,7 +688,9 @@ heif_error heif_context_add_tone_map_derived_image(
     if (create_altr) {
       const heif_item_id ids[] = {(*result)->get_id(), base->image->get_id()};
       auto error = heif_context_add_alternative_entity_group(ctx, ids, 2, nullptr);
-      if (error.code != heif_error_Ok) { return error; }
+      if (error.code != heif_error_Ok) {
+        return error;
+      }
     }
 
     if (out_tmap) {

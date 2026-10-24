@@ -373,9 +373,13 @@ Error HeifContext::validate_item_visibility(heif_item_id id, bool hidden) const
   if (auto groups = m_heif_file->get_grpl_box()) {
     for (const auto& box : groups->get_all_child_boxes()) {
       auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box);
-      if (!group || group->get_short_type() != fourcc("altr")) { continue; }
+      if (!group || group->get_short_type() != fourcc("altr")) {
+        continue;
+      }
       const auto& ids = group->get_item_ids();
-      if (std::find(ids.begin(), ids.end(), id) == ids.end()) { continue; }
+      if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+        continue;
+      }
       for (auto member : ids) {
         auto member_infe = m_heif_file->get_infe_box(member);
         if (member != id && member_infe && member_infe->is_hidden_item() != hidden) {
@@ -390,7 +394,9 @@ Error HeifContext::validate_item_visibility(heif_item_id id, bool hidden) const
 
 Error HeifContext::set_item_hidden(heif_item_id id, bool hidden)
 {
-  if (Error error = validate_item_visibility(id, hidden)) { return error; }
+  if (Error error = validate_item_visibility(id, hidden)) {
+    return error;
+  }
   auto infe = m_heif_file->get_infe_box(id);
   infe->set_hidden_item(hidden);
 
@@ -1695,12 +1701,16 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
     if (requested_output) {
       auto converted = convert_tone_map_colour(img, *requested_output,
                                               options, get_security_limits(), tmap_output_float);
-      if (!converted) { return converted.error(); }
+      if (!converted) {
+        return converted.error();
+      }
       img = *converted;
     }
     if (tmap_output_float || imgitem->use_item_color_profile_for_decoding()) {
       auto finished = finish_tone_map_output(img, options, get_security_limits(), tmap_output_float);
-      if (!finished) { return finished.error(); }
+      if (!finished) {
+        return finished.error();
+      }
       img = *finished;
     }
     if (!options.output_image_nclx_profile || tmap_output_float) {

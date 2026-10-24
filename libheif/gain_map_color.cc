@@ -25,8 +25,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -225,7 +223,9 @@ GainMapMatrix adapt_white(const GainMapRGB& source_white, const GainMapRGB& targ
   const auto source = gain_map_transform(bradford, source_white);
   const auto target = gain_map_transform(bradford, target_white);
   GainMapMatrix scale{};
-  for (size_t c = 0; c < 3; ++c) { scale[c][c] = target[c] / source[c]; }
+  for (size_t c = 0; c < 3; ++c) {
+    scale[c][c] = target[c] / source[c];
+  }
   return multiply(inverse(bradford), multiply(scale, bradford));
 }
 
@@ -266,7 +266,9 @@ Result<GainMapMatrix> to_xyz(uint16_t primaries)
   }
   const auto scale = gain_map_transform(inverse(matrix), adopted_white(primaries));
   for (size_t row = 0; row < 3; ++row) {
-    for (size_t c = 0; c < 3; ++c) { matrix[row][c] *= scale[c]; }
+    for (size_t c = 0; c < 3; ++c) {
+      matrix[row][c] *= scale[c];
+    }
   }
   return matrix;
 }
@@ -302,17 +304,6 @@ GainMapMatrix multiply(const GainMapMatrix& a, const GainMapMatrix& b)
     }
   }
   return result;
-}
-
-double matrix_difference(const GainMapMatrix& a, const GainMapMatrix& b)
-{
-  double difference = 0;
-  for (size_t y = 0; y < 3; ++y) {
-    for (size_t x = 0; x < 3; ++x) {
-      difference = std::max(difference, std::abs(a[y][x] - b[y][x]));
-    }
-  }
-  return difference;
 }
 
 Result<GainMapRGB> parse_xyz_tag(const IccView& view, const IccTag& tag)
@@ -372,11 +363,19 @@ Result<GainMapMatrix> chromaticity_to_pcs(const IccView& view,
   if (chromaticity.size < 36 || !read_u32(data, chromaticity.offset, type) ||
       type != icc_sig('c', 'h', 'r', 'm') ||
       !read_u16(data, chromaticity.offset + 8, channels) || channels != 3 ||
-      !read_u16(data, chromaticity.offset + 10, encoding)) { return malformed_icc(); }
-  if (encoding > 6) { return unsupported_icc(); }
+      !read_u16(data, chromaticity.offset + 10, encoding)) {
+    return malformed_icc();
+  }
+  if (encoding > 6) {
+    return unsupported_icc();
+  }
   auto adaptation = parse_chad_tag(view, chad);
-  if (!adaptation) { return adaptation.error(); }
-  if (std::abs(determinant(*adaptation)) < 1e-12) { return unsupported_icc(); }
+  if (!adaptation) {
+    return adaptation.error();
+  }
+  if (std::abs(determinant(*adaptation)) < 1e-12) {
+    return unsupported_icc();
+  }
 
   // ICC.1:2022 10.2 stores native, unadapted xy. E.4.1 derives the native
   // adopted white by applying inverse chad to the D50 PCS adopted white.
@@ -384,22 +383,27 @@ Result<GainMapMatrix> chromaticity_to_pcs(const IccView& view,
   for (size_t c = 0; c < 3; ++c) {
     uint32_t x = 0, y = 0;
     if (!read_u32(data, chromaticity.offset + 12 + c * 8, x) ||
-        !read_u32(data, chromaticity.offset + 16 + c * 8, y)) { return malformed_icc(); }
+        !read_u32(data, chromaticity.offset + 16 + c * 8, y)) {
+      return malformed_icc();
+    }
     matrix[0][c] = x / 65536.0;
     matrix[1][c] = y / 65536.0;
     matrix[2][c] = 1 - matrix[0][c] - matrix[1][c];
   }
-  if (std::abs(determinant(matrix)) < 1e-12) { return unsupported_icc(); }
+  if (std::abs(determinant(matrix)) < 1e-12) {
+    return unsupported_icc();
+  }
   const auto white = gain_map_transform(inverse(*adaptation), {0.9642, 1, 0.8249});
   const auto scale = gain_map_transform(inverse(matrix), white);
   for (size_t row = 0; row < 3; ++row) {
-    for (size_t c = 0; c < 3; ++c) { matrix[row][c] *= scale[c]; }
+    for (size_t c = 0; c < 3; ++c) {
+      matrix[row][c] *= scale[c];
+    }
   }
   return multiply(*adaptation, matrix);
 }
 
-Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x,
-                                 bool allow_sampled = false)
+Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double x)
 {
   if (!view.bytes) {
     return malformed_icc();
@@ -480,10 +484,9 @@ Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double
       result = std::pow(x, gamma);
     }
     else {
-      // A sampled curve may represent an arbitrary device transform. Do not
-      // infer a standard transfer function from a sparse coincidence.
-      if (!allow_sampled) { return unsupported_icc(); }
-      if (count > (tag.size - 12) / 2) { return malformed_icc(); }
+      if (count > (tag.size - 12) / 2) {
+        return malformed_icc();
+      }
       const double position = std::clamp(x, 0.0, 1.0) * (count - 1);
       const uint32_t low = static_cast<uint32_t>(position);
       const uint32_t high = std::min(low + 1, count - 1);
@@ -505,45 +508,6 @@ Result<double> evaluate_icc_curve(const IccView& view, const IccTag& tag, double
   // Parametric/gamma equations also describe extended relative HDR samples.
   // Sampled tables remain bounded by their own endpoint values above.
   return std::max(result, 0.0);
-}
-
-Result<uint16_t> classify_matrix_trc_transfer(const IccView& view,
-                                             const std::array<const IccTag*, 3>& trcs)
-{
-  constexpr std::array<double, 10> samples{
-      0.0, 0.001, 0.0031308, 0.01, 0.04, 0.1, 0.25, 0.5, 0.75, 1.0};
-  constexpr std::array<uint16_t, 3> candidates{13, 1, 8};
-
-  double best_error = std::numeric_limits<double>::infinity();
-  uint16_t best_transfer = 0;
-  for (uint16_t transfer : candidates) {
-    double max_error = 0;
-    for (const IccTag* trc : trcs) {
-      for (double sample : samples) {
-        auto actual = evaluate_icc_curve(view, *trc, sample);
-        auto reference = gain_map_decode_transfer(sample, transfer);
-        if (!actual) {
-          return actual.error();
-        }
-        if (!reference) {
-          return reference.error();
-        }
-        max_error = std::max(max_error, std::abs(*actual - *reference));
-      }
-    }
-    if (max_error < best_error) {
-      best_error = max_error;
-      best_transfer = transfer;
-    }
-  }
-
-  // s15Fixed16 matrix/TRC profiles quantize their parameters. The supplied
-  // Display-P3 profile differs from the exact sRGB curve by about 4e-6;
-  // 5e-4 leaves ample encoding tolerance while staying far from BT.709.
-  if (best_error > 5e-4) {
-    return unsupported_icc();
-  }
-  return best_transfer;
 }
 
 Result<nclx_profile> nclx_from_cicp(const IccView& view, const IccTag& tag)
@@ -592,74 +556,6 @@ Result<nclx_profile> nclx_from_cicp(const IccView& view, const IccTag& tag)
   return result;
 }
 
-Result<nclx_profile> nclx_from_matrix_trc(const IccView& view)
-{
-  if (view.data_space != icc_sig('R', 'G', 'B', ' ') ||
-      view.pcs != icc_sig('X', 'Y', 'Z', ' ')) {
-    return unsupported_icc();
-  }
-
-  const IccTag* r_xyz = view.find(icc_sig('r', 'X', 'Y', 'Z'));
-  const IccTag* g_xyz = view.find(icc_sig('g', 'X', 'Y', 'Z'));
-  const IccTag* b_xyz = view.find(icc_sig('b', 'X', 'Y', 'Z'));
-  const IccTag* chad = view.find(icc_sig('c', 'h', 'a', 'd'));
-  const IccTag* r_trc = view.find(icc_sig('r', 'T', 'R', 'C'));
-  const IccTag* g_trc = view.find(icc_sig('g', 'T', 'R', 'C'));
-  const IccTag* b_trc = view.find(icc_sig('b', 'T', 'R', 'C'));
-  if (!r_xyz || !g_xyz || !b_xyz || !chad || !r_trc || !g_trc || !b_trc) {
-    return unsupported_icc();
-  }
-
-  auto red = parse_xyz_tag(view, *r_xyz);
-  auto green = parse_xyz_tag(view, *g_xyz);
-  auto blue = parse_xyz_tag(view, *b_xyz);
-  auto adaptation = parse_chad_tag(view, *chad);
-  if (!red) { return red.error(); }
-  if (!green) { return green.error(); }
-  if (!blue) { return blue.error(); }
-  if (!adaptation) { return adaptation.error(); }
-
-  const double det = determinant(*adaptation);
-  if (!std::isfinite(det) || std::abs(det) < 1e-12) {
-    return unsupported_icc();
-  }
-
-  GainMapMatrix device_to_d50{{
-      {(*red)[0], (*green)[0], (*blue)[0]},
-      {(*red)[1], (*green)[1], (*blue)[1]},
-      {(*red)[2], (*green)[2], (*blue)[2]}}};
-  const GainMapMatrix device_to_adopted =
-      multiply(inverse(*adaptation), device_to_d50);
-
-  uint16_t best_primaries = 0;
-  double best_difference = std::numeric_limits<double>::infinity();
-  for (uint16_t primaries : {uint16_t{1}, uint16_t{9}, uint16_t{12}}) {
-    auto reference = to_xyz(primaries);
-    if (!reference) {
-      continue;
-    }
-    const double difference = matrix_difference(device_to_adopted, *reference);
-    if (difference < best_difference) {
-      best_difference = difference;
-      best_primaries = primaries;
-    }
-  }
-  if (best_primaries == 0 || best_difference > 0.002) {
-    return unsupported_icc();
-  }
-
-  auto transfer = classify_matrix_trc_transfer(view, {r_trc, g_trc, b_trc});
-  if (!transfer) {
-    return transfer.error();
-  }
-
-  nclx_profile result;
-  result.set_colour_primaries(best_primaries);
-  result.set_transfer_characteristics(*transfer);
-  result.set_matrix_coefficients(0);
-  result.set_full_range_flag(true);
-  return result;
-}
 }  // namespace
 
 bool gain_map_supports_transfer(uint16_t transfer)
@@ -756,20 +652,28 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
 
 Result<double> gain_map_decode_matrix_signal(double value, uint16_t transfer)
 {
-  if (!std::isfinite(value)) { return invalid_value(); }
+  if (!std::isfinite(value)) {
+    return invalid_value();
+  }
   if (transfer == 18) {
     const double v = std::max(value, 0.0);
     return v <= 0.5 ? v * v / 3.0 : (std::exp((v - hlg_c) / hlg_a) + hlg_b) / 12.0;
   }
   auto linear = gain_map_decode_transfer(transfer == 13 ? std::abs(value) : value, transfer);
-  if (!linear) { return linear.error(); }
-  if (transfer == 13) { return std::copysign(*linear, value); }
+  if (!linear) {
+    return linear.error();
+  }
+  if (transfer == 13) {
+    return std::copysign(*linear, value);
+  }
   return *linear / (transfer == 16 ? pq_scale : transfer == 17 ? cinema_scale : 1);
 }
 
 Result<double> gain_map_encode_matrix_signal(double value, uint16_t transfer)
 {
-  if (!std::isfinite(value)) { return invalid_value(); }
+  if (!std::isfinite(value)) {
+    return invalid_value();
+  }
   if (transfer == 18) {
     const double v = std::max(value, 0.0);
     return v <= 1.0 / 12 ? std::sqrt(3 * v) : hlg_a * std::log(12.0 * v - hlg_b) + hlg_c;
@@ -777,13 +681,17 @@ Result<double> gain_map_encode_matrix_signal(double value, uint16_t transfer)
   auto signal = gain_map_encode_transfer(
       transfer == 13 ? std::abs(value) : value * (transfer == 16 ? pq_scale : transfer == 17 ? cinema_scale : 1),
       transfer);
-  if (!signal) { return signal.error(); }
+  if (!signal) {
+    return signal.error();
+  }
   return transfer == 13 ? std::copysign(*signal, value) : *signal;
 }
 
 Result<GainMapRGB> gain_map_decode_lms_matrix(const GainMapRGB& value, uint16_t matrix, uint16_t transfer)
 {
-  if (matrix != 14 && matrix != 15) { return unsupported_colour(); }
+  if (matrix != 14 && matrix != 15) {
+    return unsupported_colour();
+  }
   // H.273 (2024) Eq.14-19 and Eq.79-87. All specified matrix numerators
   // divide by 4096; their inverses are computed once in double precision.
   static const GainMapMatrix lms_to_rgb = inverse({{{1688.0 / 4096, 2146.0 / 4096, 262.0 / 4096},
@@ -804,14 +712,20 @@ Result<GainMapRGB> gain_map_decode_lms_matrix(const GainMapRGB& value, uint16_t 
   auto lms = gain_map_transform(matrix == 15 ? ipt_to_lms : transfer == 18 ? hlg_to_lms : pq_to_lms, value);
   for (auto& component : lms) {
     auto linear = gain_map_decode_matrix_signal(component, transfer);
-    if (!linear) { return linear.error(); }
+    if (!linear) {
+      return linear.error();
+    }
     component = *linear;
   }
   auto rgb = gain_map_transform(matrix == 15 ? ipt_lms_to_rgb : lms_to_rgb, lms);
   for (auto& component : rgb) {
     auto encoded = gain_map_encode_matrix_signal(component, transfer);
-    if (!encoded) { return encoded.error(); }
-    if (!std::isfinite(*encoded)) { return invalid_value(); }
+    if (!encoded) {
+      return encoded.error();
+    }
+    if (!std::isfinite(*encoded)) {
+      return invalid_value();
+    }
     component = *encoded;
   }
   return rgb;
@@ -821,10 +735,14 @@ namespace {
 Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile, bool decode)
 {
   auto xyz = to_xyz(profile.m_colour_primaries);
-  if (!xyz) { return xyz.error(); }
+  if (!xyz) {
+    return xyz.error();
+  }
   GainMapRGB linear{};
   for (size_t c = 0; c < 3; ++c) {
-    if (!std::isfinite(value[c])) { return invalid_value(); }
+    if (!std::isfinite(value[c])) {
+      return invalid_value();
+    }
     if (decode) {
       const double v = std::clamp(value[c], 0.0, 1.0);
       linear[c] = *gain_map_decode_matrix_signal(v, 18);
@@ -838,8 +756,12 @@ Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile,
   // per-channel powers. Obtain luminance from the declared RGB primaries.
   const double luminance = (*xyz)[1][0] * linear[0] +
                            (*xyz)[1][1] * linear[1] + (*xyz)[1][2] * linear[2];
-  if (!std::isfinite(luminance)) { return invalid_value(); }
-  if (luminance <= 0) { return GainMapRGB{0, 0, 0}; }
+  if (!std::isfinite(luminance)) {
+    return invalid_value();
+  }
+  if (luminance <= 0) {
+    return GainMapRGB{0, 0, 0};
+  }
   const double scale = decode ? hlg_scale * std::pow(luminance, hlg_gamma - 1.0) :
                                 std::pow(luminance, 1.0 / hlg_gamma - 1.0);
   GainMapRGB result{};
@@ -848,7 +770,9 @@ Result<GainMapRGB> hlg_rgb(const GainMapRGB& value, const nclx_profile& profile,
     result[c] = decode ? v :
                 (v <= 1.0 / 12.0 ? std::sqrt(3.0 * v) :
                                   hlg_a * std::log(12.0 * v - hlg_b) + hlg_c);
-    if (!std::isfinite(result[c])) { return invalid_value(); }
+    if (!std::isfinite(result[c])) {
+      return invalid_value();
+    }
   }
   return result;
 }
@@ -865,7 +789,9 @@ Result<GainMapRGB> gain_map_decode_rgb(const GainMapRGB& value, const nclx_profi
     auto component = profile.m_transfer_characteristics == 13 && profile.m_matrix_coefficients != 0 ?
                      gain_map_decode_matrix_signal(value[c], 13) :
                      gain_map_decode_transfer(value[c], profile.m_transfer_characteristics);
-    if (!component) { return component.error(); }
+    if (!component) {
+      return component.error();
+    }
     result[c] = *component;
   }
   return result;
@@ -881,7 +807,9 @@ Result<GainMapRGB> gain_map_encode_rgb(const GainMapRGB& value, const nclx_profi
     auto component = profile.m_transfer_characteristics == 13 && profile.m_matrix_coefficients != 0 ?
                      gain_map_encode_matrix_signal(value[c], 13) :
                      gain_map_encode_transfer(value[c], profile.m_transfer_characteristics);
-    if (!component) { return component.error(); }
+    if (!component) {
+      return component.error();
+    }
     result[c] = *component;
   }
   return result;
@@ -902,36 +830,35 @@ Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target
 {
   auto src = to_xyz(source);
   auto dst = to_xyz(target);
-  if (!src) { return src.error(); }
-  if (!dst) { return dst.error(); }
+  if (!src) {
+    return src.error();
+  }
+  if (!dst) {
+    return dst.error();
+  }
   if (source == target) {
     return GainMapMatrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
   }
   return multiply(inverse(*dst), multiply(adapt_white(adopted_white(source), adopted_white(target)), *src));
 }
 
-Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile)
-{
-  auto view = parse_icc(profile);
-  if (!view) {
-    return view.error();
-  }
-
-  if (const IccTag* cicp = view->find(icc_sig('c', 'i', 'c', 'p'))) {
-    return nclx_from_cicp(*view, *cicp);
-  }
-  return nclx_from_matrix_trc(*view);
-}
-
 uint8_t gain_map_icc_component_count(const color_profile_raw& profile)
 {
   auto view = parse_icc(profile);
-  if (!view) { return 0; }
-  if (view->data_space == icc_sig('G', 'R', 'A', 'Y')) { return 1; }
-  if (view->data_space == icc_sig('C', 'M', 'Y', 'K')) { return 4; }
+  if (!view) {
+    return 0;
+  }
+  if (view->data_space == icc_sig('G', 'R', 'A', 'Y')) {
+    return 1;
+  }
+  if (view->data_space == icc_sig('C', 'M', 'Y', 'K')) {
+    return 4;
+  }
   if (view->data_space == icc_sig('R', 'G', 'B', ' ') ||
       view->data_space == icc_sig('Y', 'C', 'b', 'r') ||
-      view->data_space == icc_sig('X', 'Y', 'Z', ' ')) { return 3; }
+      view->data_space == icc_sig('X', 'Y', 'Z', ' ')) {
+    return 3;
+  }
   return 0;
 }
 
@@ -954,11 +881,21 @@ struct GainMapIccColour
 
   ~GainMapIccColour()
   {
-    if (decode_lut) { cmsDeleteTransform(decode_lut); }
-    if (encode_lut) { cmsDeleteTransform(encode_lut); }
-    if (lut_profile) { cmsCloseProfile(lut_profile); }
-    if (xyz_profile) { cmsCloseProfile(xyz_profile); }
-    if (context) { cmsDeleteContext(context); }
+    if (decode_lut) {
+      cmsDeleteTransform(decode_lut);
+    }
+    if (encode_lut) {
+      cmsDeleteTransform(encode_lut);
+    }
+    if (lut_profile) {
+      cmsCloseProfile(lut_profile);
+    }
+    if (xyz_profile) {
+      cmsCloseProfile(xyz_profile);
+    }
+    if (context) {
+      cmsDeleteContext(context);
+    }
   }
 #endif
 };
@@ -967,11 +904,17 @@ namespace {
 Error validate_rgb_curve(const IccView& view, const IccTag& tag)
 {
   const auto& bytes = *view.bytes;
-  auto first = evaluate_icc_curve(view, tag, 0, true);
-  auto last = evaluate_icc_curve(view, tag, 1, true);
-  if (!first) { return first.error(); }
-  if (!last) { return last.error(); }
-  if (*last <= *first) { return unsupported_icc(); }
+  auto first = evaluate_icc_curve(view, tag, 0);
+  auto last = evaluate_icc_curve(view, tag, 1);
+  if (!first) {
+    return first.error();
+  }
+  if (!last) {
+    return last.error();
+  }
+  if (*last <= *first) {
+    return unsupported_icc();
+  }
   uint32_t type = 0;
   read_u32(bytes, tag.offset, type);
   if (type == icc_sig('c', 'u', 'r', 'v')) {
@@ -981,8 +924,12 @@ Error validate_rgb_curve(const IccView& view, const IccTag& tag)
       uint16_t previous = 0;
       for (uint32_t i = 0; i < count; ++i) {
         uint16_t value = 0;
-        if (!read_u16(bytes, tag.offset + 12 + size_t(i) * 2, value)) { return malformed_icc(); }
-        if (i && value < previous) { return unsupported_icc(); }
+        if (!read_u16(bytes, tag.offset + 12 + size_t(i) * 2, value)) {
+          return malformed_icc();
+        }
+        if (i && value < previous) {
+          return unsupported_icc();
+        }
         previous = value;
       }
     }
@@ -992,7 +939,9 @@ Error validate_rgb_curve(const IccView& view, const IccTag& tag)
     read_u16(bytes, tag.offset + 8, function);
     if (function > 0) {
       auto a = read_s15_fixed16(bytes, tag.offset + 16);
-      if (!a || *a <= 0) { return unsupported_icc(); }
+      if (!a || *a <= 0) {
+        return unsupported_icc();
+      }
     }
     if (function >= 3) {
       auto a = read_s15_fixed16(bytes, tag.offset + 16);
@@ -1003,12 +952,14 @@ Error validate_rgb_curve(const IccView& view, const IccTag& tag)
         return unsupported_icc();
       }
       if (*d > 0 && *d <= 1) {
-        auto left = evaluate_icc_curve(view, tag, std::nextafter(*d, 0.0), true);
-        auto right = evaluate_icc_curve(view, tag, *d, true);
+        auto left = evaluate_icc_curve(view, tag, std::nextafter(*d, 0.0));
+        auto right = evaluate_icc_curve(view, tag, *d);
         // ICC WP35 allows a downward join from parameter rounding. The
         // analytic inverse chooses the lower branch where both are valid;
         // its lower clamp requires the join to stay above the zero-input value.
-        if (!left || !right || *right < *first) { return unsupported_icc(); }
+        if (!left || !right || *right < *first) {
+          return unsupported_icc();
+        }
       }
     }
   }
@@ -1017,18 +968,26 @@ Error validate_rgb_curve(const IccView& view, const IccTag& tag)
 
 Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double value)
 {
-  if (!std::isfinite(value)) { return invalid_value(); }
-  auto first = evaluate_icc_curve(view, tag, 0, true);
-  auto last = evaluate_icc_curve(view, tag, 1, true);
-  if (!first) { return first.error(); }
-  if (!last) { return last.error(); }
+  if (!std::isfinite(value)) {
+    return invalid_value();
+  }
+  auto first = evaluate_icc_curve(view, tag, 0);
+  auto last = evaluate_icc_curve(view, tag, 1);
+  if (!first) {
+    return first.error();
+  }
+  if (!last) {
+    return last.error();
+  }
   double target = std::max(value, *first);
   uint32_t type = 0;
   read_u32(*view.bytes, tag.offset, type);
   if (type == icc_sig('c', 'u', 'r', 'v')) {
     uint32_t count = 0;
     read_u32(*view.bytes, tag.offset + 8, count);
-    if (count == 0) { return target; }
+    if (count == 0) {
+      return target;
+    }
     if (count == 1) {
       uint16_t gamma = 0;
       read_u16(*view.bytes, tag.offset + 12, gamma);
@@ -1045,15 +1004,23 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
     if (target == *last) {
       while (low < high) {
         const uint32_t middle = low + (high - low) / 2;
-        if (entry(middle) < target) { low = middle + 1; }
-        else { high = middle; }
+        if (entry(middle) < target) {
+          low = middle + 1;
+        }
+        else {
+          high = middle;
+        }
       }
       return static_cast<double>(low) / (count - 1);
     }
     while (low < high) {
       const uint32_t middle = low + (high - low + 1) / 2;
-      if (entry(middle) <= target) { low = middle; }
-      else { high = middle - 1; }
+      if (entry(middle) <= target) {
+        low = middle;
+      }
+      else {
+        high = middle - 1;
+      }
     }
     const double a = entry(low), b = entry(low + 1);
     return (low + (target - a) / (b - a)) / (count - 1);
@@ -1065,14 +1032,20 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
     std::array<double, 7> p{};
     for (size_t i = 0; i < parameter_counts[function]; ++i) {
       auto parameter = read_s15_fixed16(*view.bytes, tag.offset + 12 + i * 4);
-      if (!parameter) { return parameter.error(); }
+      if (!parameter) {
+        return parameter.error();
+      }
       p[i] = *parameter;
     }
-    if (function == 0) { return std::pow(target, 1.0 / p[0]); }
+    if (function == 0) {
+      return std::pow(target, 1.0 / p[0]);
+    }
     const double high_offset = function == 2 ? p[3] : (function == 4 ? p[5] : 0);
     const double breakpoint = function <= 2 ? -p[2] / p[1] : p[4];
     const double high_value = (std::pow(std::max(target - high_offset, 0.0), 1.0 / p[0]) - p[2]) / p[1];
-    if (function <= 2) { return std::max(high_value, 0.0); }
+    if (function <= 2) {
+      return std::max(high_value, 0.0);
+    }
     const double low_offset = function == 4 ? p[6] : 0;
     const double low_end = std::max(p[3] * breakpoint + low_offset, 0.0);
     // At a downward join either branch may be an exact inverse (ICC WP35).
@@ -1088,7 +1061,9 @@ Result<double> inverse_rgb_curve(const IccView& view, const IccTag& tag, double 
 Result<GainMapMatrix> nclx_to_pcs(const nclx_profile& profile)
 {
   auto xyz = to_xyz(profile.m_colour_primaries);
-  if (!xyz) { return xyz.error(); }
+  if (!xyz) {
+    return xyz.error();
+  }
   // Bradford adaptation from the declared white to ICC's D50 PCS white.
   // Compute in double precision instead of reusing an s15Fixed16 'chad' tag:
   // its rounding is amplified by inverse TRCs near dark channel values.
@@ -1100,16 +1075,22 @@ Result<GainMapMatrix> nclx_to_pcs(const nclx_profile& profile)
 Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_profile_raw>& profile,
                                            uint32_t diffuse_white)
 {
-  if (!profile) { return unsupported_icc(); }
+  if (!profile) {
+    return unsupported_icc();
+  }
   auto view = parse_icc(*profile);
-  if (!view) { return view.error(); }
+  if (!view) {
+    return view.error();
+  }
   uint32_t magic = 0;
   if (!read_u32(profile->get_data(), 36, magic) || magic != icc_sig('a', 'c', 's', 'p')) {
     return malformed_icc();
   }
   if (const auto* cicp = view->find(icc_sig('c', 'i', 'c', 'p'))) {
     auto nclx = nclx_from_cicp(*view, *cicp);
-    if (!nclx) { return nclx.error(); }
+    if (!nclx) {
+      return nclx.error();
+    }
     GainMapColour result(*nclx, diffuse_white);
     result.m_profile = profile;
     return result;
@@ -1132,9 +1113,13 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   const bool encode_lut = view->find(icc_sig('B', '2', 'D', '1')) ||
                           view->find(icc_sig('B', '2', 'A', '1')) || view->find(icc_sig('B', '2', 'A', '0'));
   const bool lut = decode_lut || encode_lut;
-  if (cmyk && !decode_lut) { return unsupported_icc(); }
+  if (cmyk && !decode_lut) {
+    return unsupported_icc();
+  }
   // ICC.1:2022 8.7 defines ColorSpace profiles through LUT transforms.
-  if (view->profile_class == icc_sig('s', 'p', 'a', 'c') && !lut) { return unsupported_icc(); }
+  if (view->profile_class == icc_sig('s', 'p', 'a', 'c') && !lut) {
+    return unsupported_icc();
+  }
   auto transform = std::make_shared<GainMapIccColour>();
   transform->view = *view;
   transform->lut = lut;
@@ -1148,7 +1133,9 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
   const auto* chad = view->find(icc_sig('c', 'h', 'a', 'd'));
   if (!gray && !cmyk && colourants == 0 && lut && chromaticity && chad) {
     auto matrix = chromaticity_to_pcs(*view, *chromaticity, *chad);
-    if (!matrix) { return matrix.error(); }
+    if (!matrix) {
+      return matrix.error();
+    }
     transform->to_pcs = *matrix;
   }
   else if (gray || cmyk || (colourants == 0 && lut)) {
@@ -1158,39 +1145,61 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
     transform->application_primaries = false;
     if (gray && !lut) {
       const auto* curve = view->find(icc_sig('k', 'T', 'R', 'C'));
-      if (!curve) { return unsupported_icc(); }
-      if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
+      if (!curve) {
+        return unsupported_icc();
+      }
+      if (auto error = validate_rgb_curve(*view, *curve)) {
+        return error;
+      }
       transform->curves[0] = *curve;
     }
   }
-  else if (colourants != 3) { return unsupported_icc(); }
+  else if (colourants != 3) {
+    return unsupported_icc();
+  }
   for (size_t c = 0; c < 3; ++c) {
-    if (!transform->application_primaries || colourants == 0) { break; }
+    if (!transform->application_primaries || colourants == 0) {
+      break;
+    }
     const char name = "rgb"[c];
     const auto* xyz = view->find(icc_sig(name, 'X', 'Y', 'Z'));
     const auto* curve = view->find(icc_sig(name, 'T', 'R', 'C'));
-    if (!xyz || (!lut && !curve)) { return unsupported_icc(); }
+    if (!xyz || (!lut && !curve)) {
+      return unsupported_icc();
+    }
     auto column = parse_xyz_tag(*view, *xyz);
-    if (!column) { return column.error(); }
+    if (!column) {
+      return column.error();
+    }
     if (!lut) {
-      if (auto error = validate_rgb_curve(*view, *curve)) { return error; }
+      if (auto error = validate_rgb_curve(*view, *curve)) {
+        return error;
+      }
       transform->curves[c] = *curve;
     }
-    for (size_t row = 0; row < 3; ++row) { transform->to_pcs[row][c] = (*column)[row]; }
+    for (size_t row = 0; row < 3; ++row) {
+      transform->to_pcs[row][c] = (*column)[row];
+    }
   }
   const double det = determinant(transform->to_pcs);
-  if (!std::isfinite(det) || std::abs(det) < 1e-12) { return unsupported_icc(); }
+  if (!std::isfinite(det) || std::abs(det) < 1e-12) {
+    return unsupported_icc();
+  }
   if (lut) {
 #if HAVE_LCMS2
     transform->context = cmsCreateContext(nullptr, nullptr);
-    if (!transform->context) { return unsupported_icc(); }
+    if (!transform->context) {
+      return unsupported_icc();
+    }
     // Per-decode context and uncached transforms avoid shared CMM state during
     // parallel image decoding. Little CMS validates the bounded tag payloads.
     cmsSetLogErrorHandlerTHR(transform->context, [](cmsContext, cmsUInt32Number, const char*) {});
     transform->lut_profile = cmsOpenProfileFromMemTHR(transform->context, view->bytes->data(),
                                                      static_cast<cmsUInt32Number>(view->profile_size));
     transform->xyz_profile = cmsCreateXYZProfileTHR(transform->context);
-    if (!transform->lut_profile || !transform->xyz_profile) { return malformed_icc(); }
+    if (!transform->lut_profile || !transform->xyz_profile) {
+      return malformed_icc();
+    }
     constexpr auto flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_NOCACHE;
     const auto format = cmyk ? TYPE_CMYK_DBL : gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL;
     // Let the CMM select each available direction independently, including
@@ -1201,13 +1210,17 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
       transform->encode_lut = cmsCreateTransformTHR(transform->context, transform->xyz_profile, TYPE_XYZ_DBL,
           transform->lut_profile, gray ? TYPE_GRAY_DBL : TYPE_RGB_DBL, INTENT_RELATIVE_COLORIMETRIC, flags);
     }
-    if (!transform->decode_lut && !transform->encode_lut) { return unsupported_icc(); }
+    if (!transform->decode_lut && !transform->encode_lut) {
+      return unsupported_icc();
+    }
     transform->from_pcs = inverse(transform->to_pcs);
 #else
     return unsupported_icc();
 #endif
   }
-  else if (!gray && view->pcs != icc_sig('X', 'Y', 'Z', ' ')) { return unsupported_icc(); }
+  else if (!gray && view->pcs != icc_sig('X', 'Y', 'Z', ' ')) {
+    return unsupported_icc();
+  }
   nclx_profile raster = nclx_profile::undefined();
   raster.set_matrix_coefficients(0);
   raster.set_full_range_flag(true);
@@ -1219,51 +1232,81 @@ Result<GainMapColour> GainMapColour::from_icc(const std::shared_ptr<const color_
 
 Result<GainMapRGB> GainMapColour::decode(const GainMapRGB& signal) const
 {
-  if (uses_cmyk()) { return unsupported_icc(); }
+  if (uses_cmyk()) {
+    return unsupported_icc();
+  }
   if (!m_matrix_trc) {
     auto result = gain_map_decode_rgb(signal, m_nclx);
-    if (!result) { return result.error(); }
+    if (!result) {
+      return result.error();
+    }
     const auto transfer = m_nclx.m_transfer_characteristics;
     if (m_diffuse_white && (transfer == 16 || transfer == 17 || transfer == 18)) {
-      for (auto& value : *result) { value *= 2030000.0 / m_diffuse_white; }
+      for (auto& value : *result) {
+        value *= 2030000.0 / m_diffuse_white;
+      }
     }
     return result;
   }
   GainMapRGB result{};
   if (m_matrix_trc->gray) {
-    for (double value : signal) { if (!std::isfinite(value)) { return invalid_value(); } }
+    for (double value : signal) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     // prepare_rgb replicates monochrome samples. A gray profile must not
     // silently discard unequal channels of an incorrectly described RGB raster.
-    if (signal[0] != signal[1] || signal[0] != signal[2]) { return unsupported_icc(); }
+    if (signal[0] != signal[1] || signal[0] != signal[2]) {
+      return unsupported_icc();
+    }
     if (!m_matrix_trc->lut) {
       auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[0],
-                                      std::max(signal[0], 0.0), true);
-      if (!value) { return value.error(); }
+                                      std::max(signal[0], 0.0));
+      if (!value) {
+        return value.error();
+      }
       double y = *value;
       // ICC.1:2022 F.2: grayTRC is relative Y for XYZ PCS, or normalized
       // L* for Lab PCS. Neutral Lab has a*=b*=0; invert L* before XYZ.
       if (m_matrix_trc->view.pcs == icc_sig('L', 'a', 'b', ' ')) {
         y = y <= 0.08 ? y * 2700 / 24389 : std::pow((100 * y + 16) / 116, 3);
       }
-      if (!std::isfinite(y)) { return invalid_value(); }
+      if (!std::isfinite(y)) {
+        return invalid_value();
+      }
       return GainMapRGB{0.9642 * y, y, 0.8249 * y};
     }
   }
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {
-    if (!m_matrix_trc->decode_lut) { return unsupported_icc(); }
-    for (double value : signal) { if (!std::isfinite(value)) { return invalid_value(); } }
+    if (!m_matrix_trc->decode_lut) {
+      return unsupported_icc();
+    }
+    for (double value : signal) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     cmsDoTransform(m_matrix_trc->decode_lut, signal.data(), result.data(), 1);
     result = gain_map_transform(m_matrix_trc->from_pcs, result);
-    for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+    for (double value : result) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     return result;
   }
 #endif
   for (size_t c = 0; c < 3; ++c) {
-    if (!std::isfinite(signal[c])) { return invalid_value(); }
+    if (!std::isfinite(signal[c])) {
+      return invalid_value();
+    }
     auto value = evaluate_icc_curve(m_matrix_trc->view, m_matrix_trc->curves[c],
-                                    std::max(signal[c], 0.0), true);
-    if (!value) { return value.error(); }
+                                    std::max(signal[c], 0.0));
+    if (!value) {
+      return value.error();
+    }
     result[c] = *value;
   }
   return result;
@@ -1275,39 +1318,67 @@ Result<GainMapRGB> GainMapColour::encode(const GainMapRGB& linear) const
     auto normalized = linear;
     const auto transfer = m_nclx.m_transfer_characteristics;
     if (m_diffuse_white && (transfer == 16 || transfer == 17 || transfer == 18)) {
-      for (auto& value : normalized) { value *= m_diffuse_white / 2030000.0; }
+      for (auto& value : normalized) {
+        value *= m_diffuse_white / 2030000.0;
+      }
     }
     return gain_map_encode_rgb(normalized, m_nclx);
   }
-  if (m_matrix_trc->cmyk) { return unsupported_icc(); }
+  if (m_matrix_trc->cmyk) {
+    return unsupported_icc();
+  }
   GainMapRGB result{};
 #if HAVE_LCMS2
   if (m_matrix_trc->lut) {
-    if (!m_matrix_trc->encode_lut) { return unsupported_icc(); }
+    if (!m_matrix_trc->encode_lut) {
+      return unsupported_icc();
+    }
     const auto pcs = gain_map_transform(m_matrix_trc->to_pcs, linear);
-    for (double value : pcs) { if (!std::isfinite(value)) { return invalid_value(); } }
+    for (double value : pcs) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     cmsDoTransform(m_matrix_trc->encode_lut, pcs.data(), result.data(), 1);
-    if (m_matrix_trc->gray) { result.fill(result[0]); }
-    for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+    if (m_matrix_trc->gray) {
+      result.fill(result[0]);
+    }
+    for (double value : result) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     return result;
   }
 #endif
   if (m_matrix_trc->gray) {
-    for (double value : linear) { if (!std::isfinite(value)) { return invalid_value(); } }
+    for (double value : linear) {
+      if (!std::isfinite(value)) {
+        return invalid_value();
+      }
+    }
     double connection = std::max(linear[1], 0.0); // Relative Y in D50 PCS.
     if (m_matrix_trc->view.pcs == icc_sig('L', 'a', 'b', ' ')) {
       connection = connection <= 216.0 / 24389 ? connection * 24389 / 2700 :
                                                 (116 * std::cbrt(connection) - 16) / 100;
     }
     auto signal = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[0], connection);
-    if (!signal) { return signal.error(); }
-    if (!std::isfinite(*signal)) { return invalid_value(); }
+    if (!signal) {
+      return signal.error();
+    }
+    if (!std::isfinite(*signal)) {
+      return invalid_value();
+    }
     return GainMapRGB{*signal, *signal, *signal};
   }
   for (size_t c = 0; c < 3; ++c) {
     auto value = inverse_rgb_curve(m_matrix_trc->view, m_matrix_trc->curves[c], linear[c]);
-    if (!value) { return value.error(); }
-    if (!std::isfinite(*value)) { return invalid_value(); }
+    if (!value) {
+      return value.error();
+    }
+    if (!std::isfinite(*value)) {
+      return invalid_value();
+    }
     result[c] = *value;
   }
   return result;
@@ -1326,18 +1397,28 @@ bool GainMapColour::is_monochrome() const
 Result<GainMapRGB> GainMapColour::decode_cmyk(const std::array<double, 4>& signal) const
 {
 #if HAVE_LCMS2
-  if (!uses_cmyk() || !m_matrix_trc->decode_lut) { return unsupported_icc(); }
+  if (!uses_cmyk() || !m_matrix_trc->decode_lut) {
+    return unsupported_icc();
+  }
   std::array<double, 4> percent{};
   for (size_t c = 0; c < signal.size(); ++c) {
-    if (!std::isfinite(signal[c])) { return invalid_value(); }
+    if (!std::isfinite(signal[c])) {
+      return invalid_value();
+    }
     // ICC device CMYK is normalized in the raster; Little CMS's floating
-    // CMYK formatter uses 0..100 percent. All four channels enter the CMM.
+    // CMYK formatter uses 0..100 percent.
     percent[c] = signal[c] * 100;
-    if (!std::isfinite(percent[c])) { return invalid_value(); }
+    if (!std::isfinite(percent[c])) {
+      return invalid_value();
+    }
   }
   GainMapRGB result{};
   cmsDoTransform(m_matrix_trc->decode_lut, percent.data(), result.data(), 1);
-  for (double value : result) { if (!std::isfinite(value)) { return invalid_value(); } }
+  for (double value : result) {
+    if (!std::isfinite(value)) {
+      return invalid_value();
+    }
+  }
   return result;
 #else
   return unsupported_icc();
@@ -1359,7 +1440,11 @@ Result<GainMapMatrix> GainMapColour::matrix_to(const GainMapColour& target) cons
   }
   auto source_pcs = m_matrix_trc ? Result<GainMapMatrix>(m_matrix_trc->to_pcs) : nclx_to_pcs(m_nclx);
   auto target_pcs = target.m_matrix_trc ? Result<GainMapMatrix>(target.m_matrix_trc->to_pcs) : nclx_to_pcs(target.m_nclx);
-  if (!source_pcs) { return source_pcs.error(); }
-  if (!target_pcs) { return target_pcs.error(); }
+  if (!source_pcs) {
+    return source_pcs.error();
+  }
+  if (!target_pcs) {
+    return target_pcs.error();
+  }
   return multiply(inverse(*target_pcs), *source_pcs);
 }

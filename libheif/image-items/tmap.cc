@@ -128,12 +128,16 @@ namespace
 Error require_colour_property(const ImageItem& item, bool nclx_only, const char* message)
 {
   auto properties = item.get_properties();
-  if (!properties) { return properties.error(); }
+  if (!properties) {
+    return properties.error();
+  }
   size_t count = 0;
   bool has_nclx = false;
   bool has_icc = false;
   for (const auto& property : *properties) {
-    if (property->get_short_type() != fourcc("colr")) { continue; }
+    if (property->get_short_type() != fourcc("colr")) {
+      continue;
+    }
     auto colr = std::dynamic_pointer_cast<Box_colr>(property);
     if (!colr) {
       // Raw known boxes are not interpreted until reopening. Do not ignore a
@@ -260,7 +264,9 @@ Result<GainMapColour> resolve_tone_map_colour(const ImageItem& item)
   if (icc) {
     return GainMapColour::from_icc(icc, diffuse_white);
   }
-  if (item.has_nclx_color_profile()) { return GainMapColour(nclx, diffuse_white); }
+  if (item.has_nclx_color_profile()) {
+    return GainMapColour(nclx, diffuse_white);
+  }
 
   return Error{
       heif_error_Unsupported_feature,
@@ -364,24 +370,38 @@ ImageItem_tmap::add_new_tone_map_item(
   // The derived raster uses the transformed baseline. Tiling transformations
   // retain crop offsets rather than reducing image_width/image_height.
   auto base_properties = base->get_properties();
-  if (!base_properties) { return base_properties.error(); }
+  if (!base_properties) {
+    return base_properties.error();
+  }
   for (const auto& property : *base_properties) {
     if (property->get_short_type() == fourcc("irot")) {
       auto rotation = orientation_component(property);
-      if (!rotation) { return rotation.error(); }
+      if (!rotation) {
+        return rotation.error();
+      }
       if (*rotation % 2 != 0) {
         std::swap(width, height);
       }
     }
     if (auto clap = std::dynamic_pointer_cast<Box_clap>(property)) {
       auto crop = clap->get_crop(width, height);
-      if (!crop) { return crop.error(); }
+      if (!crop) {
+        return crop.error();
+      }
       int left = crop->left, right = crop->right;
       int top = crop->top, bottom = crop->bottom;
-      if (left < 0) { left = 0; }
-      if (top < 0) { top = 0; }
-      if (static_cast<uint32_t>(right) >= width) { right = static_cast<int>(width - 1); }
-      if (static_cast<uint32_t>(bottom) >= height) { bottom = static_cast<int>(height - 1); }
+      if (left < 0) {
+        left = 0;
+      }
+      if (top < 0) {
+        top = 0;
+      }
+      if (static_cast<uint32_t>(right) >= width) {
+        right = static_cast<int>(width - 1);
+      }
+      if (static_cast<uint32_t>(bottom) >= height) {
+        bottom = static_cast<int>(height - 1);
+      }
       if (left > right || top > bottom) {
         return Error{heif_error_Invalid_input, heif_suberror_Invalid_clean_aperture};
       }
@@ -590,17 +610,13 @@ bool ImageItem_tmap::use_item_color_profile_for_decoding() const
 
 int ImageItem_tmap::get_luma_bits_per_pixel() const
 {
-  // An unknown minimum version returns the baseline at its native depth, not
-  // the usual 16-bit reconstruction. Do not advertise a depth that could make
-  // callers read past an 8-bit baseline plane. Resolving the baseline here
-  // would recurse through unvalidated derived-image references; its actual
-  // depth remains available on the decoded image. Coded children still pass
-  // the ordinary signaled-versus-decoded bit-depth check during decoding.
-  if (read_tone_map_image().status == ToneMapImageParseStatus::unsupported_minimum_version) { return -1; }
-  // Gray derived samples are floating point internally and quantized at the
-  // public boundary. PIXI is an approximate precision hint, not a coded depth.
-  // Report unknown so callers query the actual decoded component's datatype
-  // and depth instead of interpreting float32/uint16 Y through a guessed type.
+  // Baseline fallback has its native depth. Resolving it here would traverse
+  // unvalidated references; callers must query the decoded image instead.
+  if (read_tone_map_image().status == ToneMapImageParseStatus::unsupported_minimum_version) {
+    return -1;
+  }
+  // Gray samples may be float32 or uint16. PIXI is a precision hint, not their
+  // storage depth; callers must query the decoded component.
   const auto& icc = get_color_profile_icc();
   return icc && gain_map_icc_component_count(*icc) == 1 ? -1 : 16;
 }
@@ -609,7 +625,11 @@ Error ImageItem_tmap::get_coded_image_colorspace(heif_colorspace* colorspace, he
 {
   const auto& icc = get_color_profile_icc();
   const bool mono = icc && gain_map_icc_component_count(*icc) == 1;
-  if (colorspace) { *colorspace = mono ? heif_colorspace_monochrome : heif_colorspace_RGB; }
-  if (chroma) { *chroma = mono ? heif_chroma_monochrome : heif_chroma_444; }
+  if (colorspace) {
+    *colorspace = mono ? heif_colorspace_monochrome : heif_colorspace_RGB;
+  }
+  if (chroma) {
+    *chroma = mono ? heif_chroma_monochrome : heif_chroma_444;
+  }
   return Error::Ok;
 }

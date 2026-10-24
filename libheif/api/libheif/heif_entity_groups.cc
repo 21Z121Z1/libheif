@@ -27,7 +27,8 @@
 #include <vector>
 
 
-namespace {
+namespace
+{
 
 heif_error add_entity_group(heif_context* ctx,
                             const std::shared_ptr<Box_EntityToGroup>& group,

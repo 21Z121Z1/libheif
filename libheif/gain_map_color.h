@@ -51,7 +51,6 @@ Result<GainMapRGB> gain_map_encode_rgb(const GainMapRGB& value, const nclx_profi
 Result<GainMapMatrix> gain_map_primaries_matrix(uint16_t source, uint16_t target);
 GainMapRGB gain_map_transform(const GainMapMatrix& matrix, const GainMapRGB& value);
 
-Result<nclx_profile> gain_map_nclx_from_icc(const color_profile_raw& profile);
 // Declared sample components, without requiring an optional CMM transform.
 uint8_t gain_map_icc_component_count(const color_profile_raw& profile);
 
@@ -82,7 +81,9 @@ public:
     // CICP describes the ICC data encoding. Matrix/range inversion produces
     // normalized RGB, so a YCbCr or narrow-range profile no longer labels it.
     if (m_profile && !m_matrix_trc &&
-        (m_nclx.m_matrix_coefficients != 0 || !m_nclx.get_full_range_flag())) { return {}; }
+        (m_nclx.m_matrix_coefficients != 0 || !m_nclx.get_full_range_flag())) {
+      return {};
+    }
     return m_profile;
   }
   uint32_t nominal_diffuse_white() const { return m_diffuse_white; }

@@ -19,6 +19,7 @@
  */
 
 #include "gain_map_metadata.h"
+#include "bitstream.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -110,43 +111,6 @@ private:
 };
 
 
-class GainMapByteWriter
-{
-public:
-  void write_u8(uint8_t value)
-  {
-    m_data.push_back(value);
-  }
-
-  void write_u16(uint16_t value)
-  {
-    m_data.push_back(static_cast<uint8_t>(value >> 8));
-    m_data.push_back(static_cast<uint8_t>(value));
-  }
-
-  void write_u32(uint32_t value)
-  {
-    m_data.push_back(static_cast<uint8_t>(value >> 24));
-    m_data.push_back(static_cast<uint8_t>(value >> 16));
-    m_data.push_back(static_cast<uint8_t>(value >> 8));
-    m_data.push_back(static_cast<uint8_t>(value));
-  }
-
-  void write_i32(int32_t value)
-  {
-    write_u32(static_cast<uint32_t>(value));
-  }
-
-  const std::vector<uint8_t>& data() const
-  {
-    return m_data;
-  }
-
-private:
-  std::vector<uint8_t> m_data;
-};
-
-
 Error truncated_metadata_error()
 {
   return {
@@ -203,19 +167,19 @@ bool read_unsigned_rational(GainMapByteReader* reader,
 }
 
 
-void write_signed_rational(GainMapByteWriter* writer,
+void write_signed_rational(StreamWriter* writer,
                            const GainMapSignedRational32& value)
 {
-  writer->write_i32(value.numerator);
-  writer->write_u32(value.denominator);
+  writer->write32(static_cast<uint32_t>(value.numerator));
+  writer->write32(value.denominator);
 }
 
 
-void write_unsigned_rational(GainMapByteWriter* writer,
+void write_unsigned_rational(StreamWriter* writer,
                              const GainMapUnsignedRational32& value)
 {
-  writer->write_u32(value.numerator);
-  writer->write_u32(value.denominator);
+  writer->write32(value.numerator);
+  writer->write32(value.denominator);
 }
 
 
@@ -398,9 +362,9 @@ Result<std::vector<uint8_t>> serialize_gain_map_metadata(
     return validation_error;
   }
 
-  GainMapByteWriter writer;
-  writer.write_u16(metadata.version.minimum_version);
-  writer.write_u16(metadata.version.writer_version);
+  StreamWriter writer;
+  writer.write16(metadata.version.minimum_version);
+  writer.write16(metadata.version.writer_version);
 
   uint8_t flags = 0;
   if (metadata.channel_count == 3) {
@@ -409,7 +373,7 @@ Result<std::vector<uint8_t>> serialize_gain_map_metadata(
   if (metadata.use_base_colour_space) {
     flags |= 0x40U;
   }
-  writer.write_u8(flags);
+  writer.write8(flags);
 
   write_unsigned_rational(&writer, metadata.base_hdr_headroom);
   write_unsigned_rational(&writer, metadata.alternate_hdr_headroom);
@@ -424,7 +388,7 @@ Result<std::vector<uint8_t>> serialize_gain_map_metadata(
     write_signed_rational(&writer, channel.alternate_offset);
   }
 
-  return writer.data();
+  return writer.get_data();
 }
 
 

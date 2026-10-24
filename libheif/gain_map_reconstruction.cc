@@ -30,7 +30,8 @@
 #include <cstring>
 #include <memory>
 
-namespace {
+namespace
+{
 Error unsupported(const char* message)
 {
   return {heif_error_Unsupported_feature, heif_suberror_Unsupported_color_conversion, message};
@@ -39,7 +40,9 @@ Error unsupported(const char* message)
 nclx_profile resolve_raster_profile(const HeifPixelImage& image, const nclx_profile* cicp)
 {
   auto profile = image.get_color_profile_nclx();
-  if (!cicp) { return profile; }
+  if (!cicp) {
+    return profile;
+  }
   const bool ycbcr = image.get_colorspace() == heif_colorspace_YCbCr;
   if (profile.is_undefined() &&
       (image.get_colorspace() == heif_colorspace_monochrome ||
@@ -48,8 +51,12 @@ nclx_profile resolve_raster_profile(const HeifPixelImage& image, const nclx_prof
   }
   // Storage NCLX retains its actual matrix/range. CICP supplies the missing
   // colourimetry required by derived/constant-luminance and LMS matrices.
-  if (profile.m_colour_primaries == 2) { profile.set_colour_primaries(cicp->m_colour_primaries); }
-  if (profile.m_transfer_characteristics == 2) { profile.set_transfer_characteristics(cicp->m_transfer_characteristics); }
+  if (profile.m_colour_primaries == 2) {
+    profile.set_colour_primaries(cicp->m_colour_primaries);
+  }
+  if (profile.m_transfer_characteristics == 2) {
+    profile.set_transfer_characteristics(cicp->m_transfer_characteristics);
+  }
   if (ycbcr && profile.m_matrix_coefficients == 2 && cicp->m_matrix_coefficients != 0) {
     profile.set_matrix_coefficients(cicp->m_matrix_coefficients);
   }
@@ -130,7 +137,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
     const std::array<double, 4> fractions{1 - cl[1], cl[1], 1 - cl[0], cl[0]};
     for (size_t c = 0; c < fractions.size(); ++c) {
       auto encoded = gain_map_encode_matrix_signal(fractions[c], profile.m_transfer_characteristics);
-      if (!encoded) { return encoded.error(); }
+      if (!encoded) {
+        return encoded.error();
+      }
       cl[c + 2] = c % 2 == 0 ? *encoded : 1 - *encoded;
       if (!std::isfinite(cl[c + 2]) || cl[c + 2] <= 0) {
         return unsupported("Invalid constant-luminance transfer endpoint");
@@ -174,7 +183,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
                                            reinterpret_cast<const uint32_t*>(row)[x];
   };
   auto chroma_sample = [&](size_t c, uint32_t x, uint32_t y) -> int64_t {
-    if (chroma == heif_chroma_444) { return static_cast<int64_t>(raw_sample(c, x, y)); }
+    if (chroma == heif_chroma_444) {
+      return static_cast<int64_t>(raw_sample(c, x, y));
+    }
     if (!bilinear) {
       return static_cast<int64_t>(raw_sample(c, x / 2, chroma == heif_chroma_420 ? y / 2 : y));
     }
@@ -211,7 +222,9 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
         else if (lms_matrix) {
           auto rgb = gain_map_decode_lms_matrix({ey, cb / c_scale, cr / cr_scale}, matrix,
                                                 profile.m_transfer_characteristics);
-          if (!rgb) { return rgb.error(); }
+          if (!rgb) {
+            return rgb.error();
+          }
           signal = *rgb;
         }
         else if (constant_luminance) {
@@ -223,12 +236,20 @@ Result<std::shared_ptr<HeifPixelImage>> decode_ycbcr(
           auto linear_y = gain_map_decode_matrix_signal(ey, transfer);
           auto linear_r = gain_map_decode_matrix_signal(r, transfer);
           auto linear_b = gain_map_decode_matrix_signal(b, transfer);
-          if (!linear_y) { return linear_y.error(); }
-          if (!linear_r) { return linear_r.error(); }
-          if (!linear_b) { return linear_b.error(); }
+          if (!linear_y) {
+            return linear_y.error();
+          }
+          if (!linear_r) {
+            return linear_r.error();
+          }
+          if (!linear_b) {
+            return linear_b.error();
+          }
           auto g = gain_map_encode_matrix_signal(
               (*linear_y - cl[0] * *linear_r - cl[1] * *linear_b) / (1 - cl[0] - cl[1]), transfer);
-          if (!g) { return g.error(); }
+          if (!g) {
+            return g.error();
+          }
           signal = {r, *g, b};
         }
         else {
@@ -300,7 +321,9 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
     const heif_decoding_options& options, const heif_security_limits* limits,
     bool icc_colour = false, const nclx_profile* cicp = nullptr)
 {
-  if (auto error = image->check_plane_layout()) { return error; }
+  if (auto error = image->check_plane_layout()) {
+    return error;
+  }
   auto profile = resolve_raster_profile(*image, cicp);
   const bool direct = is_direct_rgb(*image);
   const auto chroma = image->get_chroma_format();
@@ -329,7 +352,9 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
   // ISO 21496-1 Formula (2) operates on the decoded baseline, which may
   // exceed reference white. Read RGB/mono directly, avoiding both
   // premature clipping and a 16-bit quantization before inverse gamma/gain.
-  if (direct) { return image; }
+  if (direct) {
+    return image;
+  }
   if (image->get_colorspace() == heif_colorspace_YCbCr) {
     const auto matrix = profile.m_matrix_coefficients;
     // Resolve both inputs without defaulting unspecified matrix/primaries.
@@ -351,7 +376,8 @@ Result<std::shared_ptr<HeifPixelImage>> prepare_rgb(
                              nullptr, limits);
 }
 
-struct SamplePlane {
+struct SamplePlane
+{
   const uint8_t* data = nullptr;
   size_t stride = 0;
   size_t pixel_step = 0;
@@ -371,7 +397,9 @@ struct SamplePlane {
       channel = heif_channel_interleaved;
       component = 3;
     }
-    if (!image.has_channel(channel)) { return; }
+    if (!image.has_channel(channel)) {
+      return;
+    }
     data = image.get_channel_memory(channel, &stride);
     bits = image.get_bits_per_pixel(channel);
     type = image.get_datatype(channel);
@@ -402,7 +430,9 @@ struct SamplePlane {
 
   double sample(uint32_t x, uint32_t y) const
   {
-    if (!data) { return 1; }
+    if (!data) {
+      return 1;
+    }
     if (byte_order) {
       const auto* p = data + size_t(y) * stride + size_t(x) * pixel_step;
       const uint16_t value = byte_order == 1 ? static_cast<uint16_t>(p[0] | (p[1] << 8)) :
@@ -419,7 +449,8 @@ struct SamplePlane {
   }
 };
 
-struct RGBPlanes {
+struct RGBPlanes
+{
   std::array<SamplePlane, 3> planes;
 
   explicit RGBPlanes(const HeifPixelImage& image, const nclx_profile* cicp = nullptr)
@@ -456,7 +487,9 @@ Result<CMYKPlanes> cmyk_planes(const HeifPixelImage& image)
   for (auto id : ids) {
     const auto type = image.get_component_type(id);
     if (type == heif_cmpd_component_type_alpha) {
-      if (alpha) { return unsupported("CMYK ICC raster has duplicate opacity components"); }
+      if (alpha) {
+        return unsupported("CMYK ICC raster has duplicate opacity components");
+      }
       alpha = true;
       continue;
     }
@@ -479,7 +512,9 @@ Result<CMYKPlanes> cmyk_planes(const HeifPixelImage& image)
     plane.scale = integer ? std::ldexp(1.0, bits) - 1 : 1;
   }
   for (const auto& plane : planes) {
-    if (!plane.data) { return unsupported("CMYK ICC raster is missing a colour component"); }
+    if (!plane.data) {
+      return unsupported("CMYK ICC raster is missing a colour component");
+    }
   }
   if (image.has_alpha()) {
     const auto bits = image.get_bits_per_pixel(heif_channel_Alpha);
@@ -502,13 +537,17 @@ Result<GainMapRGB> decode_colour_sample(const GainMapColour& colour, const RGBPl
     std::array<double, 4> signal{};
     for (size_t c = 0; c < signal.size(); ++c) {
       signal[c] = cmyk[c].sample(x, y);
-      if (premultiplied) { signal[c] = alpha > 0 ? signal[c] / alpha : 0; }
+      if (premultiplied) {
+        signal[c] = alpha > 0 ? signal[c] / alpha : 0;
+      }
     }
     return colour.decode_cmyk(signal);
   }
   GainMapRGB signal{rgb.sample(0, x, y), rgb.sample(1, x, y), rgb.sample(2, x, y)};
   if (premultiplied) {
-    for (auto& value : signal) { value = alpha > 0 ? value / alpha : 0; }
+    for (auto& value : signal) {
+      value = alpha > 0 ? value / alpha : 0;
+    }
   }
   return colour.decode(signal);
 }
@@ -517,7 +556,9 @@ Error copy_alpha(const std::shared_ptr<HeifPixelImage>& output,
                  const std::shared_ptr<HeifPixelImage>& input, const heif_security_limits* limits,
                  bool normalize_depth, bool preserve_precision = false)
 {
-  if (!input->has_alpha()) { return Error::Ok; }
+  if (!input->has_alpha()) {
+    return Error::Ok;
+  }
   if (preserve_precision && input->has_channel(heif_channel_Alpha)) {
     return output->copy_new_channel_from(input, heif_channel_Alpha, heif_channel_Alpha, limits);
   }
@@ -544,7 +585,9 @@ Error copy_alpha(const std::shared_ptr<HeifPixelImage>& output,
   // Canonical output is unsigned RGB16. Quantize typed opacity only here,
   // after its original value has been used for unpremultiplication and gain.
   const uint32_t width = input->get_width(), height = input->get_height();
-  if (auto error = output->add_channel(heif_channel_Alpha, width, height, 16, limits)) { return error; }
+  if (auto error = output->add_channel(heif_channel_Alpha, width, height, 16, limits)) {
+    return error;
+  }
   const SamplePlane alpha(*input, heif_channel_Alpha, true);
   size_t stride = 0;
   auto* plane = output->get_channel_memory<uint16_t>(heif_channel_Alpha, &stride);
@@ -586,7 +629,9 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   double weight = gain_map_full_weight(metadata);
   if (target_headroom) {
     auto target_weight = gain_map_target_weight(metadata, *target_headroom);
-    if (!target_weight) { return target_weight.error(); }
+    if (!target_weight) {
+      return target_weight.error();
+    }
     weight = *target_weight;
   }
   if (!base || !gain || !base->get_width() || !base->get_height() ||
@@ -614,20 +659,30 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
   }
   auto before = baseline_colour.matrix_to(application);
   auto after = application.matrix_to(alternate_colour);
-  if (!before) { return before.error(); }
-  if (!after) { return after.error(); }
+  if (!before) {
+    return before.error();
+  }
+  if (!after) {
+    return after.error();
+  }
 
   CMYKPlanes base_cmyk{};
   if (baseline_colour.uses_cmyk()) {
     auto planes = cmyk_planes(*base);
-    if (!planes) { return planes.error(); }
+    if (!planes) {
+      return planes.error();
+    }
     base_cmyk = *planes;
   }
   auto base_rgb = baseline_colour.uses_cmyk() ? Result<std::shared_ptr<HeifPixelImage>>(base) :
       prepare_rgb(base, options, limits, baseline_colour.icc_profile() != nullptr, baseline_colour.cicp_profile());
   auto gain_rgb = prepare_rgb(gain, options, limits);
-  if (!base_rgb) { return base_rgb.error(); }
-  if (!gain_rgb) { return gain_rgb.error(); }
+  if (!base_rgb) {
+    return base_rgb.error();
+  }
+  if (!gain_rgb) {
+    return gain_rgb.error();
+  }
   const RGBPlanes base_planes(**base_rgb, baseline_colour.cicp_profile());
   const RGBPlanes gain_planes(**gain_rgb);
   const SamplePlane alpha_plane(**base_rgb, heif_channel_Alpha, true);
@@ -681,12 +736,16 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       const uint32_t x1 = std::min(x0 + 1, gain_width - 1);
       const double fx = gx - x0;
       const double opacity = alpha_plane.sample(x, y);
-      if (auto error = validate_alpha(opacity)) { return error; }
+      if (auto error = validate_alpha(opacity)) {
+        return error;
+      }
       const double alpha = premultiplied ? opacity : 1.0;
       // Undo 'prem' in the declared source components before the nonlinear
       // colour transform and ISO's linear gain operation (HEIF 6.9.1).
       auto decoded = decode_colour_sample(baseline_colour, base_planes, base_cmyk, x, y, premultiplied, alpha);
-      if (!decoded) { return decoded.error(); }
+      if (!decoded) {
+        return decoded.error();
+      }
       GainMapRGB linear = *decoded;
       linear = gain_map_transform(*before, linear);
       for (size_t c = 0; c < 3; ++c) {
@@ -695,19 +754,31 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
         auto g10 = gain_map_unnormalize(gain_planes.sample(c, x1, y0), channel);
         auto g01 = gain_map_unnormalize(gain_planes.sample(c, x0, y1), channel);
         auto g11 = gain_map_unnormalize(gain_planes.sample(c, x1, y1), channel);
-        if (!g00) { return g00.error(); }
-        if (!g10) { return g10.error(); }
-        if (!g01) { return g01.error(); }
-        if (!g11) { return g11.error(); }
+        if (!g00) {
+          return g00.error();
+        }
+        if (!g10) {
+          return g10.error();
+        }
+        if (!g01) {
+          return g01.error();
+        }
+        if (!g11) {
+          return g11.error();
+        }
         const double top = *g00 * (1 - fx) + *g10 * fx;
         const double bottom = *g01 * (1 - fx) + *g11 * fx;
         auto value = gain_map_apply(linear[c], top * (1 - fy) + bottom * fy, channel, weight);
-        if (!value) { return value.error(); }
+        if (!value) {
+          return value.error();
+        }
         linear[c] = *value;
       }
       linear = gain_map_transform(*after, linear);
       auto encoded = alternate_colour.encode(linear);
-      if (!encoded) { return encoded.error(); }
+      if (!encoded) {
+        return encoded.error();
+      }
       for (size_t c = 0; c < output_channels; ++c) {
         const size_t position = size_t(y) * strides[c] + x;
         const double value = (*encoded)[c] * alpha;
@@ -760,9 +831,13 @@ Result<std::shared_ptr<HeifPixelImage>> finish_tone_map_output(
   if (!floating && (!(rgb || mono) || image->get_datatype(channels[0]) != heif_component_datatype_floating_point)) {
     return image; // Includes an unknown-version baseline fallback.
   }
-  if (!limits) { limits = &global_security_limits; }
+  if (!limits) {
+    limits = &global_security_limits;
+  }
   auto prepared = prepare_rgb(image, options, limits, image->get_color_profile_icc() != nullptr);
-  if (!prepared) { return prepared.error(); }
+  if (!prepared) {
+    return prepared.error();
+  }
   const uint32_t width = image->get_width(), height = image->get_height();
   auto output = std::make_shared<HeifPixelImage>();
   output->create(width, height, mono_output ? heif_colorspace_monochrome : heif_colorspace_RGB,
@@ -809,13 +884,17 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
     const heif_security_limits* limits,
     bool floating)
 {
-  if (!limits) { limits = &global_security_limits; }
+  if (!limits) {
+    limits = &global_security_limits;
+  }
   auto source = image->get_color_profile_nclx();
   GainMapColour source_colour(source, image->get_nominal_diffuse_white_luminance());
   if (image->get_color_profile_icc()) {
     auto resolved = GainMapColour::from_icc(image->get_color_profile_icc(),
                                           image->get_nominal_diffuse_white_luminance());
-    if (!resolved) { return resolved.error(); }
+    if (!resolved) {
+      return resolved.error();
+    }
     source_colour = *resolved;
   }
   const auto source_description = source_colour.raster_profile();
@@ -835,7 +914,9 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   }
   const GainMapColour target_colour(target, image->get_nominal_diffuse_white_luminance());
   auto matrix = source_colour.matrix_to(target_colour);
-  if (!matrix) { return matrix.error(); }
+  if (!matrix) {
+    return matrix.error();
+  }
   if (image->is_premultiplied_alpha() && !image->has_alpha()) {
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
                  "Premultiplied tone-map output has no alpha channel"};
@@ -843,12 +924,16 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   CMYKPlanes source_cmyk{};
   if (source_colour.uses_cmyk()) {
     auto planes = cmyk_planes(*image);
-    if (!planes) { return planes.error(); }
+    if (!planes) {
+      return planes.error();
+    }
     source_cmyk = *planes;
   }
   auto rgb = source_colour.uses_cmyk() ? Result<std::shared_ptr<HeifPixelImage>>(image) :
       prepare_rgb(image, options, limits, source_colour.icc_profile() != nullptr, source_colour.cicp_profile());
-  if (!rgb) { return rgb.error(); }
+  if (!rgb) {
+    return rgb.error();
+  }
   const RGBPlanes input(**rgb, source_colour.cicp_profile());
   const SamplePlane alpha_plane(**rgb, heif_channel_Alpha, true);
   const bool premultiplied = image->is_premultiplied_alpha();
@@ -879,12 +964,18 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
       const double opacity = alpha_plane.sample(x, y);
-      if (auto error = validate_alpha(opacity)) { return error; }
+      if (auto error = validate_alpha(opacity)) {
+        return error;
+      }
       const double alpha = premultiplied ? opacity : 1.0;
       auto linear = decode_colour_sample(source_colour, input, source_cmyk, x, y, premultiplied, alpha);
-      if (!linear) { return linear.error(); }
+      if (!linear) {
+        return linear.error();
+      }
       auto encoded = target_colour.encode(gain_map_transform(*matrix, *linear));
-      if (!encoded) { return encoded.error(); }
+      if (!encoded) {
+        return encoded.error();
+      }
       for (size_t c = 0; c < 3; ++c) {
         const size_t position = size_t(y) * strides[c] + x;
         const double value = (*encoded)[c] * alpha;
@@ -902,7 +993,9 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
       }
     }
   }
-  if (auto error = copy_alpha(output, *rgb, limits, image->get_colorspace() == heif_colorspace_RGB, floating)) { return error; }
+  if (auto error = copy_alpha(output, *rgb, limits, image->get_colorspace() == heif_colorspace_RGB, floating)) {
+    return error;
+  }
   target.set_matrix_coefficients(0);
   target.set_full_range_flag(true);
   output->set_color_profile_nclx(target);
