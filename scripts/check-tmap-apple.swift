@@ -34,8 +34,10 @@ let hdrOptions = [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR,
                     [kCGImageSourceGenerateImageSpecificLumaScaling: false]] as CFDictionary
 var failures = [String]()
 
-for rgb in [false, true] {
-    let name = rgb ? "libheif-rgb-pq.heic" : "libheif-mono-pq.heic"
+for mode in ["mono", "rgb", "ramp"] {
+    let rgb = mode == "rgb"
+    let ramp = mode == "ramp"
+    let name = "libheif-\(mode)-pq.heic"
     let url = directory.appendingPathComponent(name)
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         require(false, "ImageIO cannot open \(name)")
@@ -59,38 +61,51 @@ for rgb in [false, true] {
     }
     let gains = rgb ? [4.0, exp2(128.0 / 255.0), exp2(64.0 / 255.0)] : [4.0, 4.0, 4.0]
     var maximumError = 0.0
+    var squaredError = 0.0
     var maximumLinearValue = 0.0
     for i in 0..<(64 * 64) {
         for c in 0..<3 {
             let value = Double(pixels[i * 4 + c])
             require(value.isFinite, "Non-finite Apple HDR pixel")
             maximumLinearValue = max(maximumLinearValue, value)
-            maximumError = max(maximumError, abs(value - baselineLinear * gains[c]))
+            let gain = ramp ? exp2(2.0 * Double(32 + 3 * (i % 64)) / 255.0) : gains[c]
+            let error = value - baselineLinear * gain
+            maximumError = max(maximumError, abs(error))
+            squaredError += error * error
         }
     }
     // Independently checked extended-linear pixels establish that DecodeToHDR
     // applied the gain map; contentHeadroom remains diagnostic only.
-    print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
-    // An independent public Core Image load helps distinguish the ImageIO
-    // decode-request path from file discovery/reconstruction on hosted Macs.
-    // It does not replace or relax the ImageIO pixel gate below.
-    if let direct = CIImage(contentsOf: url, options: [.expandToHDR: true]) {
-        var directPixels = [Float](repeating: 0, count: 64 * 64 * 4)
-        directPixels.withUnsafeMutableBytes { bytes in
-            context.render(direct, toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
-                           bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
+    print("CHECK Apple consumer \(name) contentHeadroom=\(decoded.contentHeadroom) maxLinear=\(maximumLinearValue) maxLinearError=\(maximumError) rmse=\(sqrt(squaredError / (64 * 64 * 3))) bits=\(decoded.bitsPerComponent) space=\(String(describing: decoded.colorSpace?.name))")
+    guard let direct = CIImage(contentsOf: url, options: [.expandToHDR: true]) else {
+        fatalError("Core Image HDR decode failed for \(name)")
+    }
+    require(direct.extent == bounds, "Incorrect Core Image output geometry")
+    var directPixels = [Float](repeating: 0, count: 64 * 64 * 4)
+    directPixels.withUnsafeMutableBytes { bytes in
+        context.render(direct, toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
+                       bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
+    }
+    var directError = 0.0
+    var directSquaredError = 0.0
+    var directMaximum = 0.0
+    for i in 0..<(64 * 64) {
+        for c in 0..<3 {
+            let value = Double(directPixels[i * 4 + c])
+            require(value.isFinite, "Non-finite Core Image HDR pixel")
+            directMaximum = max(directMaximum, value)
+            let gain = ramp ? exp2(2.0 * Double(32 + 3 * (i % 64)) / 255.0) : gains[c]
+            let error = value - baselineLinear * gain
+            directError = max(directError, abs(error))
+            directSquaredError += error * error
         }
-        var directError = 0.0
-        var directMaximum = 0.0
-        for i in 0..<(64 * 64) {
-            for c in 0..<3 {
-                let value = Double(directPixels[i * 4 + c])
-                require(value.isFinite, "Non-finite Core Image HDR pixel")
-                directMaximum = max(directMaximum, value)
-                directError = max(directError, abs(value - baselineLinear * gains[c]))
-            }
-        }
-        print("CHECK Core Image consumer \(name) maxLinear=\(directMaximum) maxLinearError=\(directError) space=\(String(describing: direct.colorSpace?.name))")
+    }
+    print("CHECK Core Image consumer \(name) maxLinear=\(directMaximum) maxLinearError=\(directError) rmse=\(sqrt(directSquaredError / (64 * 64 * 3))) space=\(String(describing: direct.colorSpace?.name))")
+    if directMaximum <= 1.0 {
+        failures.append("Core Image HDR decode stayed in SDR range for \(name)")
+    }
+    if directError >= 0.025 {
+        failures.append("Core Image HDR pixel error \(directError) for \(name)")
     }
     if maximumLinearValue <= 1.0 {
         failures.append("ImageIO HDR decode stayed in SDR range for \(name)")
@@ -111,7 +126,36 @@ for rgb in [false, true] {
     require(sdrPixels.enumerated().filter { $0.offset % 4 != 3 }.allSatisfy {
         $0.element.isFinite && abs(Double($0.element) - baselineLinear) < 0.01
     }, "Apple SDR fallback differs from baseline")
-    if maximumLinearValue > 1.0 && maximumError < 0.025 {
+    guard let gainMap = CIImage(contentsOf: url, options: [.auxiliaryHDRGainMap: true]) else {
+        fatalError("Core Image gain-map load failed for \(name)")
+    }
+    for headroom in [Float(1), 2, 4] {
+        let partial = CIImage(cgImage: sdr).applyingGainMap(gainMap, headroom: headroom)
+        require(partial.extent == bounds, "Incorrect Core Image partial geometry for \(name) at headroom \(headroom)")
+        var partialPixels = [Float](repeating: 0, count: 64 * 64 * 4)
+        partialPixels.withUnsafeMutableBytes { bytes in
+            context.render(partial, toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
+                           bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
+        }
+        let weight = log2(Double(headroom)) / 2.0
+        var partialError = 0.0
+        var partialSquaredError = 0.0
+        for i in 0..<(64 * 64) {
+            for c in 0..<3 {
+                let value = Double(partialPixels[i * 4 + c])
+                require(value.isFinite, "Non-finite Core Image partial pixel for \(name) at headroom \(headroom)")
+                let gain = ramp ? exp2(2.0 * Double(32 + 3 * (i % 64)) / 255.0) : gains[c]
+                let error = value - baselineLinear * pow(gain, weight)
+                partialError = max(partialError, abs(error))
+                partialSquaredError += error * error
+            }
+        }
+        let rmse = sqrt(partialSquaredError / (64 * 64 * 3))
+        print("CHECK Core Image partial \(name) headroom=\(headroom) maxLinearError=\(partialError) rmse=\(rmse)")
+        require(partialError < 0.025,
+                "Core Image partial failed for \(name) at headroom \(headroom): maxLinearError=\(partialError) rmse=\(rmse)")
+    }
+    if maximumLinearValue > 1.0 && maximumError < 0.025 && directMaximum > 1.0 && directError < 0.025 {
         print("PASS Apple consumer \(name)")
     }
 }
@@ -142,9 +186,18 @@ reference.withUnsafeMutableBytes { bytes in
     context.render(CIImage(cgImage: produced), toBitmap: bytes.baseAddress!, rowBytes: 64 * 16,
                    bounds: bounds, format: .RGBAf, colorSpace: linearSpace)
 }
-let producerError = reference.enumerated().filter { $0.offset % 4 != 3 }.map {
-    abs(Double($0.element) - hdrValue)
-}.max()!
+var producerError = 0.0
+var producerSquaredError = 0.0
+for i in 0..<(64 * 64) {
+    for c in 0..<3 {
+        let value = Double(reference[i * 4 + c])
+        require(value.isFinite, "Non-finite Apple producer HDR pixel")
+        let error = value - hdrValue
+        producerError = max(producerError, abs(error))
+        producerSquaredError += error * error
+    }
+}
+print("CHECK Apple producer apple-mono.heic maxLinearError=\(producerError) rmse=\(sqrt(producerSquaredError / (64 * 64 * 3)))")
 if producerError >= 0.06 {
     failures.append("Apple lossy producer differs from HDR intention: \(producerError)")
 }

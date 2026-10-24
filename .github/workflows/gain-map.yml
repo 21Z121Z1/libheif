@@ -62,7 +62,11 @@ jobs:
           ctest --test-dir build-ultrahdr -R '^gain_map_ultrahdr$' --output-on-failure
 
   apple-frameworks:
-    runs-on: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
         with:
@@ -120,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
         with:
-          name: tmap-apple-synthetic
+          name: tmap-apple-synthetic-${{ matrix.os }}
           path: build-apple/synthetic/
 
   conformance:
@@ -221,7 +225,7 @@ jobs:
           python3 scripts/check-tmap-samples.py \
             --library build-interop/libheif/libheif.so \
             --revision "$(git rev-parse HEAD)" \
-            --output build-interop/sample-report.json --expect-files 2 build-interop/synthetic
+            --output build-interop/sample-report.json --expect-files 3 build-interop/synthetic
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -231,10 +235,10 @@ jobs:
           result = subprocess.run([sys.executable, 'scripts/check-tmap-samples.py',
                                    '--library', 'build-interop/libheif/libheif.so',
                                    '--output', 'build-interop/failure-report.json',
-                                   '--expect-files', '3', 'build-interop/synthetic'], check=False)
+                                   '--expect-files', '4', 'build-interop/synthetic'], check=False)
           report = json.loads(Path('build-interop/failure-report.json').read_text())
           assert result.returncode == 1, result.returncode
-          assert report['summary'] == {'files': 3, 'passed': 2, 'tmap_files': 2}, report['summary']
+          assert report['summary'] == {'files': 4, 'passed': 3, 'tmap_files': 3}, report['summary']
           PY
       - name: Upload interop harness
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2

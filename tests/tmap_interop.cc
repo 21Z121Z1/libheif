@@ -70,6 +70,7 @@ TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
     REQUIRE(heif_image_handle_get_nclx_color_profile(handle, &profile).code == heif_error_Ok);
     REQUIRE(profile->transfer_characteristics == 16);
     double maximum_error = 0;
+    double squared_error = 0;
     size_t component = 0;
     for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
       int stride = 0;
@@ -83,13 +84,16 @@ TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
           REQUIRE(linear);
           const double expected = reference[static_cast<size_t>(y * 64 + x) * 4 + component];
           REQUIRE(std::isfinite(expected));
-          maximum_error = std::max(maximum_error, std::abs(*linear - expected));
+          const double difference = *linear - expected;
+          maximum_error = std::max(maximum_error, std::abs(difference));
+          squared_error += difference * difference;
         }
       }
       ++component;
     }
     INFO("Apple/libheif maximum linear pixel error: " << maximum_error);
-    std::cout << "Apple/libheif maximum linear pixel error: " << maximum_error << '\n';
+    std::cout << "Apple/libheif maximum linear pixel error: " << maximum_error
+              << ", RMSE: " << std::sqrt(squared_error / (64 * 64 * 3)) << '\n';
     REQUIRE(maximum_error < 0.025);
     heif_nclx_color_profile_free(profile);
     heif_image_release(pixels);
@@ -177,6 +181,7 @@ TEST_CASE("Stock libultrahdr exchange preserves pixels and rejects invalid sourc
     REQUIRE(file.good());
     REQUIRE(file.peek() == std::char_traits<char>::eof());
     double maximum_error = 0;
+    double squared_error = 0;
     for (int c = 0; c < 3; ++c) {
       auto channel = static_cast<heif_channel>(heif_channel_R + c);
       REQUIRE(heif_image_get_bits_per_pixel_range(pixels, channel) == 32);
@@ -202,11 +207,14 @@ TEST_CASE("Stock libultrahdr exchange preserves pixels and rejects invalid sourc
           REQUIRE(std::isfinite(actual));
           // Same LUT/half precision allowance as the raw libultrahdr oracle.
           REQUIRE(actual == Catch::Approx(independent).margin(0.0015 + 0.003 * std::abs(independent)));
-          maximum_error = std::max(maximum_error, std::abs(actual - independent));
+          const double difference = actual - independent;
+          maximum_error = std::max(maximum_error, std::abs(difference));
+          squared_error += difference * difference;
         }
       }
     }
-    std::cout << path.filename().string() << " stock libultrahdr/libheif maxLinearError=" << maximum_error << '\n';
+    std::cout << path.filename().string() << " stock libultrahdr/libheif maxLinearError=" << maximum_error
+              << " rmse=" << std::sqrt(squared_error / (size * size * 3)) << '\n';
     heif_image_release(pixels);
     heif_decoding_options_free(options);
     heif_nclx_color_profile_free(profile);

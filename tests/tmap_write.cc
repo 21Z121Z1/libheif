@@ -225,7 +225,9 @@ TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
   if (!directory) { return; }
   std::filesystem::create_directories(directory);
   REQUIRE(heif_have_encoder_for_format(heif_compression_HEVC));
-  for (bool rgb : {false, true}) {
+  for (const std::string name : {"mono", "rgb", "ramp"}) {
+    const bool rgb = name == "rgb";
+    const bool ramp = name == "ramp";
     auto* ctx = heif_context_alloc();
     REQUIRE(ctx);
     auto* encoder = get_encoder_or_skip_test(heif_compression_HEVC);
@@ -269,7 +271,11 @@ TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
       auto* plane = heif_image_get_plane(gain_pixels, c, &stride);
       REQUIRE(plane);
       const uint8_t value = c == heif_channel_G ? 128 : (c == heif_channel_B ? 64 : 255);
-      for (int y = 0; y < 64; ++y) { std::memset(plane + y * stride, value, 64); }
+      for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+          plane[y * stride + x] = ramp ? static_cast<uint8_t>(32 + 3 * x) : value;
+        }
+      }
     }
     heif_image_handle* gain = nullptr;
     error = heif_context_encode_gain_map_image(ctx, gain_pixels, encoder, nullptr, nullptr, &gain);
@@ -303,19 +309,23 @@ TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
       int stride = 0;
       const auto* plane = heif_image_get_plane_readonly(reconstructed, channel, &stride);
       REQUIRE(plane);
-      uint16_t sample = 0;
-      std::memcpy(&sample, plane, sizeof(sample));
-      auto linear = gain_map_decode_transfer(sample / 65535.0, 16);
-      REQUIRE(linear);
-      const double log_gain = !rgb || component == 0 ? 2.0 :
-                              (component == 1 ? 128.0 : 64.0) / 255.0;
-      REQUIRE(*linear == Catch::Approx(base_linear * std::exp2(log_gain)).margin(0.025));
+      for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+          uint16_t sample = 0;
+          std::memcpy(&sample, plane + y * stride + x * 2, sizeof(sample));
+          auto linear = gain_map_decode_transfer(sample / 65535.0, 16);
+          REQUIRE(linear);
+          const double log_gain = ramp ? 2.0 * (32 + 3 * x) / 255.0 :
+                                  (!rgb || component == 0 ? 2.0 : (component == 1 ? 128.0 : 64.0) / 255.0);
+          REQUIRE(*linear == Catch::Approx(base_linear * std::exp2(log_gain)).margin(0.025));
+        }
+      }
       ++component;
     }
     heif_image_release(reconstructed);
     heif_decoding_options_free(decode_options);
     const auto bytes = write_context(ctx);
-    const auto path = std::filesystem::path(directory) / (rgb ? "libheif-rgb-pq.heic" : "libheif-mono-pq.heic");
+    const auto path = std::filesystem::path(directory) / ("libheif-" + name + "-pq.heic");
     std::ofstream output(path, std::ios::binary);
     output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     REQUIRE(output.good());
