@@ -314,7 +314,8 @@ TEST_CASE("Gray ICC alternates retain their actual mono encoding and opacity")
   const double luminance = 0.5 * std::exp2(target);
   const double connection = lab ? (116 * std::cbrt(luminance) - 16) / 100 : luminance;
   const double encoded = std::sqrt(connection);
-  const double expected = (floating ? encoded : std::clamp(encoded, 0.0, 1.0)) * (premultiplied ? 0.5 : 1);
+  const double stored = encoded * (premultiplied ? 0.5 : 1);
+  const double expected = floating ? stored : std::clamp(stored, 0.0, 1.0);
   size_t stride = 0;
   const auto* plane = (*result)->get_channel_memory(heif_channel_Y, &stride);
   for (size_t y = 0; y < 2; ++y) {

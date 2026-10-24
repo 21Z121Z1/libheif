@@ -91,6 +91,37 @@ TEST_CASE("ISO inverse gamma, signed gains and offsets have hand-calculated valu
   REQUIRE(std::isfinite(*gain_map_unnormalize(0, c)));
 }
 
+TEST_CASE("ISO gain application preserves finite products outside the gain factor range")
+{
+  GainMapChannel channel;
+  const double sign = GENERATE(1.0, -1.0);
+  auto amplified = gain_map_apply(sign * std::ldexp(1.0, -1000), 1030, channel, 1);
+  REQUIRE(amplified);
+  REQUIRE(*amplified == sign * std::ldexp(1.0, 30));
+
+  auto reduced = gain_map_apply(sign * std::ldexp(1.0, 1000), 1100, channel, -1);
+  REQUIRE(reduced);
+  REQUIRE(*reduced == sign * std::ldexp(1.0, -100));
+
+  auto fractional = gain_map_apply(sign * std::ldexp(1.0, 1000), 1074.5, channel, -1);
+  REQUIRE(fractional);
+  REQUIRE(*fractional == Catch::Approx(sign * std::ldexp(1.0, -75) * std::sqrt(2.0)).epsilon(1e-14));
+
+  channel.base_offset = {1, 4};
+  channel.alternate_offset = {1, 8};
+  auto zero = gain_map_apply(-0.25, 2000, channel, 1);
+  REQUIRE(zero);
+  REQUIRE(*zero == -0.125);
+
+  channel = GainMapChannel{};
+  auto underflow = gain_map_apply(sign, static_cast<double>(INT32_MIN), channel, 1);
+  REQUIRE(underflow);
+  REQUIRE(*underflow == 0);
+  REQUIRE(std::signbit(*underflow) == std::signbit(sign));
+  REQUIRE_FALSE(gain_map_apply(sign, static_cast<double>(INT32_MIN), channel, -1));
+  REQUIRE_FALSE(gain_map_apply(sign, std::numeric_limits<double>::max(), channel, 1));
+}
+
 TEST_CASE("sRGB and PQ use independent reference values")
 {
   REQUIRE(*gain_map_decode_transfer(0.5, 13) == Catch::Approx(0.2140411405).margin(1e-10));
@@ -166,6 +197,28 @@ TEST_CASE("Remaining H273 transfer curves match independent reference values")
               Catch::Approx(signal).margin(1e-13));
     }
   }
+}
+
+TEST_CASE("Cinema transfer preserves finite extremes and subnormal precision")
+{
+  // Decimal references use the exact scale 5237/20300 and exponents 5/13, 13/5.
+  auto encoded = gain_map_encode_transfer(std::numeric_limits<double>::max(), 17);
+  REQUIRE(encoded);
+  REQUIRE(std::isfinite(*encoded));
+  CHECK(*encoded == Catch::Approx(6.106872535402796e118).epsilon(1e-14));
+  encoded = gain_map_encode_transfer(std::numeric_limits<double>::denorm_min(), 17);
+  REQUIRE(encoded);
+  CHECK(*encoded == Catch::Approx(7.546898481477549e-125).epsilon(1e-14));
+
+  auto decoded = gain_map_decode_transfer(0x1.8378e0f4f2ce8p+394, 17);
+  REQUIRE(decoded);
+  REQUIRE(std::isfinite(*decoded));
+  CHECK(*decoded == Catch::Approx(1.7976931348623150e308).epsilon(1e-14));
+  decoded = gain_map_decode_transfer(0x1.8378e0f4f2ceap+394, 17);
+  REQUIRE(decoded);
+  CHECK(std::isinf(*decoded));
+  REQUIRE(*gain_map_decode_transfer(0x1p-412, 17) == 2 * std::numeric_limits<double>::denorm_min());
+  REQUIRE(*gain_map_decode_transfer(0x1p-413, 17) == 0);
 }
 
 TEST_CASE("CICP primaries conversions preserve adapted white and match reference red")
@@ -252,6 +305,88 @@ uint16_t sample_at(const HeifPixelImage& image, heif_channel channel, uint32_t x
   return image.get_channel_memory<uint16_t>(channel, nullptr)[x];
 }
 }  // namespace
+
+TEST_CASE("Tone-map reconstruction retains finite pixels across extreme gain factors")
+{
+  const bool reverse = GENERATE(false, true);
+  auto base = std::make_shared<HeifPixelImage>();
+  base->create(1, 1, heif_colorspace_RGB, heif_chroma_444);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE_FALSE(base->add_channel(channel, 1, 1, 64, nullptr, heif_component_datatype_floating_point));
+    base->get_channel_memory<double>(channel, nullptr)[0] = std::ldexp(1.0, reverse ? 1000 : -1000);
+  }
+  const auto profile = make_pixels(1, false, 0, 8)->get_color_profile_nclx();
+  base->set_color_profile_nclx(profile);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {reverse ? 1100 : 1030, 1};
+  metadata.channels[0].gain_map_max = metadata.channels[0].gain_map_min;
+  if (reverse) { std::swap(metadata.base_hdr_headroom, metadata.alternate_hdr_headroom); }
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto output = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), metadata, profile,
+                                      *options, nullptr, std::nullopt, std::nullopt, true);
+  heif_decoding_options_free(options);
+  REQUIRE(output);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    REQUIRE((*output)->get_channel_memory<float>(channel, nullptr)[0] == std::ldexp(1.0f, reverse ? -100 : 30));
+  }
+}
+
+TEST_CASE("Integer reconstruction quantizes HDR after premultiplication")
+{
+  const bool deferred = GENERATE(false, true);
+  auto base = make_pixels(1, false, 16384, 8);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 1, 1, 16, nullptr));
+  base->fill_channel(heif_channel_Alpha, 16384);
+  base->set_premultiplied_alpha(true);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {1, 1};
+  metadata.channels[0].gain_map_max = {1, 1};
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto output = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), metadata, base->get_color_profile_nclx(),
+                                      *options, nullptr, std::nullopt, std::nullopt, deferred);
+  REQUIRE(output);
+  output = finish_tone_map_output(*output, *options, nullptr, false);
+  heif_decoding_options_free(options);
+  REQUIRE(output);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    CHECK(sample_at(**output, channel, 0) == 32768);
+  }
+  CHECK(sample_at(**output, heif_channel_Alpha, 0) == 16384);
+  CHECK((*output)->is_premultiplied_alpha());
+}
+
+TEST_CASE("Transparent cinema reconstruction avoids intermediate transfer overflow")
+{
+  const bool deferred = GENERATE(false, true);
+  auto base = make_pixels(1, false, 0, 8);
+  REQUIRE_FALSE(base->add_channel(heif_channel_Alpha, 1, 1, 16, nullptr));
+  base->fill_channel(heif_channel_Alpha, 0);
+  base->set_premultiplied_alpha(true);
+  GainMapMetadata metadata;
+  metadata.alternate_hdr_headroom = {1023, 1};
+  metadata.channels[0].gain_map_min = {1023, 1};
+  metadata.channels[0].gain_map_max = {1023, 1};
+  metadata.channels[0].base_offset = {1, 1};
+  auto alternate = base->get_color_profile_nclx();
+  alternate.set_transfer_characteristics(17);
+  auto* options = heif_decoding_options_alloc();
+  REQUIRE(options);
+  auto output = reconstruct_tone_map(base, make_pixels(1, true, 0, 2), metadata, alternate,
+                                      *options, nullptr, std::nullopt, std::nullopt, deferred);
+  heif_decoding_options_free(options);
+  REQUIRE(output);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    if (deferred) {
+      CHECK((*output)->get_channel_memory<float>(channel, nullptr)[0] == 0);
+    }
+    else {
+      CHECK(sample_at(**output, channel, 0) == 0);
+    }
+  }
+  CHECK(sample_at(**output, heif_channel_Alpha, 0) == 0);
+}
 
 TEST_CASE("Reconstruction reconciles mono pixels with RGB metadata and the reverse")
 {
@@ -500,7 +635,8 @@ TEST_CASE("Reversible YCgCo clips B before deriving R and preserves alpha")
   auto result = reconstruct_tone_map(base, make_pixels(1, true, 0, 2),
                                      GainMapMetadata{}, alternate, *options, nullptr);
   REQUIRE(result);
-  REQUIRE(sample_at(**result, heif_channel_R, 0) == (premultiplied ? 32896 : 65535));
+  // Zero gain preserves the decoded premultiplied sample.
+  REQUIRE(sample_at(**result, heif_channel_R, 0) == 65535);
   REQUIRE(sample_at(**result, heif_channel_G, 0) == 0);
   REQUIRE(sample_at(**result, heif_channel_B, 0) == 0);
   REQUIRE((*result)->is_premultiplied_alpha() == premultiplied);
@@ -1235,12 +1371,12 @@ TEST_CASE("Premultiplied baseline reconstructs straight colours before restoring
   REQUIRE(output_alpha[1] == 21845);
   REQUIRE(output_alpha[2] == 65535);
 
-  SECTION("Clip the straight alternate before premultiplication") {
+  SECTION("Clip the premultiplied alternate at the integer output limit") {
     alternate.set_transfer_characteristics(8);
     metadata.channels[0].gain_map_max = {3, 1};
     result = reconstruct_tone_map(base, gain, metadata, alternate, *options, nullptr);
     REQUIRE(result);
-    REQUIRE(sample_at(**result, heif_channel_R, 1) == 21845);
+    REQUIRE(sample_at(**result, heif_channel_R, 1) == 65535);
     REQUIRE(sample_at(**result, heif_channel_R, 2) == 65535);
   }
   heif_decoding_options_free(options);
@@ -1457,9 +1593,9 @@ TEST_CASE("Typed alpha is used before final quantization and rejects invalid opa
   REQUIRE(result);
   const auto* alpha = (*result)->get_channel_memory<uint16_t>(heif_channel_Alpha, nullptr);
   REQUIRE(alpha[0] == 0); REQUIRE(alpha[1] == 16384); REQUIRE(alpha[2] == 65535);
-  REQUIRE(sample_at(**result, heif_channel_R, 1) ==
-          std::round(std::min((0.2 / (premultiplied ? 0.25 : 1) + 0.125) * 2 - 0.0625, 1.0) *
-                     (premultiplied ? 0.25 : 1) * 65535));
+  const double opacity = premultiplied ? 0.25 : 1;
+  const double expected = ((0.2 / opacity + 0.125) * 2 - 0.0625) * opacity;
+  REQUIRE(sample_at(**result, heif_channel_R, 1) == std::round(std::min(expected, 1.0) * 65535));
   // Zero opacity yields zero premultiplied output even with nonzero offsets.
   if (premultiplied) { REQUIRE(sample_at(**result, heif_channel_R, 0) == 0); }
   if (floating) {

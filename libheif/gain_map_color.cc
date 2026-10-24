@@ -704,7 +704,15 @@ Result<double> gain_map_decode_transfer(double value, uint16_t transfer)
       const double p = std::pow(std::min(v, 1.0), 1.0 / pq_m2);
       return pq_scale * std::pow(std::max(p - pq_c1, 0.0) / (pq_c2 - pq_c3 * p), 1.0 / pq_m1);
     }
-    case 17: return cinema_scale * std::pow(v, 2.6);
+    case 17: {
+      // Split the exact 13/5 exponent before pow to avoid an overflowing
+      // intermediate and amplified exponent rounding near the range limit.
+      int exponent = 0;
+      const double mantissa = std::frexp(v, &exponent);
+      exponent *= 13;
+      return std::scalbn(cinema_scale * std::pow(mantissa, 13.0 / 5) *
+                           std::exp2((exponent % 5) / 5.0), exponent / 5);
+    }
     default: return unsupported_colour();
   }
 }
@@ -734,7 +742,14 @@ Result<double> gain_map_encode_transfer(double value, uint16_t transfer)
       const double p = std::pow(std::min(v / pq_scale, 1.0), pq_m1);
       return std::pow((pq_c1 + pq_c2 * p) / (1 + pq_c3 * p), pq_m2);
     }
-    case 17: return std::pow(v / cinema_scale, 1.0 / 2.6);
+    case 17: {
+      // Normalize before dividing by the reference scale, including subnormals.
+      int exponent = 0;
+      const double mantissa = std::frexp(v, &exponent);
+      exponent *= 5;
+      return std::scalbn(std::pow(mantissa / cinema_scale, 5.0 / 13) *
+                           std::exp2((exponent % 13) / 13.0), exponent / 13);
+    }
     default: return unsupported_colour();
   }
 }

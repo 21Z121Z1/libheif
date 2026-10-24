@@ -710,17 +710,17 @@ Result<std::shared_ptr<HeifPixelImage>> reconstruct_tone_map(
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < output_channels; ++c) {
         const size_t position = size_t(y) * strides[c] + x;
+        const double value = (*encoded)[c] * alpha;
+        if (!std::isfinite(value) || (defer_quantization && !std::isfinite(static_cast<float>(value)))) {
+          return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
+                       "Tone-map output exceeds floating-point range"};
+        }
         if (defer_quantization) {
-          const float value = static_cast<float>((*encoded)[c] * alpha);
-          if (!std::isfinite(value)) {
-            return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
-                         "Tone-map output exceeds floating-point range"};
-          }
-          floating_out[c][position] = value;
+          floating_out[c][position] = static_cast<float>(value);
         }
         else {
           out[c][position] = static_cast<uint16_t>(
-              std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+              std::round(std::clamp(value, 0.0, 1.0) * 65535.0));
         }
       }
     }
@@ -887,17 +887,17 @@ Result<std::shared_ptr<HeifPixelImage>> convert_tone_map_colour(
       if (!encoded) { return encoded.error(); }
       for (size_t c = 0; c < 3; ++c) {
         const size_t position = size_t(y) * strides[c] + x;
+        const double value = (*encoded)[c] * alpha;
+        if (!std::isfinite(value) || (floating && !std::isfinite(static_cast<float>(value)))) {
+          return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
+                       "Tone-map output exceeds floating-point range"};
+        }
         if (floating) {
-          const float value = static_cast<float>((*encoded)[c] * alpha);
-          if (!std::isfinite(value)) {
-            return Error{heif_error_Invalid_input, heif_suberror_Unspecified,
-                         "Tone-map output exceeds floating-point range"};
-          }
-          floating_out[c][position] = value;
+          floating_out[c][position] = static_cast<float>(value);
         }
         else {
           out[c][position] = static_cast<uint16_t>(
-              std::round(std::clamp((*encoded)[c], 0.0, 1.0) * alpha * 65535.0));
+              std::round(std::clamp(value, 0.0, 1.0) * 65535.0));
         }
       }
     }

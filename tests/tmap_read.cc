@@ -1092,6 +1092,59 @@ TEST_CASE("HEIF prem alpha is reconstructed and retained through requested root 
   heif_context_free(context);
 }
 
+TEST_CASE("Integer tmap output quantizes HDR after premultiplication")
+{
+  const bool convert = GENERATE(false, true);
+  const bool tile = GENERATE(false, true);
+  GainMapMetadata metadata;
+  metadata.channels[0].gain_map_min = {2, 1};
+  metadata.channels[0].gain_map_max = {2, 1};
+  metadata.channels[0].base_offset = {1, 8};
+  metadata.channels[0].alternate_offset = {1, 16};
+  const auto file = build_tmap_file(2, 0, 0, 2, 2, 1, false, false, &metadata, true,
+                                    nullptr, nullptr, 13, nullptr, 0, true, convert ? 16 : 8);
+  heif_context* context = nullptr;
+  auto* tmap = open_tmap(&context, file);
+  auto* options = heif_decoding_options_alloc();
+  auto* requested = heif_nclx_color_profile_alloc();
+  REQUIRE(options);
+  REQUIRE(requested);
+  requested->color_primaries = heif_color_primaries_ITU_R_BT_2020_2_and_2100_0;
+  requested->transfer_characteristics = heif_transfer_characteristic_linear;
+  requested->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  requested->full_range_flag = 1;
+  if (convert) { options->output_image_nclx_profile = requested; }
+  heif_image* image = nullptr;
+  const auto error = tile ? heif_image_handle_decode_image_tile(tmap, &image, heif_colorspace_RGB,
+                                                               heif_chroma_444, options, 0, 0) :
+                            heif_decode_image(tmap, &image, heif_colorspace_RGB, heif_chroma_444, options);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Ok);
+  REQUIRE(image);
+  REQUIRE(heif_image_is_premultiplied_alpha(image));
+  const double linear = (std::pow((0.6 + 0.055) / 1.055, 2.4) + 0.125) * 4 - 0.0625;
+  REQUIRE(linear > 1);
+  REQUIRE(linear / 3 < 1);
+  for (auto channel : {heif_channel_R, heif_channel_G, heif_channel_B}) {
+    size_t stride = 0;
+    const auto* pixels = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, channel, &stride));
+    REQUIRE(pixels);
+    CHECK(pixels[0] == 0);
+    CHECK(pixels[1] == Catch::Approx(std::round(linear / 3 * 65535)).margin(1));
+  }
+  size_t alpha_stride = 0;
+  const auto* alpha = reinterpret_cast<const uint16_t*>(heif_image_get_plane_readonly2(image, heif_channel_Alpha,
+                                                                                       &alpha_stride));
+  REQUIRE(alpha);
+  CHECK(alpha[1] == 21845);
+  heif_image_release(image);
+  options->output_image_nclx_profile = nullptr;
+  heif_nclx_color_profile_free(requested);
+  heif_decoding_options_free(options);
+  heif_image_handle_release(tmap);
+  heif_context_free(context);
+}
+
 TEST_CASE("Requested PQ retains HDR above a relative alternate's integer range")
 {
   const bool icc_colour = GENERATE(false, true);

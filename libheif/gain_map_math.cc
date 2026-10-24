@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 Error numeric_error()
@@ -87,7 +88,25 @@ Result<double> gain_map_apply(double baseline, double log2_gain,
   }
   const double base_offset = static_cast<double>(channel.base_offset.numerator) / channel.base_offset.denominator;
   const double alternate_offset = static_cast<double>(channel.alternate_offset.numerator) / channel.alternate_offset.denominator;
-  const double result = (baseline + base_offset) * std::exp2(weight * log2_gain) - alternate_offset;
+  const double exponent = weight * log2_gain;
+  const double gain = std::exp2(exponent);
+  double scaled = baseline + base_offset;
+  if (std::isnormal(gain)) {
+    scaled *= gain;
+  }
+  else if (scaled != 0) {
+    // An overflowing or subnormal gain factor can still produce a finite,
+    // accurate pixel when its exponent is combined with the baseline first.
+    int baseline_exponent = 0;
+    const double mantissa = std::frexp(scaled, &baseline_exponent);
+    double integral_exponent;
+    const double fractional_exponent = std::modf(exponent, &integral_exponent);
+    const double combined_exponent = std::clamp(integral_exponent + baseline_exponent,
+                                                double(std::numeric_limits<int>::min()),
+                                                double(std::numeric_limits<int>::max()));
+    scaled = std::scalbn(mantissa * std::exp2(fractional_exponent), static_cast<int>(combined_exponent));
+  }
+  const double result = scaled - alternate_offset;
   if (!std::isfinite(result)) {
     return numeric_error();
   }
