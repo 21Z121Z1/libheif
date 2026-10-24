@@ -87,6 +87,38 @@ These initial failures are retained in the execution record rather than counted
 as passing tests. Exact-head Actions and sanitizer outcomes are tracked in the
 PR checks; older green runs do not certify this source.
 
+The `ddb2e023` follow-up completed all eight gain-map Actions jobs, including
+Intel and ARM64 macOS 15.7.9 / Xcode 16.4. Each platform passed all three ImageIO
+and Core Image HDR fixtures and nine partial-headroom cases. Fresh Apple files
+replayed locally with maximum/RMSE 0.00158095/0.00112232 on Intel and
+0.0188146/0.00706239 on ARM64, within the unchanged 0.025 gate. The two artifacts
+were checked separately; their Apple-generated files differ. All four Linux
+sanitizer configurations passed, including full leak detection outside the
+separate existing x265 codec exemption.
+
+Review of the ordinary fuzzer's actual Release command found that `NDEBUG`
+removed its five gain-map round-trip assertions. Explicit failure checks now
+retain those invariants in every build. The old optimized object had no abort
+reference; the corrected object does. A 10,000-input seeded ASan/UBSan smoke
+test passed with the optimized harness. The earlier fuzz run still exercises
+parsing and sanitizers, but does not establish those disabled invariants.
+The new native Windows job runs seven focused targets with GCC/UCRT64, a
+static library, Little CMS and HEVC/AV1 codecs. The older MinGW jobs use Linux
+and Wine; they do not establish native Windows execution. Neither configuration
+certifies MSVC or Windows DLL-export ABI. Current execution is recorded in PR
+checks rather than inferred from the workflow definition.
+
+A matched scalar benchmark compared the original and corrected production
+translation units with GCC 13, `-O3 -DNDEBUG`, no LTO or sanitizer, the same
+harness, CPU affinity and 12 alternating AB/BA rounds. Each case made
+16,777,216 timed calls per round; checksums matched. Ordinary gain median time
+was 7.788 to 8.161 ns/call (paired median +4.94%); ST 428 encoding was 14.932
+to 26.136 (+75.64%) and decoding 14.262 to 24.253 (+71.38%). The finite-range
+and precision corrections have a measured scalar cost. These measurements
+do not establish whole-image throughput, and this change is not a performance
+optimization. Matched Debug libraries also showed additional cost; their
+unoptimized results are kept separate from this optimized-TU measurement.
+
 The cleanup removes the unused internal ICC-to-NCLX approximation and its sole
 classifiers; tests now call the actual `GainMapColour` consumer. It retains exact
 ICC curves/colourants, CICP interpretation, CMM ownership and every production

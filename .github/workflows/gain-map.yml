@@ -127,6 +127,80 @@ jobs:
           name: tmap-apple-synthetic-${{ matrix.os }}
           path: build-apple/synthetic/
 
+  windows-native:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Preserve source line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/load-iso-source
+        if: inputs.source_bundle != ''
+        with:
+          artifact: ${{ inputs.source_bundle }}
+          sha: ${{ inputs.source_sha }}
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e #v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-lcms2
+            mingw-w64-ucrt-x86_64-libde265
+            mingw-w64-ucrt-x86_64-x265
+            mingw-w64-ucrt-x86_64-aom
+            mingw-w64-ucrt-x86_64-dav1d
+      - name: Build native Windows reconstruction and container tests
+        run: |
+          mkdir -p build-windows
+          {
+            cmd.exe //c ver
+            uname -a
+            git rev-parse HEAD
+            gcc --version
+            cmake --version
+            pkg-config --modversion lcms2 libde265 x265 aom dav1d
+            pacman -Q
+          } > build-windows/versions.txt
+          cat build-windows/versions.txt
+          cmake --preset testing -G Ninja -S . -B build-windows \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_CXX_FLAGS=-DLIBHEIF_STATIC_BUILD \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LCMS2=ON -DLIBHEIF_TEST_LCMS=ON \
+            -DWITH_LIBDE265=ON -DWITH_LIBDE265_PLUGIN=OFF \
+            -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
+            -DWITH_AOM_DECODER=ON -DWITH_AOM_ENCODER=ON \
+            -DWITH_AOM_DECODER_PLUGIN=OFF -DWITH_AOM_ENCODER_PLUGIN=OFF \
+            -DWITH_DAV1D=ON -DWITH_DAV1D_PLUGIN=OFF
+          cmake --build build-windows --target gain_map_metadata gain_map_math \
+            gain_map_color tmap_read tmap_write id_creator entity_groups --parallel 3
+      - name: Run native Windows regressions
+        run: |
+          ctest --test-dir build-windows \
+            -R '^(gain_map_metadata|gain_map_math|gain_map_color|tmap_read|tmap_write|id_creator|entity_groups)$' \
+            --no-tests=error --output-on-failure \
+            --output-log build-windows/Testing/Temporary/gain-map-windows.log
+      - name: Preserve native Windows evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: gain-map-windows-ucrt64
+          path: |
+            build-windows/Testing/Temporary/
+            build-windows/CMakeCache.txt
+            build-windows/versions.txt
+
   conformance:
     runs-on: ubuntu-24.04
     strategy:

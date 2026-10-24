@@ -21,27 +21,35 @@
 #include "gain_map_metadata.h"
 #include "gain_map_math.h"
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <span>
 
 namespace {
 void exercise_metadata(const GainMapMetadata& metadata, double sample)
 {
   auto encoded = serialize_gain_map_metadata(metadata);
-  assert(encoded);
+  if (!encoded) {
+    std::abort();
+  }
   auto decoded = parse_gain_map_metadata(*encoded);
-  assert(decoded.status == GainMapMetadataParseStatus::parsed);
+  if (decoded.status != GainMapMetadataParseStatus::parsed) {
+    std::abort();
+  }
   auto reencoded = serialize_gain_map_metadata(*decoded.metadata);
-  assert(reencoded && *encoded == *reencoded);
+  if (!reencoded || *encoded != *reencoded) {
+    std::abort();
+  }
   auto weight = gain_map_target_weight(metadata, sample * 32.0);
   for (uint8_t c = 0; c < metadata.channel_count; ++c) {
     const auto& channel = metadata.channels[c];
     auto gain = gain_map_unnormalize(sample, channel);
     if (gain) {
       (void) gain_map_apply(sample, *gain, channel, gain_map_full_weight(metadata));
-      if (weight) { (void) gain_map_apply(sample, *gain, channel, *weight); }
+      if (weight) {
+        (void) gain_map_apply(sample, *gain, channel, *weight);
+      }
     }
   }
 }
@@ -52,14 +60,20 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
   const std::span<const uint8_t> bytes(data, size);
   const double sample = size ? data[size - 1] / 255.0 : 0.0;
   auto metadata = parse_gain_map_metadata(bytes);
-  if (metadata.metadata) { exercise_metadata(*metadata.metadata, sample); }
+  if (metadata.metadata) {
+    exercise_metadata(*metadata.metadata, sample);
+  }
   auto tmap = parse_tone_map_image(bytes);
   if (tmap.tone_map_image) {
     exercise_metadata(tmap.tone_map_image->gain_map_metadata, sample);
     auto encoded = serialize_tone_map_image(*tmap.tone_map_image);
-    assert(encoded);
+    if (!encoded) {
+      std::abort();
+    }
     auto decoded = parse_tone_map_image(*encoded);
-    assert(decoded.status == ToneMapImageParseStatus::parsed);
+    if (decoded.status != ToneMapImageParseStatus::parsed) {
+      std::abort();
+    }
   }
   return 0;
 }
