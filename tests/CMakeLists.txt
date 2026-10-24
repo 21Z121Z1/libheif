@@ -248,6 +248,15 @@ else()
     message(INFO " Disabling the TIFF decoder test because libtiff was not found")
 endif ()
 
+# Catch returns 4 only when every case is skipped. Matching a partial-skip
+# summary would also hide assertion failures or sanitizer errors in that run.
+foreach(TEST_NAME IN ITEMS gain_map_metadata gain_map_math gain_map_color gain_map_ultrahdr
+                           tmap_read tmap_write tmap_interop entity_groups)
+    if (TEST ${TEST_NAME})
+        set_tests_properties(${TEST_NAME} PROPERTIES SKIP_REGULAR_EXPRESSION "" SKIP_RETURN_CODE 4)
+    endif()
+endforeach()
+
 if (ENABLE_PLUGIN_LOADING)
     get_directory_property(ALL_TESTS TESTS)
     set_tests_properties(${ALL_TESTS} PROPERTIES ENVIRONMENT "LIBHEIF_PLUGIN_PATH=${CMAKE_BINARY_DIR}/libheif/plugins")

@@ -228,9 +228,9 @@ TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
   for (const std::string name : {"mono", "rgb", "ramp"}) {
     const bool rgb = name == "rgb";
     const bool ramp = name == "ramp";
+    auto* encoder = get_encoder_or_skip_test(heif_compression_HEVC);
     auto* ctx = heif_context_alloc();
     REQUIRE(ctx);
-    auto* encoder = get_encoder_or_skip_test(heif_compression_HEVC);
     REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
     REQUIRE(heif_encoder_set_logging_level(encoder, 0).code == heif_error_Ok);
     const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
@@ -340,8 +340,8 @@ TEST_CASE("Generate synthetic HEVC tmap files for independent consumers")
 
 TEST_CASE("Gain-map encoder defaults to hidden mono without selecting primary")
 {
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   auto* options = heif_gain_map_image_options_alloc();
   REQUIRE(options);
   REQUIRE(options->hidden == 1);
@@ -429,8 +429,8 @@ TEST_CASE("Gain-map encoder normalizes lower-depth monochrome and planar RGB inp
   const bool rgb = GENERATE(false, true);
   const int blue_depth = GENERATE(8, 12);
   if (!rgb && blue_depth != 8) { return; }
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
   if (rgb) { REQUIRE(heif_encoder_set_parameter_string(encoder, "chroma", "444").code == heif_error_Ok); }
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
@@ -538,8 +538,8 @@ TEST_CASE("Lower-depth interleaved gain inputs respect the byte-layout contract"
 TEST_CASE("Lower-depth gain writer rejects unresolved range and invalid samples before encoding")
 {
   const bool limited = GENERATE(false, true);
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   heif_image* pixels = nullptr;
   REQUIRE(heif_image_create(4, 4, heif_colorspace_monochrome,
                            heif_chroma_monochrome, &pixels).code == heif_error_Ok);
@@ -568,8 +568,8 @@ TEST_CASE("Lower-depth gain writer rejects unresolved range and invalid samples 
 
 TEST_CASE("Gain-map encoder rejects ambiguous YCbCr and preserves primary on error")
 {
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   const auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   auto* base = encode_image_with_profile(ctx, encoder, colour);
@@ -607,8 +607,8 @@ TEST_CASE("Tone-map writer preserves exact ICC bytes and supports canonical reco
 {
   const bool ycbcr = GENERATE(false, true);
   const bool full_range = GENERATE(false, true);
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   auto* base = encode_image_with_profile(ctx, encoder, colour);
@@ -679,9 +679,9 @@ TEST_CASE("ICC CICP baselines retain matrix range and colourimetry after seriali
   const int bits = GENERATE(8, 16);
   const bool storage_colr = GENERATE(false, true);
   INFO("matrix=" << matrix << " bits=" << bits << " storage NCLX=" << storage_colr);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto storage = make_nclx(heif_color_primaries_unspecified, heif_transfer_characteristic_unspecified,
                             static_cast<heif_matrix_coefficients>(matrix), false);
   heif_image* image = nullptr;
@@ -790,9 +790,9 @@ TEST_CASE("ICC CICP baselines retain matrix range and colourimetry after seriali
 
 TEST_CASE("tmap brand cannot be written without a tone-map item")
 {
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx != nullptr);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   const auto colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1,
       heif_matrix_coefficients_ITU_R_BT_709_5, true);
@@ -817,9 +817,9 @@ TEST_CASE("tmap brand cannot be written without a tone-map item")
 
 TEST_CASE("Generic tone-map items receive their required compatible brand")
 {
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx != nullptr);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   const auto base_colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1,
       heif_matrix_coefficients_ITU_R_BT_709_5, true);
@@ -873,10 +873,10 @@ TEST_CASE("Generic tone-map items receive their required compatible brand")
 
 TEST_CASE("tmap writer round-trips graph metadata colour and brand")
 {
-  heif_context* ctx = heif_context_alloc();
-  REQUIRE(ctx != nullptr);
   heif_encoder* encoder =
       get_encoder_or_skip_test(heif_compression_AV1);
+  heif_context* ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
 
   const auto base_nclx = make_nclx(
       heif_color_primaries_ITU_R_BT_709_5,
@@ -1030,9 +1030,9 @@ TEST_CASE("tmap writer round-trips graph metadata colour and brand")
 
 TEST_CASE("Two tiled inputs round-trip the Figure J.5 tone-map graph and pixels")
 {
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
@@ -1171,9 +1171,9 @@ TEST_CASE("Two tiled inputs round-trip the Figure J.5 tone-map graph and pixels"
 TEST_CASE("tmap PIXI describes reconstructed RGB rather than input channels or storage depth")
 {
   const uint8_t channels = GENERATE(uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}, uint8_t{4});
+  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
   const auto base_colour = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   auto* base = encode_image_with_profile(ctx, encoder, base_colour);
@@ -1225,10 +1225,10 @@ TEST_CASE("tmap PIXI describes reconstructed RGB rather than input channels or s
 
 TEST_CASE("tmap writer supports shared base and does not invent PIXI")
 {
-  heif_context* ctx = heif_context_alloc();
-  REQUIRE(ctx != nullptr);
   heif_encoder* encoder =
       get_encoder_or_skip_test(heif_compression_AV1);
+  heif_context* ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
 
   const auto base_nclx = make_nclx(
       heif_color_primaries_ITU_R_BT_709_5,
@@ -1313,10 +1313,10 @@ TEST_CASE("tmap writer supports shared base and does not invent PIXI")
 
 TEST_CASE("tmap writer rejects invalid roles without changing primary")
 {
-  heif_context* ctx = heif_context_alloc();
-  REQUIRE(ctx != nullptr);
   heif_encoder* encoder =
       get_encoder_or_skip_test(heif_compression_AV1);
+  heif_context* ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
 
   const auto base_nclx = make_nclx(
       heif_color_primaries_ITU_R_BT_709_5,
@@ -1416,9 +1416,9 @@ TEST_CASE("tmap writer accepts gain pixels aligned after input transformations")
 {
   const bool pre_rotated_gain = GENERATE(false, true);
   INFO("pre-rotated gain=" << pre_rotated_gain);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto linear = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, true);
   heif_image* base_pixels = nullptr;
@@ -1584,9 +1584,9 @@ TEST_CASE("tmap writer rejects malformed input orientation properties before mut
 {
   const bool on_gain = GENERATE(false, true);
   const auto type = GENERATE(heif_fourcc('i', 'r', 'o', 't'), heif_fourcc('i', 'm', 'i', 'r'));
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   const auto gain_colour = make_nclx(heif_color_primaries_unspecified,
@@ -1627,9 +1627,9 @@ TEST_CASE("tmap writer rejects malformed input orientation properties before mut
 TEST_CASE("tmap geometry follows transformed inputs rather than their coded ispe")
 {
   const bool declare_coded_size = GENERATE(false, true);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1,
       heif_matrix_coefficients_ITU_R_BT_709_5, true);
@@ -1688,9 +1688,9 @@ TEST_CASE("tmap geometry follows transformed inputs rather than their coded ispe
 TEST_CASE("tmap writer refuses unresolved raw colour properties before mutation")
 {
   const bool on_gain = GENERATE(false, true);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1,
       heif_matrix_coefficients_ITU_R_BT_709_5, true);
@@ -1721,8 +1721,8 @@ TEST_CASE("tmap writer refuses unresolved raw colour properties before mutation"
 
 TEST_CASE("tmap writer preflights primary visibility group and ICC errors")
 {
-  auto* ctx = heif_context_alloc();
   auto* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  auto* ctx = heif_context_alloc();
   auto gain_colour = make_nclx(heif_color_primaries_unspecified,
       heif_transfer_characteristic_unspecified, heif_matrix_coefficients_ITU_R_BT_709_5, true);
   auto* gain = encode_image_with_profile(ctx, encoder, gain_colour);
@@ -1785,9 +1785,9 @@ TEST_CASE("Typed uncompressed tone-map inputs survive serialization and canonica
   const bool floating = GENERATE(false, true);
   const bool full_range = floating ? true : GENERATE(false, true);
   const int bits = GENERATE(32, 64);
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_linear, heif_matrix_coefficients_RGB_GBR, full_range);
   heif_image* pixels = nullptr;
@@ -1948,14 +1948,16 @@ TEST_CASE("Serialized tmap baselines retain their declared chroma phase")
   const auto decoder_id = GENERATE_REF(Catch::Generators::from_range(decoder_ids));
   INFO("bits=" << bits << ", location=" << int(phase.location) << ", declared=" << phase.declared
                << ", decoder=" << decoder_id);
-  auto* ctx = heif_context_alloc();
-  REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(format);
+  const heif_encoder_descriptor* descriptor = nullptr;
   if (format != heif_compression_uncompressed) {
-    heif_encoder_release(encoder);
-    const heif_encoder_descriptor* descriptor = nullptr;
     const char* id = format == heif_compression_AV1 ? "aom" : "x265";
     if (heif_get_encoder_descriptors(format, id, &descriptor, 1) == 0) { SKIP("Chroma-location encoder unavailable"); }
+  }
+  auto* encoder = get_encoder_or_skip_test(format);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  if (descriptor) {
+    heif_encoder_release(encoder);
     REQUIRE(heif_context_get_encoder(ctx, descriptor, &encoder).code == heif_error_Ok);
     REQUIRE(heif_encoder_set_lossless(encoder, 1).code == heif_error_Ok);
   }
@@ -2255,9 +2257,9 @@ TEST_CASE("Wide subsampled uncompressed tiles reconstruct at their own component
     REQUIRE(heif_image_set_nclx_color_profile(image, &baseline).code == heif_error_Ok);
     return image;
   };
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* prototype = make_pixels(8, 0);
   heif_unci_image_parameters parameters{};
   parameters.version = 1;
@@ -2337,9 +2339,9 @@ TEST_CASE("Wide subsampled uncompressed tiles reconstruct at their own component
 
 TEST_CASE("Serialized sYCC baseline preserves negative RGB until tone-map offsets")
 {
+  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   auto* ctx = heif_context_alloc();
   REQUIRE(ctx);
-  auto* encoder = get_encoder_or_skip_test(heif_compression_uncompressed);
   const auto baseline = make_nclx(heif_color_primaries_ITU_R_BT_709_5,
       heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_ITU_R_BT_601_6, true);
   heif_image* pixels = nullptr;

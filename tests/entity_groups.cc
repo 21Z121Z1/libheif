@@ -286,8 +286,13 @@ TEST_CASE("entity_groups: specialized writers enforce group semantics") {
   heif_entity_group* groups = heif_context_get_entity_groups(ctx, 0, 0, &num_groups);
   REQUIRE(num_groups == 0);
   heif_entity_groups_release(groups, num_groups);
+  heif_context_free(ctx);
 
   heif_encoder* encoder = get_encoder_or_skip_test(heif_compression_AV1);
+  ctx = heif_context_alloc();
+  REQUIRE(ctx != nullptr);
+  heif_context_set_major_brand(ctx, heif_brand2_mif1);
+  heif_context_set_unif(ctx, 1);
   const heif_item_id image_ids[] = {
       add_test_av1_image(ctx, encoder), add_test_av1_image(ctx, encoder)};
   heif_encoder_release(encoder);
