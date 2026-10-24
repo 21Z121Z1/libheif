@@ -1173,6 +1173,10 @@ TEST_CASE("Tone-map inputs honour declared chroma positions independently for Cb
     REQUIRE_FALSE(raster->add_channel(channel, 2, chroma_height, 8, nullptr));
     size_t stride = 0;
     auto* plane = raster->get_channel_memory(channel, &stride);
+    if (!plane || stride < 2) {
+      FAIL("Invalid chroma plane storage");
+      return;
+    }
     for (uint32_t y = 0; y < chroma_height; ++y) {
       for (uint32_t x = 0; x < 2; ++x) {
         plane[size_t(y) * stride + x] = static_cast<uint8_t>((channel == heif_channel_Cb ? 112 : 128) + 16 * x + 32 * y);
