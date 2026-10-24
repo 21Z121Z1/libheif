@@ -109,3 +109,17 @@ void IDCreator::mark_id_used(Namespace ns, uint32_t id)
     m_next_id_global = next_id_after(id);
   }
 }
+
+
+Result<uint32_t> IDCreator::get_new_id_noncolliding()
+{
+  if (m_next_id_global == 0) {
+    return Error(heif_error_Usage_error, heif_suberror_Unspecified,
+                 "ID namespace overflow");
+  }
+  const uint32_t id = m_next_id_global;
+  mark_id_used(Namespace::item, id);
+  mark_id_used(Namespace::track, id);
+  mark_id_used(Namespace::entity_group, id);
+  return id;
+}

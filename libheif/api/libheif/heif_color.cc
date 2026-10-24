@@ -243,7 +243,10 @@ static const std::set<std::underlying_type<heif_matrix_coefficients>::type> know
   heif_matrix_coefficients_SMPTE_ST_2085,
   heif_matrix_coefficients_chromaticity_derived_non_constant_luminance,
   heif_matrix_coefficients_chromaticity_derived_constant_luminance,
-  heif_matrix_coefficients_ICtCp
+  heif_matrix_coefficients_ICtCp,
+  heif_matrix_coefficients_IPT_C2,
+  heif_matrix_coefficients_YCgCo_Re,
+  heif_matrix_coefficients_YCgCo_Ro
 };
 
 

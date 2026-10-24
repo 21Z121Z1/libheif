@@ -116,10 +116,18 @@ Error unc_decoder_component_interleave::decode_tile(const std::vector<uint8_t>& 
   uint32_t tile_col = out_x0 / m_tile_width;
   uint32_t tile_row = out_y0 / m_tile_height;
 
-  for (ChannelListEntry& entry : channelList) {
+  for (size_t c = 0; c < channelList.size(); ++c) {
+    ChannelListEntry& entry = channelList[c];
     srcBits.markTileStart();
     uint64_t channel_x0 = uint64_t{tile_col} * entry.tile_width;
     uint64_t channel_y0 = uint64_t{tile_row} * entry.tile_height;
+    const auto id = m_uncC_index_to_comp_ids[c];
+    if (entry.use_channel &&
+        (channel_x0 + entry.tile_width > img->get_component_width(id) ||
+         channel_y0 + entry.tile_height > img->get_component_height(id))) {
+      return {heif_error_Invalid_input, heif_suberror_Invalid_image_size,
+              "uncompressed tile exceeds its component dimensions"};
+    }
     for (uint32_t y = 0; y < entry.tile_height; y++) {
       srcBits.markRowStart();
       if (entry.use_channel) {
@@ -142,7 +150,7 @@ Error unc_decoder_component_interleave::decode_tile(const std::vector<uint8_t>& 
 
 bool unc_decoder_factory_component_interleave::can_decode(const std::shared_ptr<const Box_uncC>& uncC) const
 {
-  if (!check_common_requirements(uncC)) {
+  if (!check_common_requirements(uncC, 32)) {
     return false;
   }
 
