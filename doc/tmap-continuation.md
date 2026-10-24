@@ -4,7 +4,117 @@ Current acceptance and remaining tasks are tracked only in
 [the clause-level conformance matrix](tmap-conformance-matrix.md).
 The implementation notes and dated receipts below are historical evidence.
 
-Baseline: `f4679fa14ad36e57aee60190a61650030c32659e` on
+## 2026-10-24 correctness and upstream-style review
+
+The retrieved PR head was `1f3c71731e56765e7d5f692a79fbeb5214d77d0d`,
+with fork base `9585110d405ae24ba258295d4ba7542dfc59035d` and upstream
+`364905fc9841bdda229e0ae2c5fda13b5fc98d1a`. The supplied branch archive
+matched all 844 tracked files at that head. A pristine checkout was built
+before changing production code. Fifteen upstream human-maintained patches
+and adjacent production code establish the [style baseline](tmap-upstream-style.md).
+
+The supplied ISO 21496-1:2025 and base HEIF PDFs were read, including the
+reconstruction equations and normative Annexes B/C. The Amd.1 attachment was
+unavailable in this session; the final public text/preview was checked for
+6.6.2.4 and related brands. This is not a claim to have read the missing complete
+attachment. The original PDFs are not repository or CI inputs.
+
+| Demonstrated defect | Before | Correction and regression |
+| --- | --- | --- |
+| A finite gain result lost to an overflowing/underflowing factor | `2^-1000 * 2^1030` fails; `2^1000 * 2^-1100` becomes zero; a fractional subnormal factor loses precision | Combine the baseline and gain exponents only when the factor is not normal. Exact endpoints, signed values, offset cancellation and true overflow remain checked. |
+| Premultiplied HDR clipped before final storage | Public explicit-colour integer output is 21845 instead of 37392 while equivalent default/float paths agree | Multiply encoded samples by their original-precision alpha before final integer clipping, with finite-value guards. Public whole-image/tile and direct/deferred cases agree. Existing expectations that encoded the old clipping policy were corrected without enlarging tolerances. |
+| Stored orientation labels mistaken for output alignment | A pre-rotated nonuniform 6x4 gain is rejected against a transformed 4x6 baseline | Apply each input's own transforms and require aligned output pixels. Both representations serialize/reopen to the same independently calculated pixels; malformed raw properties still fail before item, visibility or altr mutation. |
+| ST 428 scale/power intermediates lose finite values | Encoding `DBL_MAX` overflows, `denorm_min` has about 1.2% relative error, and transparent deferred reconstruction fails | Decompose the binary exponent before applying exact 13/5 or 5/13 powers. Tests cover finite/overflow boundaries, subnormal precision and transparent output. |
+
+The alpha correction follows public output consistency and the final representable
+range. HEIF 6.9.1 defines premultiplication; it does not directly mandate this
+integer quantization order. The orientation correction supersedes the earlier
+R04 tag-equality interpretation. Matching tags cannot prove content alignment,
+and different tags do not disprove it.
+
+Local Linux checks use GCC 13, CMake 3.28.3, Ninja and Little CMS enabled:
+
+- The unchanged baseline and final source both complete 112 CTest targets:
+  107 pass, five skip, none fail. The skips are the external-fixture entry,
+  optional encoder coverage, two unavailable OpenJPEG cases and the FFmpeg
+  bit-depth fixture. The external entry is executed separately below.
+- Metadata golden bytes: 384 assertions / 19 cases. Reconstruction: 27,637 /
+  49. Colour: 28,529 / 31. The metadata writer now uses `StreamWriter`, including
+  unsigned wire conversion of `INT32_MIN`, without changing these byte fixtures.
+- The gain arithmetic sweep compares actual production code with long-double
+  evaluation over 962,412 cases under UBSan/float-cast-overflow. No mismatch was
+  found. The ST 428 candidate was independently compared with 110-digit Decimal
+  over 857 values in each direction; maximum normal relative errors were
+  3.024e-16 for encoding and 3.563e-16 for decoding, with no finite/overflow or
+  zero/nonzero classification mismatch in that set. These are finite sweeps,
+  not proofs for all floating-point inputs.
+- The same independently compiled public-API alpha reproducer fails one of
+  39 assertions against the old shared library and passes all 39 against the
+  new one. Only the loaded library changes.
+- Replay of the downloaded Apple/Google synthetic artifact passes 909,461
+  assertions / two cases. Apple maximum linear error is 0.00158095, RMSE
+  0.00112232; the largest Google maximum error and RMSE are 0.0015862.
+  The original four invalid Google files remain rejection cases.
+- A separately built raw libultrahdr oracle at
+  `66821e0a261aa3a06c0e7c889f52eced52850be1` passes 16,432 assertions / three
+  cases, covering bidirectional Annex C bytes, unknown minimum versions and
+  72 same-size pixel combinations. Its original mixed absolute/relative
+  tolerance remains unchanged; this is separate from the Google HEIF workaround.
+- Clang 18 ASan, UBSan, float-cast-overflow and LeakSanitizer pass all seven
+  selected executables after the skip-lifetime correction. This codec-free
+  build executes 15/28 writer and 4/9 group cases; missing-codec cases remain
+  explicitly skipped. No sanitizer diagnostic remains. Codec-enabled checks
+  are separate from this local run.
+- Three newly generated HEVC fixtures, including the spatial ramp, pass the
+  independent binary/per-file checker. C headers compile in 112 configurations
+  and all 469 declared stable symbols are present. The experimental ABI remains
+  experimental.
+
+Initial local runs exposed two environment issues: an incomplete zero-byte test
+executable was relinked, and LeakSanitizer could not inspect sandbox `/proc`.
+Running with process-inspection access then exposed 640 bytes of leaked writer
+test contexts and a 16-byte group-test context when unavailable codecs caused
+Catch to skip. The inherited CTest skip regex incorrectly hid these nonzero
+sanitizer exits. Clearing that regex and using Catch's all-skipped exit code 4
+made both targets fail as required. Encoder availability is now checked before
+allocation; group tests retain their codec-independent checks and release that
+context before querying the encoder. The override applies only to this PR's
+gain-map and group tests. Existing upstream test policy is otherwise unchanged.
+Missing Apple/Google fixture variables now produce explicit Catch skips instead
+of successful returns without any pixel assertions.
+
+These initial failures are retained in the execution record rather than counted
+as passing tests. Exact-head Actions and sanitizer outcomes are tracked in the
+PR checks; older green runs do not certify this source.
+
+The cleanup removes the unused internal ICC-to-NCLX approximation and its sole
+classifiers; tests now call the actual `GainMapColour` consumer. It retains exact
+ICC curves/colourants, CICP interpretation, CMM ownership and every production
+validation boundary. The bounded metadata reader stays because its truncation,
+consumed-byte and unknown-version semantics differ from a generic stream reader.
+Style changes affect only PR-owned files/lines; no global formatter was used.
+Numerical, standard, public-contract and ownership comments remain where needed.
+
+The Apple gate now requires Core Image loading, dimensions, finite values,
+HDR-above-white output and numerical agreement. It adds the public
+`applyingGainMap(_:headroom:)` API at linear headroom ratios 1, 2 and 4, a
+nonconstant lossless gain, RMSE reporting, and Intel/ARM macOS jobs. RGBAf is the
+rendered buffer; Core Image's default intermediate format remains RGBAh. Existing
+consumer maximum-error 0.025 and lossy-producer intention 0.06 limits are unchanged
+empirical compatibility limits, not universal mathematical error bounds.
+
+These generated fixtures do not certify camera originals, smaller-gain Apple
+resampling, every orientation/alpha/colour combination, Apple legacy gain-map
+reconstruction or iOS Photos/display behaviour. Apple's legacy
+`urn:com:apple:photo:2020:aux:hdrgainmap` uses separately documented parameters
+and is not interpreted as ISO Annex C. Generic auxiliary access does not imply
+legacy HDR reconstruction support. See Apple's
+[legacy HDR-effect documentation](https://developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos)
+and [public partial-gain API](https://developer.apple.com/documentation/coreimage/ciimage/applyinggainmap(_:headroom:)).
+
+## Earlier continuation
+
+Earlier baseline: `f4679fa14ad36e57aee60190a61650030c32659e` on
 `iso21496-gain-map-metadata-core`. Work continues on that PR branch.
 
 ## Implementation and acceptance

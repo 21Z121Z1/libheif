@@ -280,9 +280,10 @@ The derived item's `ispe` describes the baseline after its ordered crop and
 orientation properties, including codec padding removed by `clap`. Gain inputs
 use their own transformed dimensions. The writer checks cover all eight EXIF
 orientations on an asymmetric HEVC baseline padded from 16x24 to 64x64.
-The base and gain must have matching effective orientation: irot and imir are
-composed in their association order, so equivalent property sequences are
-accepted and different display transforms fail before mutation.
+Each input applies its own ordered transformations. The caller must supply
+aligned output images; stored irot/imir properties need not match when pixels
+have already been rotated or mirrored. The writer validates property payloads
+and derives the baseline output dimensions before mutating the context.
 Optional PIXI describes three RGB components, or one for a gray ICC alternate;
 zero components omits it. Its bit depths are approximate precision hints,
 independent of mono/RGB gain channels, encoded input depth or decoded storage.

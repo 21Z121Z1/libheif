@@ -43,7 +43,9 @@
 TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
 {
   const char* path = std::getenv("LIBHEIF_TMAP_APPLE_FIXTURE");
-  if (!path) { return; }
+  if (!path) {
+    SKIP("Set LIBHEIF_TMAP_APPLE_FIXTURE to test the Apple producer fixture");
+  }
   std::vector<float> reference(64 * 64 * 4);
   std::ifstream reference_file(std::string(path) + ".rgba32f", std::ios::binary);
   reference_file.read(reinterpret_cast<char*>(reference.data()),
@@ -107,7 +109,9 @@ TEST_CASE("Apple synthetic ISO producer matches independent HDR intention")
 TEST_CASE("Stock libultrahdr exchange preserves pixels and rejects invalid source colour pairs")
 {
   const char* directory = std::getenv("LIBHEIF_TMAP_ULTRAHDR_DIR");
-  if (!directory) { return; }
+  if (!directory) {
+    SKIP("Set LIBHEIF_TMAP_ULTRAHDR_DIR to test the stock libultrahdr exchange");
+  }
   const double baseline = std::pow((192.0 / 255.0 + 0.055) / 1.055, 2.4);
   for (const char* name : {"libheif-mono-pq.heic", "libheif-rgb-pq.heic",
                           "google-mono.heic", "google-rgb.heic",

@@ -1,5 +1,26 @@
 # Independent ISO gain-map implementation review
 
+## 2026-10-24 independent second pass
+
+The [continuation](tmap-continuation.md#2026-10-24-correctness-and-upstream-style-review)
+records new failures reproduced against `1f3c7173`: finite gain products lost to
+intermediate exponents, premultiplied integer output differing from equivalent
+float/default paths, an aligned pre-rotated gain rejected by stored-tag equality,
+and ST 428 scale/power overflow and subnormal rounding. Numerical sweeps and
+independent public-API reproducers support the corrections; existing tolerances
+were not enlarged. The orientation conclusion below has been corrected to refer
+to output-image alignment rather than equality of stored transformations.
+
+A separate review verified that removed ICC approximation helpers have no
+production consumers, that migrated tests exercise the exact ICC path, and that
+style edits in mixed upstream files stay within PR-added lines. It also caught a
+missing version-2 transaction path in the malformed-orientation regression;
+the final test enables hiding/group creation and verifies neither changes on
+failure. A codec-free LSan run subsequently exposed test-context leaks hidden
+by an inherited partial-skip regex; the scoped exit-code gate and allocation
+order now preserve real failures. Necessary rational, numerical, ownership
+and version comments remain.
+
 ## 2026-10-23 colour-association correction
 
 The integration PR at `88b50610` omitted the colour-association fix already
@@ -33,7 +54,7 @@ claim for any of the projects.
 
 | Implementation / revision | Problem and relevant design | libheif comparison and decision |
 | --- | --- | --- |
-| [libavif e4db889c](https://github.com/AOMediaCodec/libavif/tree/e4db889c6b574bf221a380e9bddde0273c942023) | Rational metadata, original alternate colour/precision hints, ordered tmap inputs, compatible brand, typed altr, gain grids and invalid-file tests. Writer disallows transforms on supplied gain pixels and copies baseline transforms onto the encoded gain item. | Supplied libheif items may already have transforms; compare their effective ordered irot/imir composition instead. Preserve optional caller precision hints; do not infer reconstructed components from the mono gain raster or decoded storage. H08's before-fix test demonstrates rejection of inconsistent hints. |
+| [libavif e4db889c](https://github.com/AOMediaCodec/libavif/tree/e4db889c6b574bf221a380e9bddde0273c942023) | Rational metadata, original alternate colour/precision hints, ordered tmap inputs, compatible brand, typed altr, gain grids and invalid-file tests. Writer disallows transforms on supplied gain pixels and copies baseline transforms onto the encoded gain item. | Supplied libheif items may already contain transformed pixels or properties; require aligned output images, not equal stored irot/imir histories. The earlier tag-equality restriction rejected a valid pre-rotated gain and has been removed. Preserve optional caller precision hints; do not infer reconstructed components from the mono gain raster or decoded storage. H08's before-fix test demonstrates rejection of inconsistent hints. |
 | [CrabbyAvif 7d1cb2d1](https://github.com/webmproject/CrabbyAvif/tree/7d1cb2d1ccc6f5dfd369e51232ec2e4a41fe5892) | Independent Rust Annex C and ToneMapImage parser/writer, typed fractions, ordered inputs, tmap branding and alternate PIXI interpretation. | Byte differential uses the actual Rust parser/writer without modifying their production code. Its supported layouts and error API are implementation choices; libheif retains generic derived inputs and distinct unknown outer/minimum-version results. |
 | [libultrahdr 66821e0a](https://github.com/google/libultrahdr/tree/66821e0a261aa3a06c0e7c889f52eced52850be1) | Independent rational/metadata/math and JPEG gain-map implementation; HEIF/AVIF workaround delegates to libheif. | Keep this revision as the blocking raw oracle. Its six HEIF/AVIF exchanges establish compatibility only. Do not import its resampling policy, JPEG-specific layout or vendor heuristics into the HEIF reader. |
 | [Skia 1b95d35b](https://github.com/google/skia/blob/1b95d35ba26d4bd3761ddb1120ce112359a00df7/src/codec/SkGainmapInfo.cpp) | Big-endian ISO parsing/serialization, malformed-rational tests and float rendering parameters. Serialization approximates rationals from floats; colour discovery belongs to the image codec consumer. | Preserve exact public POD rationals and explicit application primaries. An intermediate sRGB placeholder in a rendering model does not authorize an ISO colour fallback. Existing denominator/gamma and round-trip regressions cover the useful parser boundaries. Source review only; no Skia runtime oracle is claimed. |
