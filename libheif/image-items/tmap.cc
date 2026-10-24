@@ -225,27 +225,23 @@ Result<unsigned int> orientation_component(const std::shared_ptr<Box>& property)
   return static_cast<unsigned int>(raw->get_raw_data()[0]) & mask;
 }
 
-Result<std::pair<unsigned int, bool>> effective_orientation(const ImageItem& item)
+Error validate_orientation_properties(const ImageItem& item)
 {
   auto properties = item.get_properties();
-  if (!properties) { return properties.error(); }
-  // Canonical form R^turns H^reflected, composed in ipma display order.
-  // H reverses rotations; vertical reflection is R^2 H.
-  std::pair<unsigned int, bool> orientation{0, false};
+  if (!properties) {
+    return properties.error();
+  }
   for (const auto& property : *properties) {
     const auto type = property->get_short_type();
-    if (type != fourcc("irot") && type != fourcc("imir")) { continue; }
-    auto component = orientation_component(property);
-    if (!component) { return component.error(); }
-    if (type == fourcc("irot")) {
-      orientation.first = (orientation.first + *component) % 4;
+    if (type != fourcc("irot") && type != fourcc("imir")) {
+      continue;
     }
-    else {
-      orientation.first = (4 + (*component == 0 ? 2 : 0) - orientation.first) % 4;
-      orientation.second = !orientation.second;
+    auto component = orientation_component(property);
+    if (!component) {
+      return component.error();
     }
   }
-  return orientation;
+  return Error::Ok;
 }
 
 Result<GainMapColour> resolve_tone_map_colour(const ImageItem& item)
@@ -334,13 +330,11 @@ ImageItem_tmap::add_new_tone_map_item(
     return error;
   }
 
-  auto base_orientation = effective_orientation(*base);
-  if (!base_orientation) { return base_orientation.error(); }
-  auto gain_orientation = effective_orientation(*gain);
-  if (!gain_orientation) { return gain_orientation.error(); }
-  if (*base_orientation != *gain_orientation) {
-    return Error{heif_error_Usage_error, heif_suberror_Invalid_parameter_value,
-                 "Tone-map base and gain images must have matching effective orientation"};
+  if (auto error = validate_orientation_properties(*base)) {
+    return error;
+  }
+  if (auto error = validate_orientation_properties(*gain)) {
+    return error;
   }
 
   if (tone_map_image.version != 0) {
