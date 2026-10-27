@@ -223,6 +223,8 @@ public:
 
   virtual void get_tile_size(uint32_t& w, uint32_t& h) const;
 
+  virtual bool use_item_color_profile_for_decoding() const { return true; }
+
   // The size of the image that decode_compressed_image() builds when it decodes the whole
   // image (before the image transformations). The size is 0 when it is unknown.
   // Default behavior: the 'ispe' size. Derived images that take the size of their canvas
@@ -582,7 +584,7 @@ protected:
   // --- encoding utility functions
 
   static std::vector<std::shared_ptr<Box_colr> >
-  add_color_profile(const std::shared_ptr<HeifPixelImage>& image,
+  add_color_profile(const std::shared_ptr<const HeifPixelImage>& image,
                     const heif_encoding_options& options,
                     heif_image_input_class input_class,
                     const heif_color_profile_nclx* target_heif_nclx);

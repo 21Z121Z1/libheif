@@ -1,0 +1,105 @@
+name: tmap-CIFuzz
+
+on:
+  push:
+    branches: [ iso21496-gain-map-metadata-core ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+jobs:
+  Fuzzing:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x86_64, i386]
+        sanitizer: [address, undefined, memory]
+        # Remove combinations not supported by action.
+        exclude:
+          - architecture: i386
+            sanitizer: undefined
+          - architecture: i386
+            sanitizer: memory
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+      with:
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        path: source/libheif
+        persist-credentials: false
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+      with:
+        repository: google/oss-fuzz
+        ref: e004f85123eab0ba61ba5371c857239f97c1df27
+        path: oss-fuzz
+        persist-credentials: false
+    - name: Select the checked-out source
+      env:
+        EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        test "$(git -C source/libheif rev-parse HEAD)" = "$EXPECTED_HEAD"
+        printf '%s\n' "$EXPECTED_HEAD" > source/libheif/.cifuzz-expected-head
+        # InternalGithub clones the OSS-Fuzz upstream and silently continues if
+        # a fork's commit/PR ref is unavailable. InternalGeneric uses our checkout.
+        python3 - <<'PY'
+        from pathlib import Path
+        for action in ('build_fuzzers', 'run_fuzzers'):
+            manifest = Path('oss-fuzz/infra/cifuzz/actions') / action / 'action.yml'
+            text = manifest.read_text()
+            old = "CFL_PLATFORM: 'github'"
+            assert text.count(old) == 1
+            manifest.write_text(text.replace(old, "CFL_PLATFORM: 'generic'"))
+        PY
+    - name: Build Fuzzers
+      id: build
+      uses: ./oss-fuzz/infra/cifuzz/actions/build_fuzzers
+      env:
+        WORKSPACE: /github/workspace
+        REPOSITORY: libheif
+        GIT_CONFIG_COUNT: 1
+        GIT_CONFIG_KEY_0: safe.directory
+        GIT_CONFIG_VALUE_0: /github/workspace/source/libheif
+      with:
+        oss-fuzz-project-name: 'libheif'
+        project-src-path: /github/workspace/source/libheif
+        keep-unaffected-fuzz-targets: true
+        dry-run: false
+        architecture: ${{ matrix.architecture }}
+        sanitizer: ${{ matrix.sanitizer }}
+    - name: Verify the compiled source and tone-map target
+      env:
+        EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        test "$(cat build-out/libheif-source-head.txt)" = "$EXPECTED_HEAD"
+        test -x build-out/gain_map_fuzzer
+    - name: Run Fuzzers
+      uses: ./oss-fuzz/infra/cifuzz/actions/run_fuzzers
+      env:
+        WORKSPACE: /github/workspace
+        REPOSITORY: libheif
+        PROJECT_SRC_PATH: /github/workspace/source/libheif
+        GIT_CONFIG_COUNT: 1
+        GIT_CONFIG_KEY_0: safe.directory
+        GIT_CONFIG_VALUE_0: /github/workspace/source/libheif
+      with:
+        oss-fuzz-project-name: 'libheif'
+        fuzz-seconds: 600
+        dry-run: false
+        sanitizer: ${{ matrix.sanitizer }}
+    - name: Upload source receipt
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a #v7.0.1
+      with:
+        name: source-${{ matrix.sanitizer }}-${{ matrix.architecture }}
+        path: ./build-out/libheif-source-head.txt
+        if-no-files-found: error
+    - name: Upload Crash
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a #v7.0.1
+      if: failure() && steps.build.outcome == 'success'
+      with:
+        name: artifacts-${{ matrix.sanitizer }}-${{ matrix.architecture }}
+        path: ./out/artifacts
+        if-no-files-found: ignore
