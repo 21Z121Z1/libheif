@@ -466,6 +466,15 @@ ImageItem_tmap::add_new_tone_map_item(
   else if (auto nclx = std::dynamic_pointer_cast<const color_profile_nclx>(alternate_colour)) {
     tmap->set_color_profile_nclx(nclx->get_nclx_color_profile());
   }
+
+  // ImageDescription setters only record metadata. The writer must also
+  // associate an actual 'colr' property with the new item.
+  auto colr = std::make_shared<Box_colr>();
+  colr->set_color_profile(alternate_colour);
+  if (tmap->add_color_profile_property(colr) == 0) {
+    return Error{heif_error_Encoding_error, heif_suberror_Unspecified,
+                 "Could not add tone-map alternate colour profile"};
+  }
   if (Error error = require_colour_property(*tmap, false,
           "Could not add tone-map alternate colour profile")) {
     return error;
