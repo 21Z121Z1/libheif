@@ -608,7 +608,7 @@ bool ImageItem_tmap::use_item_color_profile_for_decoding() const
   return read_tone_map_image().status != ToneMapImageParseStatus::unsupported_minimum_version;
 }
 
-int ImageItem_tmap::get_luma_bits_per_pixel() const
+int ImageItem_tmap::get_luma_bits_per_pixel_unlocked() const
 {
   // Baseline fallback has its native depth. Resolving it here would traverse
   // unvalidated references; callers must query the decoded image instead.
