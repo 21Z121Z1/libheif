@@ -75,3 +75,39 @@ ISO amendment is not automatically covered by the GB/T undated reference.
 No generic ISO `tmap` validation was relaxed for a GB/T special case. The GB/T
 increment is additive (`gbt48347` module + tests); the ISO parser/math/graph are
 unchanged, and the full ISO suite still passes (see `eval/test-results.md`).
+## 8. GB/T 46269.1—2025 (round 3 — PDF actually present and read)
+
+Round 2 incorrectly reported GB/T 46269.1—2025 as missing. The file
+`GBT+46269.1-2025.pdf` (67 pages) IS present and readable. Its text layer uses a
+custom font encoding (garbled via text extraction), so it was read by rendering
+pages to images. Structure (目次): §6 端到端系统框架, §7 元数据, §8 HDR 显示适配,
+§9 SDR 显示适配, 附录A 动态元数据提取方法(资料性), 附录B HLG 显示适配(资料性).
+
+### Responsibility categorization (A/B/C)
+
+| GB/T 46269.1 clause | Content | Category | libheif obligation |
+| --- | --- | --- | --- |
+| §7 元数据 (7.1 静态语法表10, 7.2 语义, 动态语法) | static/dynamic HDR metadata bitstream syntax+semantics | **A** container/metadata | Carried opaquely by GB/T 48347 UWAInfo (static_metadata/dynamic_metadata) and HEIF mdcv/clli. libheif stores/returns the bytes; syntax defined here. |
+| §8 HDR 显示适配 | adaptation using metadata + **display terminal parameters** to show HDR on an HDR terminal | **C** application/display | Outside a file codec. §6 explicitly: "利用元数据和显示终端参数,在HDR终端上显示HDR内容的适配过程". Not a libheif gap. |
+| §9 SDR 显示适配 | adaptation to show HDR content on an SDR terminal using metadata + display params | **C** application/display | Outside a file codec. The HDR→SDR *conversion math* may be used by an application; libheif provides reconstructed pixels + metadata. |
+| 附录A 动态元数据提取 (资料性) | recommended dynamic-metadata extraction at HDR pre-processing | informative | Generation-side guidance, not a reader requirement. |
+| 附录B HLG 显示适配 (资料性) | HLG display adaptation without metadata | informative | Application-side. |
+
+Conclusion: the display-adaptation clauses are **category C**, so they are not
+"unimplemented libheif features" but application/display responsibilities. The
+metadata **syntax** (§7) is category A and is carried by the container. This
+corrects round 2's framing of display adaptation as a missing-dependency gap.
+
+### Static-metadata width discrepancy (46269.1 vs 48347)
+
+- GB/T 46269.1 §7.1 表10: `max/min_display_mastering_luminance` = **u(16)**
+  (§7.2.3: 1 cd/m² units, range 1–65535) — the **video elementary-stream** syntax.
+- GB/T 48347 §8.2.3 表18: `max/min_display_mastering_luminance` = **u(32)** — the
+  abstract dual-layer static_metadata syntax; the HEIF path (§9.3.5) carries it in
+  `mdcv` per ISO/IEC 14496-12, which uses u(32) in 0.0001 cd/m² units.
+- These are **different carriers** (video ES vs HEIF mdcv), not a libheif defect.
+  libheif's HEIF mdcv (u32) is consistent with 48347 表18 / ISO 14496-12. The u16
+  video-ES form is outside the HEIF container scope. Recorded as a cross-standard
+  difference; no change to libheif.
+- Naming: 46269.1 `max_picture_average_light_level` vs 48347
+  `max_frame_average_light_level` — same CLLI concept, different label.

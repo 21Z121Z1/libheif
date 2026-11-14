@@ -114,3 +114,32 @@ Status changes since round 1:
 Still open (unchanged): JPEG container (CN06), BaseMapping/CombinedMapping pixel
 application (CN03/CN10, parse-only; 3D LUT order N not pinned by syntax), GB/T 46269.1
 dynamic-metadata semantics + display adaptation (未验证), real-device samples (none).
+## Round-3 update — GB/T 46269.1—2025 actually present (corrects round 2)
+
+The PDF `GBT+46269.1-2025.pdf` (67 pages) exists and was read (rendered to images;
+text layer uses a custom font encoding). Round 2's "missing dependency" claim was
+wrong. Re-audit of the normative references:
+
+- **Static HDR metadata (§7.1 表10 / §7.2)** — category A (container/metadata).
+  Carried by GB/T 48347 UWAInfo static_metadata and HEIF mdcv/clli. libheif stores
+  and returns the bytes. Note the u(16) video-ES luminance width in 46269.1 vs
+  u(32) in 48347 表18 / HEIF mdcv (different carriers; see standards-differences §8).
+- **Dynamic HDR metadata (§7 动态语法)** — category A syntax, carried opaquely in
+  UWAInfo dynamic_metadata. The tone-mapping **semantics** (how to use the params)
+  belong to the adaptation pipeline (category C), not the container.
+- **Display adaptation / target luminance (§8 HDR, §9 SDR)** — category C
+  (application/display terminal). §6 explicitly frames these as using metadata +
+  display-terminal parameters at the terminal. **Not a libheif obligation**; the
+  earlier "unverified because dependency missing" is replaced by "out of codec
+  scope (category C), dependency now read".
+- **HDR→SDR conversion (§9)** — category C for display; libheif supplies the
+  reconstructed pixels + metadata an application needs.
+- **Colour space / transfer / matrix** — governed by ISO 23091-2 / CICP and the
+  ISO 21496-1 gain-map colour path (category B), already implemented and verified.
+- **BaseMapping/CombinedMapping application position** — GB/T 48347 §10.2.3 (base,
+  before gain) and §10.2.6 (combined, after gain). Parse implemented; pixel
+  application remains open (3D LUT order N not pinned by syntax).
+
+Status: metadata carriage (A) verified; pixel reconstruction (B) verified via ISO
+path; display adaptation (C) correctly out of scope. No claim of full GB/T
+conformance; JPEG container and mapping pixel application remain open.
