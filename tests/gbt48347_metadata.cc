@@ -378,3 +378,69 @@ TEST_CASE("GB/T UWAInfo serializer rejects flag/payload disagreement")
   auto result = gbt48347::serialize_uwa_info(info);
   CHECK_FALSE(result);
 }
+
+// --- Round-3 strict serialization regressions (GB/T tables 15/16/17) ---
+
+TEST_CASE("GB/T mapping serializer rejects invalid flag values")
+{
+  gbt48347::ExtendInfoExtension ext;
+  ext.base_present = true;
+  ext.base.flag = 8;  // not 0/16/32
+  ext.base.matrix.assign(9, 0.0f);
+  CHECK_FALSE(gbt48347::serialize_extend_info_extension(ext));
+}
+
+TEST_CASE("GB/T mapping serializer requires exactly nine matrix elements")
+{
+  gbt48347::ExtendInfoExtension ext;
+  ext.base_present = true;
+  ext.base.flag = 32;
+  ext.base.matrix.assign(8, 0.0f);  // one short
+  CHECK_FALSE(gbt48347::serialize_extend_info_extension(ext));
+  ext.base.matrix.assign(10, 0.0f);  // one too many
+  CHECK_FALSE(gbt48347::serialize_extend_info_extension(ext));
+}
+
+TEST_CASE("GB/T mapping serializer requires LUT size equal to lut_order cubed")
+{
+  gbt48347::ExtendInfoExtension ext;
+  ext.base_present = true;
+  ext.base.flag = 32;
+  ext.base.matrix.assign(9, 0.0f);
+  ext.base.lut_order = 2;
+  ext.base.lut.assign(7, 0.0f);  // 2^3 = 8, not 7
+  CHECK_FALSE(gbt48347::serialize_extend_info_extension(ext));
+  ext.base.lut.assign(8, 0.0f);  // exact cube
+  CHECK(gbt48347::serialize_extend_info_extension(ext));
+}
+
+TEST_CASE("GB/T mapping serializer rejects flag 0 with payload")
+{
+  gbt48347::ExtendInfoExtension ext;
+  ext.base_present = true;
+  ext.base.flag = 0;
+  ext.base.matrix.assign(9, 0.0f);  // flag 0 must carry nothing
+  CHECK_FALSE(gbt48347::serialize_extend_info_extension(ext));
+}
+
+TEST_CASE("GB/T mapping serializer rejects a block exceeding the 16-bit size prefix")
+{
+  gbt48347::ExtendInfoExtension ext;
+  ext.base_present = true;
+  ext.base.flag = 32;
+  ext.base.matrix.assign(9, 0.0f);
+  ext.base.lut_order = 32;                 // 32^3 = 32768 floats
+  ext.base.lut.assign(32768, 0.0f);        // 131072 bytes + matrix > 65535
+  auto result = gbt48347::serialize_extend_info_extension(ext);
+  CHECK_FALSE(result);  // must not truncate the u16 length prefix
+}
+
+TEST_CASE("GB/T extend_info_extension parser rejects trailing bytes")
+{
+  // Two empty blocks (4 bytes) followed by an unexplained trailing byte.
+  auto golden = bytes({0x00, 0x00, 0x00, 0x00, 0xFF});
+  CHECK(gbt48347::parse_extend_info_extension(golden).status == ParseStatus::malformed);
+  // Without the trailing byte it parses.
+  auto ok = bytes({0x00, 0x00, 0x00, 0x00});
+  CHECK(gbt48347::parse_extend_info_extension(ok).status == ParseStatus::parsed);
+}

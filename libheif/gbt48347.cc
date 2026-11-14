@@ -270,8 +270,35 @@ void write_mapping_element(StreamWriter* writer, uint8_t flag, float v)
 }
 
 
-std::vector<uint8_t> serialize_mapping_block(const gbt48347::MappingInfo& info)
+Result<std::vector<uint8_t>> serialize_mapping_block(const gbt48347::MappingInfo& info)
 {
+  // GB/T 48347-2026 tables 16/17: flag is 0, 16 or 32. A non-zero flag transmits
+  // exactly nine matrix elements plus an N^3 LUT; flag 0 transmits nothing else.
+  if (info.flag != 0 && info.flag != 16 && info.flag != 32) {
+    return malformed("GB/T 48347 mapping flag must be 0, 16 or 32");
+  }
+  if (info.flag == 0) {
+    if (!info.matrix.empty() || !info.lut.empty() || info.lut_order != 0) {
+      return malformed("GB/T 48347 mapping flag 0 must carry no matrix or LUT");
+    }
+  }
+  else {
+    if (info.matrix.size() != 9) {
+      return malformed("GB/T 48347 mapping matrix must have exactly 9 elements");
+    }
+    if (info.lut_order == 0) {
+      if (!info.lut.empty()) {
+        return malformed("GB/T 48347 mapping lut_order 0 requires an empty LUT");
+      }
+    }
+    else {
+      const uint64_t n = info.lut_order;
+      if (static_cast<uint64_t>(info.lut.size()) != n * n * n) {
+        return malformed("GB/T 48347 mapping LUT size must equal lut_order cubed");
+      }
+    }
+  }
+
   StreamWriter writer;
   writer.write8(info.flag);
   if (info.flag != 0) {
@@ -323,6 +350,14 @@ ExtensionParseResult parse_extend_info_extension(std::span<const uint8_t> data)
     return result;
   }
 
+  // Table 15 defines exactly two size-prefixed blocks; unexplained trailing
+  // bytes within the extension are non-conformant.
+  if (reader.remaining() != 0) {
+    result.error = malformed("GB/T 48347 extend_info_extension has trailing bytes");
+    result.bytes_consumed = reader.position();
+    return result;
+  }
+
   result.status = ParseStatus::parsed;
   result.extension = std::move(extension);
   result.bytes_consumed = reader.position();
@@ -334,19 +369,32 @@ Result<std::vector<uint8_t>> serialize_extend_info_extension(
     const ExtendInfoExtension& extension)
 {
   StreamWriter writer;
-  auto write_block = [&](const MappingInfo& info, bool present) {
+  auto write_block = [&](const MappingInfo& info, bool present) -> Error {
     if (!present) {
       writer.write16(0);
-      return;
+      return Error::Ok;
     }
-    const auto block = serialize_mapping_block(info);
-    writer.write16(static_cast<uint16_t>(block.size()));
-    for (uint8_t b : block) {
+    auto block = serialize_mapping_block(info);
+    if (!block) {
+      return block.error();
+    }
+    // The size prefix is u(16); validate before the narrowing cast so a large
+    // LUT cannot produce a truncated, inconsistent length prefix.
+    if (block->size() > 0xFFFF) {
+      return malformed("GB/T 48347 mapping block exceeds the 16-bit size prefix");
+    }
+    writer.write16(static_cast<uint16_t>(block->size()));
+    for (uint8_t b : *block) {
       writer.write8(b);
     }
+    return Error::Ok;
   };
-  write_block(extension.base, extension.base_present);
-  write_block(extension.combined, extension.combined_present);
+  if (Error error = write_block(extension.base, extension.base_present)) {
+    return error;
+  }
+  if (Error error = write_block(extension.combined, extension.combined_present)) {
+    return error;
+  }
   return writer.get_data();
 }
 
