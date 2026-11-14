@@ -45,6 +45,8 @@ set(libheif_sources
         gain_map_metadata.h
         gbt48347.cc
         gbt48347.h
+        gbt48347_heif.cc
+        gbt48347_heif.h
         box.cc
         box.h
         error.cc
