@@ -37,6 +37,8 @@
 #include "test_utils.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -214,6 +216,12 @@ TEST_CASE("GB/T production writer + inspector round-trip a conformant DRE-AIG")
 {
   auto f = build_gbt_file(true, true);
   const auto encoded = write_ctx(f.ctx);
+  if (const char* dump = std::getenv("LIBHEIF_GBT_DUMP")) {
+    if (FILE* fp = std::fopen(dump, "wb")) {
+      std::fwrite(encoded.data(), 1, encoded.size(), fp);
+      std::fclose(fp);
+    }
+  }
   auto* read_ctx = reopen(encoded);
 
   auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
