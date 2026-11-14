@@ -85,6 +85,38 @@
     "abi": "no change; 469 declared symbols all defined",
     "pushed_round_2": false
   },
+  "round_3": {
+    "start_head": "0270817fb9eecc63b5472ed35e3a78102961f6ac",
+    "final_head": "fa66cfd382ab7232161004d0d806218d057e8b28",
+    "remote_head_verified_at_start": "0270817fb9eecc63b5472ed35e3a78102961f6ac",
+    "commits": [
+      {"sha": "c25016fa", "subject": "Return heif_error_success from heif_track_decode_next_image success path"},
+      {"sha": "22981687", "subject": "Verify GB/T HEIF re-read decode against independent pixels"},
+      {"sha": "5621efbc", "subject": "Strictly validate GB/T mapping metadata serialization"},
+      {"sha": "d80bc75b", "subject": "Clarify and test GB/T irot consistency semantics"},
+      {"sha": "cf28f410", "subject": "Run gain-map, CIFuzz and GB/T checks on the evaluation branch"},
+      {"sha": "fa66cfd3", "subject": "Record round-3 independent review and test results"}
+    ],
+    "fixes": [
+      {"id": "reread_decode", "root_cause": "test decoded write-context handle f.tmap, not the re-read file", "fix_commit": "22981687", "evidence": "fresh read_ctx handles, write ctx destroyed before decode, independent sRGB-EOTF x Formula(2) pixel oracle; 11 cases / 193 assertions"},
+      {"id": "mapping_serialization", "root_cause": "u16 length truncation without overflow check; no flag/matrix/LUT validation; trailing bytes accepted", "fix_commit": "5621efbc", "fail_before": "6 negative cases / 7 assertions fail pre-fix", "pass_after": "113 assertions / 22 cases"},
+      {"id": "irot", "root_cause": "none - logic correct per GB/T 9.3.2d irot defaults 0; clarified + tested", "fix_commit": "d80bc75b"},
+      {"id": "heif_error_contract", "root_cause": "success path return {} left message null, violating heif_error.h:299", "fix_commit": "c25016fa", "judgment": "keep PR #4 production fix; round-2 INFO guard symptom-only", "fail_before": "REQUIRE(message != nullptr) fails with {}", "pass_after": "1683 assertions / 8 cases"}
+    ],
+    "gbt46269_present": true,
+    "gbt46269_note": "PDF exists (67pp), read via rendered images; round-2 'missing' corrected. §7 metadata=category A; §8/§9 display adaptation=category C (application/display). u16 vs u32 luminance = different carriers.",
+    "ci": {
+      "trigger_fix": "gain-map + tmap-CIFuzz now trigger on eval branch; new eval-only gbt-eval.yml",
+      "gbt_eval_run": {"id": 43614441498, "sha": "fa66cfd3", "conclusion": "success", "steps": "build ASan/UBSan + GB/T ctest + independent structure check all success"},
+      "gcc_versions_run": {"id": 43614441481, "conclusion": "success"},
+      "gain_map_run": {"id": 43614441615, "status": "see round3-ci.md"},
+      "cifuzz_run": {"id": 43614441503, "status": "see round3-ci.md"},
+      "sync_schedule": "last run 2026-11-06T21:37Z; previously throttled ~8h; exists on master; exact disable reason not inferable (API network resets); scheduler outside local control"
+    },
+    "full_ctest": "134/134 pass, 0 failed, 8 skipped",
+    "pushed_round_3": true,
+    "push_type": "fast-forward 0270817f..fa66cfd3, non-force"
+  },
   "token_usage": {
     "qwen_real_tokens": null,
     "note": "No tool in this environment exposes real token usage; not estimated. Left null per instruction not to fabricate measured values."
