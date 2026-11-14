@@ -31,6 +31,9 @@
 #include "catch_amalgamated.hpp"
 #include "gbt48347_heif.h"
 #include "api_structs.h"
+#include "context.h"
+#include "box.h"
+#include "image-items/image_item.h"
 #include "libheif/heif.h"
 #include "libheif/heif_experimental.h"
 #include "libheif/heif_items.h"
@@ -182,6 +185,16 @@ bool corrupt_dimg_second_target(std::vector<uint8_t>& bytes, heif_item_id tmap_i
     }
   }
   return false;
+}
+
+// Associate an explicit irot property with an item (internal writer API).
+void set_item_irot(heif_context* ctx, heif_item_id id, int angle)
+{
+  auto item = ctx->context->get_image(id, true);
+  REQUIRE(item);
+  auto irot = std::make_shared<Box_irot>();
+  irot->set_rotation_ccw(angle);
+  REQUIRE(item->add_property(irot, true) != 0);
 }
 
 const heif_color_profile_nclx kBase = nclx(heif_color_primaries_ITU_R_BT_709_5,
@@ -406,4 +419,58 @@ TEST_CASE("GB/T it35 writer requires an existing tmap")
   heif_image_handle_release(base);
   heif_encoder_release(enc);
   heif_context_free(ctx);
+}
+
+// --- Round-3 irot consistency (GB/T 9.3.2d "irot默认为0", 9.3.3c/9.3.4c) ---
+
+TEST_CASE("GB/T irot: missing properties default to 0 and are consistent")
+{
+  // No irot on any item: GB/T 9.3.2d defaults irot to 0, so all match.
+  auto f = build_gbt_file(true, true);
+  const auto encoded = write_ctx(f.ctx);
+  auto* read_ctx = reopen(encoded);
+  auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
+  REQUIRE(aig);  // missing irot == 0 on base/gain/tmap is conformant
+  heif_context_free(read_ctx);
+  free_built(f);
+}
+
+TEST_CASE("GB/T irot: explicit matching rotation on base/gain/tmap is accepted")
+{
+  auto f = build_gbt_file(true, true);
+  set_item_irot(f.ctx, heif_image_handle_get_item_id(f.base), 90);
+  set_item_irot(f.ctx, heif_image_handle_get_item_id(f.gain), 90);
+  set_item_irot(f.ctx, heif_image_handle_get_item_id(f.tmap), 90);
+  const auto encoded = write_ctx(f.ctx);
+  auto* read_ctx = reopen(encoded);
+  auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
+  REQUIRE(aig);  // all three explicitly 90 -> consistent
+  heif_context_free(read_ctx);
+  free_built(f);
+}
+
+TEST_CASE("GB/T irot: explicit zero is equivalent to missing (default 0)")
+{
+  auto f = build_gbt_file(true, true);
+  set_item_irot(f.ctx, heif_image_handle_get_item_id(f.base), 0);
+  // gain/tmap have no irot (default 0); base explicit 0 must still match.
+  const auto encoded = write_ctx(f.ctx);
+  auto* read_ctx = reopen(encoded);
+  auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
+  REQUIRE(aig);
+  heif_context_free(read_ctx);
+  free_built(f);
+}
+
+TEST_CASE("GB/T irot: mismatched rotation between base and gain is rejected")
+{
+  auto f = build_gbt_file(true, true);
+  set_item_irot(f.ctx, heif_image_handle_get_item_id(f.base), 90);
+  // gain/tmap remain default 0 -> base 90 != gain 0 -> non-conformant.
+  const auto encoded = write_ctx(f.ctx);
+  auto* read_ctx = reopen(encoded);
+  auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
+  CHECK_FALSE(aig);
+  heif_context_free(read_ctx);
+  free_built(f);
 }

@@ -38,7 +38,11 @@ Error gbt_invalid(const char* message)
   return {heif_error_Invalid_input, heif_suberror_Unspecified, message};
 }
 
-// Effective irot angle (0 when no irot property is associated).
+// Effective irot angle. GB/T 48347-2026 9.3.2d states "irot默认为0" (irot defaults
+// to 0), so a missing irot property is equivalent to an explicit 0-degree irot.
+// 9.3.3c / 9.3.4c require the gain and tmap irot value to match the base; this is
+// an angle-consistency check, not a property-existence requirement. imir/clap are
+// not constrained by GB/T 9.3 and are intentionally not compared here.
 Result<int> item_rotation(HeifContext& ctx, heif_item_id id)
 {
   auto item = ctx.get_image(id, true);
