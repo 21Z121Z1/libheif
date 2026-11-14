@@ -145,6 +145,46 @@ class SyncTests(unittest.TestCase):
             SYNC.publish(self.publisher, self.output)
         self.assertEqual(before, self.refs())
 
+    def test_non_fast_forward_candidate_is_rejected(self):
+        # The manifest and bundle agree, but the ISO candidate is built on the
+        # baseline line instead of descending from the maintained ISO head.
+        # Publication must refuse a non-fast-forward even when refs match.
+        self.advance_upstream()
+        result = self.prepare()
+        run("-C", self.work, "checkout", "--detach", result["base_before"])
+        (self.work / "divergent.txt").write_text("not descended from ISO\n")
+        run("-C", self.work, "add", "divergent.txt")
+        run("-C", self.work, "commit", "-m", "divergent candidate")
+        divergent = run("-C", self.work, "rev-parse", "HEAD")
+        run("-C", self.work, "update-ref", SYNC.ISO_REF, divergent)
+        run("-C", self.work, "bundle", "create", self.output / "source.bundle",
+            SYNC.BASE_REF, SYNC.ISO_REF)
+        result["iso_after"] = divergent
+        (self.output / "manifest.json").write_text(json.dumps(result))
+        before = self.refs()
+        with self.assertRaises(subprocess.CalledProcessError):
+            SYNC.publish(self.publisher, self.output)
+        self.assertEqual(before, self.refs())
+
+    def test_publish_requires_all_validation_gates(self):
+        # Regression guard against weakening the gate: the publish job must
+        # depend on every validation job and must not run via always()/failure
+        # bypass, and no gate may be marked continue-on-error.
+        import yaml
+        workflow = yaml.safe_load(
+            (Path(__file__).resolve().parent.parent /
+             ".github" / "workflows" / "sync-iso-upstream.yml").read_text())
+        jobs = workflow["jobs"]
+        publish = jobs["publish"]
+        self.assertEqual(set(publish["needs"]),
+                         {"prepare", "gain-map", "core-tests", "source-checks"})
+        self.assertNotIn("always()", publish.get("if", ""))
+        self.assertNotIn("failure()", publish.get("if", ""))
+        for name in ("gain-map", "core-tests", "source-checks"):
+            self.assertNotIn("continue-on-error", jobs[name])
+            for step in jobs[name].get("steps", []):
+                self.assertNotIn("continue-on-error", step)
+
 
 if __name__ == "__main__":
     unittest.main()
