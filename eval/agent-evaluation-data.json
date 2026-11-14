@@ -1,0 +1,89 @@
+{
+  "schema_note": "Honest record of this evaluation run. Fields that are not instrumented in this environment are null (never fabricated). Precise token usage and exact tool-call counts are not available to the agent and are therefore null.",
+  "agent": {
+    "platform": "Qoder CN desktop agent",
+    "underlying_model": null,
+    "underlying_model_note": "Not disclosed per agent policy; not instrumented here."
+  },
+  "evaluation": {
+    "date_utc": "2026-11-14",
+    "start_utc_approx": "2026-11-14T11:37:00Z",
+    "end_utc_approx": "2026-11-14T12:49:00Z",
+    "wall_clock_minutes_approx": 72,
+    "timing_note": "Approximate from session timestamps; per-step timing not instrumented."
+  },
+  "inputs": {
+    "fork": "21Z121Z1/libheif",
+    "upstream": "strukturag/libheif",
+    "iso_branch": "iso21496-gain-map-metadata-core",
+    "evaluation_branch": "eval/gbt48347-iso-audit-20261114",
+    "base_sha": "ef2c7d850612740530699a15c9496fdefc63c230",
+    "fork_master_sha": "3da8ba28db7ce9bb00f3a4c8a05d10b48bc89117",
+    "upstream_master_sha": "12a259a5882dd99d45ec5fc77e296a3b620d1e2e",
+    "standards_references_local_only": [
+      "ISO 21496-1 2025.pdf",
+      "ISO IEC 23008-12 2025.pdf",
+      "ISO IEC 23008-12 2025 Amd 1 2025.pdf",
+      "GBT+48347-2026.pdf",
+      "GBT+46269.1-2025.pdf",
+      "GB_T_48347_2026_符合性审计清单.md",
+      "ISO_21496-1_2025.md",
+      "ISO_IEC_23008-12_2025.md",
+      "ISO_IEC_23008-12_2025_Amd_1.md",
+      "hdr_dual_layer_gbt48347_2026.md (reading version)"
+    ],
+    "standards_text_committed": false
+  },
+  "usage_metrics": {
+    "token_usage": null,
+    "exact_tool_call_count": null,
+    "note": "Not instrumented; command-level evidence is in eval/test-results.md."
+  },
+  "tasks": [
+    {"id": 1, "name": "baseline + isolated worktree + docs + baseline tests", "result": "complete", "evidence": "eval/initial-state.md"},
+    {"id": 2, "name": "upstream sync verification", "result": "complete", "finding": "upstream fully merged -> no-op; validate_current exercised; 9 fixture tests pass; 2 regression tests added", "evidence": "eval/upstream-sync.md"},
+    {"id": 3, "name": "ISO conformance matrix", "result": "complete", "evidence": "eval/conformance-matrix.md"},
+    {"id": 4, "name": "independent binary/numeric oracles", "result": "complete", "evidence": "Google raw 16432; Apple PASS; LCMS 28529; Google container 884872 (max err 0.0015862)"},
+    {"id": 5, "name": "GB/T 48347 HEIF increment", "result": "partial", "implemented": "UWAInfo + ExtendInfoExtension parse/serialize; HEIF it35 integration; graph + HDR/SDR numeric tests", "open": "JPEG container; mapping pixel application; GB/T 46269.1 display adaptation", "evidence": "eval/gbt48347-conformance-matrix.md, eval/gbt48347-interop.md, eval/standards-differences.md"},
+    {"id": 6, "name": "full validation + deliverables + diff review", "result": "complete", "evidence": "eval/test-results.md"}
+  ],
+  "errors_and_retries": [
+    {"issue": "uncompressed_encode_multicomponent Not Run in first baseline ctest", "cause": "build target not yet built", "resolution": "built target; 9/9 pass", "category": "build omission"},
+    {"issue": "stock ultrahdr_app failed to load libx265.212.dylib", "cause": "stale prebuilt binary; x265 upgraded to 217; old build dir referenced removed CMake 3.30.3", "resolution": "fresh ultrahdr_app built from pinned 66821e0a source", "category": "environment"},
+    {"issue": "GB/T numeric oracle first attempt mismatched (float32 API + standalone base decode)", "cause": "float32 headroom semantics and standalone-base requested-linear path differ from tmap input path", "resolution": "switched to proven heif_decode_image + requested-linear pattern; HDR matches independent sRGB-EOTF x Formula(2) oracle to 1e-4; SDR uses native decode", "category": "test iteration"},
+    {"issue": "GB/T HEIF test gain not hidden", "cause": "encode_image creates visible item; GB/T 9.3.3a requires hidden enhancement", "resolution": "heif_item_set_item_hidden on gain", "category": "test setup"},
+    {"issue": "cpplint build/include_what_you_use on gbt48347.cc", "cause": "missing <utility> for std::move", "resolution": "added include; 0 errors", "category": "lint fix"},
+    {"issue": "test compile errors (out.end vs out->end; heif_item_free_item_data name)", "cause": "typos / wrong API name", "resolution": "fixed to out->end and heif_release_item_data", "category": "compile fix"}
+  ],
+  "pre_existing_defects_found": [
+    {"test": "sequence_no_decoder_output", "case": "decoder latency may exceed the length of the repeated segment", "symptom": "SIGSEGV (strlen NULL) via Catch2 INFO at tests/sequence_no_decoder_output.cc:390", "reproduced_on_pristine_base": true, "base_sha": "ef2c7d850612740530699a15c9496fdefc63c230", "related_to_increment": false, "root_cause": "TEST bug, not a library defect: Catch2 INFO eagerly stringifies err.message, which is nullptr on success; library decodes all 200 frames correctly (guard-only repro passes 404 assertions, ASan clean)", "disposition": "FIXED (test-only): guarded null message at lines 300 and 390 per repo convention; full suite now 133/133"}
+  ],
+  "results": {
+    "iso_regression": "no regression; full gain-map/tmap/entity suite passes",
+    "full_ctest": "133/133 pass, 0 failed, 8 skipped (after fixing pre-existing test null-message INFO bug)",
+    "gbt_new_tests": "gbt48347_metadata 90/15 pass; gbt48347_heif 57/3 pass",
+    "sanitizers": "ASan/UBSan pass on GB/T + key ISO tests (macOS LSan unavailable)",
+    "abi": "no change; 469 declared symbols all defined; C headers 112 compilations",
+    "lint": "cpplint 0 errors; clang-tidy no diagnostics on gbt48347.cc",
+    "ci": "no new Actions run (push unauthorized); latest published exact-SHA evidence E7/E10"
+  },
+  "key_log_paths": {
+    "build_main": "build-eval/",
+    "build_asan": "build-eval-asan/",
+    "ultrahdr_oracle": "build-eval/ultrahdr-heif/",
+    "synthetic_fixtures": "build-eval/synthetic/",
+    "google_exchange": "build-eval/google-exchange/",
+    "ctest_log": "build-eval/Testing/Temporary/LastTest.log",
+    "sync_fixture": "/tmp/iso-sync-real-fixture/ (disposable, local only)"
+  },
+  "authorization_boundaries_honored": {
+    "pushed": false,
+    "pr_created": false,
+    "merged_to_maintained_branch": false,
+    "history_rewritten": false,
+    "force_push": false,
+    "permissions_changed": false,
+    "standards_full_text_committed": false,
+    "secrets_committed": false
+  }
+}
