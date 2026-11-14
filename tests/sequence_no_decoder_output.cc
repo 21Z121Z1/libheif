@@ -297,7 +297,7 @@ TEST_CASE("repeated samples without decoder output are not pushed endlessly")
 
   heif_image* img = nullptr;
   err = heif_track_decode_next_image(track, &img, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
-  INFO("error: " << err.message << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
+  INFO("error: " << (err.message ? err.message : "(null)") << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
   REQUIRE(err.code == heif_error_Invalid_input);
   REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
   REQUIRE(img == nullptr);
@@ -387,7 +387,7 @@ TEST_CASE("decoder latency may exceed the length of the repeated segment")
   for (int i = 0; i < 200; i++) {
     heif_image* img = nullptr;
     err = heif_track_decode_next_image(track, &img, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
-    INFO("error: " << err.message << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
+    INFO("error: " << (err.message ? err.message : "(null)") << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
     REQUIRE(err.code == heif_error_Ok);
     REQUIRE(img != nullptr);
     heif_image_release(img);
