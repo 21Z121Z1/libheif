@@ -399,11 +399,11 @@ UWAInfoParseResult parse_uwa_info(std::span<const uint8_t> data)
       result.bytes_consumed = reader.position();
       return result;
     }
-    // metadata_size is a redundant total whose exact scope is ambiguous in the
-    // text. Accept either reading (payloads only, or payloads + size fields)
-    // and reject only values outside that inclusive range.
+    // GB/T 48347-2026 9.2.3a: metadata_size is "the total length of dynamic and
+    // static metadata" = static_metadata_size + dynamic_metadata_size (payloads
+    // only, excluding the two 16-bit size fields). It is a single discrete value.
     const size_t payloads = size_t(static_size) + dynamic_size;
-    if (info.metadata_size < payloads || info.metadata_size > payloads + 4) {
+    if (info.metadata_size != payloads) {
       result.error = malformed("GB/T 48347 UWAInfo metadata_size does not match payloads");
       result.bytes_consumed = reader.position();
       return result;
@@ -460,8 +460,10 @@ Result<std::vector<uint8_t>> serialize_uwa_info(const UWAInfo& info)
   writer.write32(info.extended_type);
 
   if (info.metadata_present) {
+    // metadata_size = static + dynamic payload lengths (9.2.3a), excluding the
+    // two 16-bit size fields.
     const size_t metadata_size =
-        2 + info.static_metadata.size() + 2 + info.dynamic_metadata.size();
+        info.static_metadata.size() + info.dynamic_metadata.size();
     if (metadata_size > 0xFFFF || info.static_metadata.size() > 0xFFFF ||
         info.dynamic_metadata.size() > 0xFFFF) {
       return malformed("GB/T 48347 UWAInfo metadata block too large");

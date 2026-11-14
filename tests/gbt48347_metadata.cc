@@ -106,7 +106,7 @@ TEST_CASE("GB/T UWAInfo static and dynamic metadata golden vector")
 {
   // meta_type=1, enhance_type=0. static={AA,BB}, dynamic={CC}.
   auto golden = header(2, 0x02010000);
-  append(golden, bytes({0x00, 0x07,        // metadata_size = 2+2+2+1
+  append(golden, bytes({0x00, 0x03,        // metadata_size = static(2)+dynamic(1)
                         0x00, 0x02, 0xAA, 0xBB,
                         0x00, 0x01, 0xCC}));
 
@@ -151,17 +151,21 @@ TEST_CASE("GB/T UWAInfo every truncated header prefix is rejected")
 }
 
 
-TEST_CASE("GB/T UWAInfo metadata_size out of range is rejected")
+TEST_CASE("GB/T UWAInfo metadata_size exact match with a larger payload")
 {
-  // payloads = 2 + 1 = 3; accepted metadata_size in [3,7]. 8 is out of range.
-  auto golden = header(2, 0x02010000);
-  append(golden, bytes({0x00, 0x08, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x01, 0xCC}));
-  CHECK(gbt48347::parse_uwa_info(golden).status == ParseStatus::malformed);
-
-  // The alternate reading (payloads only = 3) is accepted.
-  auto alt = header(2, 0x02010000);
-  append(alt, bytes({0x00, 0x03, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x01, 0xCC}));
-  CHECK(gbt48347::parse_uwa_info(alt).status == ParseStatus::parsed);
+  // static={1,2,3} (3), dynamic={4,5} (2) -> payloads = 5.
+  auto with_size = [](uint16_t metadata_size) {
+    auto v = header(2, 0x02010000);
+    append(v, bytes({static_cast<uint8_t>(metadata_size >> 8),
+                     static_cast<uint8_t>(metadata_size & 0xFF),
+                     0x00, 0x03, 0x01, 0x02, 0x03, 0x00, 0x02, 0x04, 0x05}));
+    return v;
+  };
+  CHECK(gbt48347::parse_uwa_info(with_size(5)).status == ParseStatus::parsed);
+  CHECK(gbt48347::parse_uwa_info(with_size(4)).status == ParseStatus::malformed);
+  CHECK(gbt48347::parse_uwa_info(with_size(6)).status == ParseStatus::malformed);
+  // The old "payloads + 4" framing value (9) is non-conformant and rejected.
+  CHECK(gbt48347::parse_uwa_info(with_size(9)).status == ParseStatus::malformed);
 }
 
 
@@ -169,8 +173,46 @@ TEST_CASE("GB/T UWAInfo truncated metadata payload is rejected")
 {
   // static_size claims 4 bytes but only 2 follow.
   auto golden = header(2, 0x02010000);
-  append(golden, bytes({0x00, 0x07, 0x00, 0x04, 0xAA, 0xBB}));
+  append(golden, bytes({0x00, 0x03, 0x00, 0x04, 0xAA, 0xBB}));
   CHECK(gbt48347::parse_uwa_info(golden).status == ParseStatus::malformed);
+}
+
+
+// GB/T 48347-2026 clause 9.2.3a (PDF p30): metadata_size is "the total length of
+// dynamic and static metadata", i.e. static_metadata_size + dynamic_metadata_size
+// (the payloads only, NOT including the two 16-bit size fields). It is therefore a
+// single discrete value, not a range. Every adjacent value must be rejected.
+TEST_CASE("GB/T UWAInfo metadata_size must equal the payload total exactly")
+{
+  // static={AA,BB} (2), dynamic={CC} (1) -> payloads = 3.
+  auto with_size = [](uint16_t metadata_size) {
+    auto v = header(2, 0x02010000);
+    append(v, bytes({static_cast<uint8_t>(metadata_size >> 8),
+                     static_cast<uint8_t>(metadata_size & 0xFF),
+                     0x00, 0x02, 0xAA, 0xBB, 0x00, 0x01, 0xCC}));
+    return v;
+  };
+
+  // The only conformant value is payloads = 3.
+  CHECK(gbt48347::parse_uwa_info(with_size(3)).status == ParseStatus::parsed);
+
+  // Adjacent illegal values (below and above) must all be rejected.
+  for (uint16_t bad : {uint16_t{2}, uint16_t{4}, uint16_t{5}, uint16_t{6}, uint16_t{7}}) {
+    INFO("metadata_size=" << bad);
+    CHECK(gbt48347::parse_uwa_info(with_size(bad)).status == ParseStatus::malformed);
+  }
+
+  // The serializer must emit the conformant metadata_size = payloads (3), not
+  // payloads + 4. Round-trip the conformant vector and check the wire bytes.
+  auto parsed = gbt48347::parse_uwa_info(with_size(3));
+  REQUIRE(parsed.status == ParseStatus::parsed);
+  auto serialized = gbt48347::serialize_uwa_info(*parsed.info);
+  REQUIRE(serialized);
+  CHECK(*serialized == with_size(3));
+  // metadata_size occupies bytes [10..11] after the 10-byte UWAInfo header.
+  REQUIRE(serialized->size() > 12);
+  CHECK((*serialized)[10] == 0x00);
+  CHECK((*serialized)[11] == 0x03);
 }
 
 

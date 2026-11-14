@@ -107,9 +107,9 @@ struct UWAInfo
   uint32_t extended_type = kExtendedTypeEnhance;
 
   bool metadata_present = false;   // meta_type == 1
-  // Redundant total from the wire. Its exact scope (whether it includes the two
-  // 16-bit size fields) is not pinned down by the text, so it is recorded and
-  // only bounds-checked, never used to locate the payloads.
+  // GB/T 48347-2026 9.2.3a: total length of dynamic and static metadata =
+  // static_metadata_size + dynamic_metadata_size (payloads only, excluding the
+  // two 16-bit size fields). Validated as an exact equality on parse.
   uint16_t metadata_size = 0;
   std::vector<uint8_t> static_metadata;
   std::vector<uint8_t> dynamic_metadata;
