@@ -30,6 +30,14 @@ elif [ -z "$WORK" ]; then
 	exit 1
 fi
 
+# Record the source actually compiled inside the OSS-Fuzz project container.
+# A fork's CI supplies the expected head; a mismatch must stop the build.
+LIBHEIF_FUZZ_SOURCE_HEAD="$(git -c safe.directory="$SRC/libheif" -C "$SRC/libheif" rev-parse HEAD)"
+if [ -f "$SRC/libheif/.cifuzz-expected-head" ]; then
+	test "$LIBHEIF_FUZZ_SOURCE_HEAD" = "$(cat "$SRC/libheif/.cifuzz-expected-head")"
+fi
+echo "libheif fuzz source: $LIBHEIF_FUZZ_SOURCE_HEAD"
+
 # Install build dependencies.
 
 apt-get update
@@ -367,6 +375,26 @@ PKG_CONFIG="pkg-config --static" PKG_CONFIG_PATH="$DEPS_PATH/lib/pkgconfig:$DEPS
 make -j"$(nproc)"
 
 cp fuzzing/*_fuzzer "$OUT"
+test -x "$OUT/gain_map_fuzzer"
+printf '%s\n' "$LIBHEIF_FUZZ_SOURCE_HEAD" > "$OUT/libheif-source-head.txt"
+# This fork's new target has no public OSS-Fuzz corpus yet. Include valid
+# mono/RGB Annex C and ToneMapImage seeds so reconstruction math is reached.
+LIBHEIF_FUZZ_SEED_DIR="$WORK/gain-map-seeds"
+mkdir -p "$LIBHEIF_FUZZ_SEED_DIR"
+python3 - "$LIBHEIF_FUZZ_SEED_DIR" <<'PY'
+import pathlib
+import struct
+import sys
+
+corpus = pathlib.Path(sys.argv[1])
+for channels in (1, 3):
+    channel = struct.pack('>iIiIIIiIiI', -1, 2, 3, 2, 1, 1, -1, 64, 1, 32)
+    metadata = struct.pack('>HHBIIII', 0, 0, 0x40 | (0x80 if channels == 3 else 0), 0, 1, 3, 1)
+    metadata += channel * channels
+    (corpus / f'annex-c-{channels}').write_bytes(metadata)
+    (corpus / f'tmap-{channels}').write_bytes(b'\0' + metadata)
+PY
+zip -j "$OUT/gain_map_fuzzer_seed_corpus.zip" "$LIBHEIF_FUZZ_SEED_DIR"/*
 cp ../fuzzing/data/dictionary.txt "$OUT/box-fuzzer.dict"
 cp ../fuzzing/data/dictionary.txt "$OUT/file-fuzzer.dict"
 

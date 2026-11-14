@@ -189,7 +189,10 @@ typedef enum heif_matrix_coefficients
   heif_matrix_coefficients_SMPTE_ST_2085 = 11,
   heif_matrix_coefficients_chromaticity_derived_non_constant_luminance = 12,
   heif_matrix_coefficients_chromaticity_derived_constant_luminance = 13,
-  heif_matrix_coefficients_ICtCp = 14
+  heif_matrix_coefficients_ICtCp = 14,
+  heif_matrix_coefficients_IPT_C2 = 15,
+  heif_matrix_coefficients_YCgCo_Re = 16,
+  heif_matrix_coefficients_YCgCo_Ro = 17
 } heif_matrix_coefficients;
 
 typedef struct heif_color_profile_nclx

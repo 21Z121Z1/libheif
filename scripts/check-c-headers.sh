@@ -98,14 +98,20 @@ for header_path in "$TMP"/libheif/*.h; do
         echo "int main(void) { return 0; }"
     } > "$src"
 
+    DEFINES=("")
+    if [ "$header" = "heif_experimental.h" ]; then
+        DEFINES+=("-DHEIF_ENABLE_EXPERIMENTAL_FEATURES=1")
+    fi
     for cc in "${COMPILERS[@]}"; do
         for std in $C_STANDARDS; do
-            checked=$((checked + 1))
-            if ! err=$("$cc" -std="$std" $WARN_FLAGS -I"$TMP" -c "$src" -o /dev/null 2>&1); then
-                echo "FAIL: $header is not valid C ($cc -std=$std)"
-                echo "$err" | sed 's/^/    /'
-                failures=$((failures + 1))
-            fi
+            for define in "${DEFINES[@]}"; do
+                checked=$((checked + 1))
+                if ! err=$("$cc" -std="$std" $WARN_FLAGS $define -I"$TMP" -c "$src" -o /dev/null 2>&1); then
+                    echo "FAIL: $header is not valid C ($cc -std=$std $define)"
+                    echo "$err" | sed 's/^/    /'
+                    failures=$((failures + 1))
+                fi
+            done
         done
     done
 done

@@ -50,6 +50,67 @@ TEST_CASE("check have uncompressed")
   heif_context_free(ctx);
 }
 
+TEST_CASE("Wide subsampled tiles cannot exceed the decoded component grid")
+{
+  const int bits = GENERATE(17, 32);
+  const auto create = [&](uint32_t side) {
+    heif_image* image = nullptr;
+    REQUIRE(heif_image_create(static_cast<int>(side), static_cast<int>(side),
+        heif_colorspace_YCbCr, heif_chroma_420, &image).code == heif_error_Ok);
+    for (uint16_t c = 0; c < 3; ++c) {
+      const uint32_t size = c == 0 ? side : (side + 1) / 2;
+      uint32_t id = 0;
+      REQUIRE(heif_image_add_component(image, size, size,
+          static_cast<heif_cmpd_component_type>(heif_cmpd_component_type_Y + c),
+          heif_component_datatype_unsigned_integer, bits, &id).code == heif_error_Ok);
+      size_t stride = 0;
+      auto* plane = heif_image_get_component_uint32(image, id, &stride);
+      REQUIRE(plane);
+      for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) { plane[y * stride + x] = 1; }
+      }
+    }
+    return image;
+  };
+  auto* ctx = heif_context_alloc();
+  auto* prototype = create(6);
+  auto* tile = create(3);
+  heif_unci_image_parameters parameters{};
+  parameters.version = 1;
+  parameters.image_width = parameters.image_height = 6;
+  parameters.tile_width = parameters.tile_height = 3;
+  parameters.compression = heif_unci_compression_off;
+  heif_image_handle* handle = nullptr;
+  REQUIRE(heif_context_add_empty_unci_image(ctx, &parameters, nullptr, prototype, &handle).code == heif_error_Ok);
+  heif_encoder* encoder = nullptr;
+  REQUIRE(heif_context_get_encoder_for_format(ctx, heif_compression_uncompressed, &encoder).code == heif_error_Ok);
+  for (uint32_t y = 0; y < 2; ++y) {
+    for (uint32_t x = 0; x < 2; ++x) {
+      REQUIRE(heif_context_add_image_tile(ctx, handle, x, y, tile, encoder).code == heif_error_Ok);
+    }
+  }
+  const auto path = get_tests_output_file_path(bits == 17 ? "wide_odd_tiles_17.heif" : "wide_odd_tiles_32.heif");
+  REQUIRE(heif_context_write_to_file(ctx, path.c_str()).code == heif_error_Ok);
+  auto* read = heif_context_alloc();
+  REQUIRE(heif_context_read_from_file(read, path.c_str(), nullptr).code == heif_error_Ok);
+  auto* decoded_handle = get_primary_image_handle(read);
+  heif_image* output = nullptr;
+  // Two ceil-sized 2x2 chroma tiles cannot fit the full image's 3x3 chroma plane.
+  const auto error = heif_decode_image(decoded_handle, &output, heif_colorspace_undefined,
+                                        heif_chroma_undefined, nullptr);
+  INFO(error.message);
+  REQUIRE(error.code == heif_error_Invalid_input);
+  REQUIRE(error.subcode == heif_suberror_Invalid_image_size);
+  heif_image_release(output);
+  heif_image_handle_release(decoded_handle);
+  heif_context_free(read);
+  heif_image_handle_release(handle);
+  heif_encoder_release(encoder);
+  heif_image_release(tile);
+  heif_image_release(prototype);
+  heif_context_free(ctx);
+}
+
 
 heif_image *createImage_Mono()
 {

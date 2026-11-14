@@ -118,6 +118,9 @@ public:
 
   bool is_image(heif_item_id ID) const;
 
+  Error set_item_hidden(heif_item_id id, bool hidden);
+  Error validate_item_visibility(heif_item_id id, bool hidden) const;
+
   bool has_alpha(heif_item_id ID) const;
 
   Result<std::shared_ptr<HeifPixelImage>> decode_image(heif_item_id ID,
@@ -125,7 +128,10 @@ public:
                                                        heif_chroma out_chroma,
                                                        const heif_decoding_options& options,
                                                        bool decode_only_tile, uint32_t tx, uint32_t ty,
-                                                       std::set<heif_item_id> processed_ids) const;
+                                                       std::set<heif_item_id> processed_ids,
+                                                       std::optional<double> root_tmap_target_headroom = std::nullopt,
+                                                       bool tmap_output_float = false,
+                                                       bool centered_gain_samples = false) const;
 
   Result<std::shared_ptr<HeifPixelImage>> convert_to_output_colorspace(std::shared_ptr<HeifPixelImage> img,
                                                                        heif_colorspace out_colorspace,

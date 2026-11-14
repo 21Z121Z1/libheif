@@ -20,6 +20,7 @@
 
 #include "libheif/heif.h"
 #include "libheif/heif_plugin.h"
+#include "libheif/heif_properties.h"
 #include "decoder_aom.h"
 #include <memory>
 #include <cstring>
@@ -260,6 +261,11 @@ static heif_error get_next_image_from_decoder(aom_decoder* decoder,
   HEIF_WARN_OR_FAIL(decoder->strict_decoding, heif_img, heif_nclx_color_profile_set_matrix_coefficients(&nclx, static_cast<uint16_t>(img->mc)), { heif_image_release(heif_img); });
   nclx.full_range_flag = (img->range == AOM_CR_FULL_RANGE);
   heif_image_set_nclx_color_profile(heif_img, &nclx);
+
+  if (chroma == heif_chroma_420) {
+    if (img->csp == AOM_CSP_VERTICAL) { heif_image_set_chroma_location(heif_img, 0); }
+    else if (img->csp == AOM_CSP_COLOCATED) { heif_image_set_chroma_location(heif_img, 2); }
+  }
 
 
   // --- transfer data from aom_image_t to HeifPixelImage
