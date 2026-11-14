@@ -1,0 +1,45 @@
+From 0494f833c3b7e7b8c147ac564b241053a99e09d9 Mon Sep 17 00:00:00 2001
+From: 21Z121Z1 <89170834+21Z121Z1@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 21:40:17 +0800
+Subject: [PATCH] Fix null error message crash in sequence_no_decoder_output
+ INFO
+
+Catch2 builds an INFO message eagerly: the MessageBuilder operator<< runs
+std::ostream << err.message at the INFO statement, calling strlen on it for
+every iteration regardless of whether an assertion fails. On the success
+path heif_error.message is nullptr, so the "decoder latency may exceed the
+length of the repeated segment" case crashed with SIGSEGV (strlen(NULL)).
+
+Guard the null message at both INFO sites, matching the convention already
+used elsewhere in the test suite (e.g. tmap_write.cc). The library decode is
+correct: with the guard the case decodes all 200 frames and the full test
+passes under ASan/UBSan.
+---
+ tests/sequence_no_decoder_output.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/sequence_no_decoder_output.cc b/tests/sequence_no_decoder_output.cc
+index 55391975..79d820ae 100644
+--- a/tests/sequence_no_decoder_output.cc
++++ b/tests/sequence_no_decoder_output.cc
+@@ -297,7 +297,7 @@ TEST_CASE("repeated samples without decoder output are not pushed endlessly")
+ 
+   heif_image* img = nullptr;
+   err = heif_track_decode_next_image(track, &img, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+-  INFO("error: " << err.message << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
++  INFO("error: " << (err.message ? err.message : "(null)") << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
+   REQUIRE(err.code == heif_error_Invalid_input);
+   REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+   REQUIRE(img == nullptr);
+@@ -387,7 +387,7 @@ TEST_CASE("decoder latency may exceed the length of the repeated segment")
+   for (int i = 0; i < 200; i++) {
+     heif_image* img = nullptr;
+     err = heif_track_decode_next_image(track, &img, heif_colorspace_undefined, heif_chroma_undefined, nullptr);
+-    INFO("error: " << err.message << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
++    INFO("error: " << (err.message ? err.message : "(null)") << ", subcode: " << err.subcode << ", pushed: " << mock_num_pushed);
+     REQUIRE(err.code == heif_error_Ok);
+     REQUIRE(img != nullptr);
+     heif_image_release(img);
+-- 
+2.56.0
+

@@ -58,9 +58,40 @@
   "pre_existing_defects_found": [
     {"test": "sequence_no_decoder_output", "case": "decoder latency may exceed the length of the repeated segment", "symptom": "SIGSEGV (strlen NULL) via Catch2 INFO at tests/sequence_no_decoder_output.cc:390", "reproduced_on_pristine_base": true, "base_sha": "ef2c7d850612740530699a15c9496fdefc63c230", "related_to_increment": false, "root_cause": "TEST bug, not a library defect: Catch2 INFO eagerly stringifies err.message, which is nullptr on success; library decodes all 200 frames correctly (guard-only repro passes 404 assertions, ASan clean)", "disposition": "FIXED (test-only): guarded null message at lines 300 and 390 per repo convention; full suite now 133/133"}
   ],
+  "round_2": {
+    "start_head": "a3786f03998bc412c268a52cfdc1ebfdaa883081",
+    "final_head": "02e83f0947b8f7429256db02b21e3aac97736494",
+    "commits": [
+      {"sha": "f5013691", "subject": "Validate GB/T UWAInfo metadata_size as exact payload total"},
+      {"sha": "02e83f09", "subject": "Integrate GB/T 48347 DRE-AIG discovery and it35 writing into libheif"}
+    ],
+    "defects_found_and_fixed": [
+      {"id": "metadata_size", "root_cause": "GB/T 48347 9.2.3a (PDF p30): metadata_size = static+dynamic payload lengths (discrete). Round-1 parser accepted [payloads,payloads+4] and serializer wrote payloads+4.", "location": "libheif/gbt48347.cc parse_uwa_info / serialize_uwa_info", "fix_commit": "f5013691", "fail_before": "6 assertions failed (adjacent illegal values accepted; serializer 0x07 not 0x03)", "pass_after": "gbt48347_metadata 104 assertions / 16 cases pass"}
+    ],
+    "upstream_bug_second_pass": {
+      "pristine_upstream_sha": "12a259a5882dd99d45ec5fc77e296a3b620d1e2e",
+      "fail_before": "SIGSEGV on pristine upstream (5 assertions, 4 passed, 1 failed)",
+      "pass_after": "1483 assertions / 8 cases pass (normal + ASan/UBSan)",
+      "patch": "eval/0001-Fix-null-error-message-crash-in-sequence_no_decoder_.patch",
+      "pr_draft": "eval/upstream-pr-draft.md",
+      "submitted_upstream": false,
+      "necessity": "line 390 guard required (success null message); line 300 defensive (its error always has a message)"
+    },
+    "new_tests": {"gbt48347_heif_integration": "95 assertions / 6 cases (production read/write/inspect/validate/decode + negatives)"},
+    "independent_structure_check": "eval/verify_gbt_structure.py: items {base,gain,tmap,it35}, dimg from tmap count=2 to=[base,gain], tmap brand, base==pitm, idat -> OK",
+    "full_ctest": "134/134 pass, 0 failed, 8 skipped",
+    "oracles": {"google_raw": "16432/3 pass", "apple_consumer": "mono/rgb/ramp PASS", "google_container": "14 PASS", "tmap_interop": "909522 assertions / 3 cases, 0 skipped"},
+    "sync": "still no-op (upstream fully merged); 9 fixture tests OK; real-SHA validate_current no-op publish unchanged; no failure masking in run-ci.sh/workflow",
+    "abi": "no change; 469 declared symbols all defined",
+    "pushed_round_2": false
+  },
+  "token_usage": {
+    "qwen_real_tokens": null,
+    "note": "No tool in this environment exposes real token usage; not estimated. Left null per instruction not to fabricate measured values."
+  },
   "results": {
     "iso_regression": "no regression; full gain-map/tmap/entity suite passes",
-    "full_ctest": "133/133 pass, 0 failed, 8 skipped (after fixing pre-existing test null-message INFO bug)",
+    "full_ctest": "134/134 pass, 0 failed, 8 skipped (round 2; round 1 was 133/133)",
     "gbt_new_tests": "gbt48347_metadata 90/15 pass; gbt48347_heif 57/3 pass",
     "sanitizers": "ASan/UBSan pass on GB/T + key ISO tests (macOS LSan unavailable)",
     "abi": "no change; 469 declared symbols all defined; C headers 112 compilations",

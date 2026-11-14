@@ -83,3 +83,34 @@ step is an application responsibility. No claim of end-to-end display conformanc
 
 No "完全符合国标" claim is made. HEIF dual-layer read/write/it35/graph/reconstruction
 is implemented and tested; JPEG and display adaptation are explicitly open.
+
+## Round-2 update (HEAD 02e83f09)
+
+Status changes since round 1:
+
+- **CN05 / metadata_size — defect found and fixed.** Round 1 accepted the inclusive
+  range `[payloads, payloads+4]` and serialized `payloads+4`. Re-checking the original
+  PDF (p30, §9.2.3a) shows metadata_size = static_metadata_size + dynamic_metadata_size
+  (payloads only) — a single discrete value. Parser now requires exact equality and the
+  serializer emits the payload total (commit `f5013691`). Regression tests cover the
+  conformant value and every adjacent illegal value (payloads−1, +1, +2, +3, +4) plus
+  serializer wire bytes: **6 assertions failed before the fix, all pass after**.
+- **CN07/CN08/CN09 — production integration added.** New `libheif/gbt48347_heif.{h,cc}`:
+  `inspect_dre_aig()` discovers and validates the DRE-AIG through the production context
+  (one tmap + valid ISO structure, base-as-primary §9.3.2a, hidden enhancement §9.3.3a,
+  irot consistency §9.3.3c/9.3.4c, optional it35 with conformant UWAInfo §9.3.6/10.2.2);
+  `add_it35_uwa_info()` attaches a hidden it35 on the write path. This moves GB/T support
+  from a test-side standalone parser into libheif itself (commit `02e83f09`).
+- **New tests:** `tests/gbt48347_heif_integration.cc` — 6 cases / 95 assertions exercising
+  the production read/write/inspect/validate/decode path with negative cases (visible
+  enhancement, bad it35 UWAInfo, missing tmap, it35-without-tmap). Pass under ASan/UBSan.
+- **Independent binary structure check:** `eval/verify_gbt_structure.py` (non-libheif
+  Python ISOBMFF walker) confirms a generated GB/T file has items {base=1, gain=2, tmap=3,
+  it35=4}, one `dimg` from tmap count=2 to=[base,gain] (ordered), `tmap` compatible brand,
+  base==pitm, idat present.
+- **Test counts (round 2):** gbt48347_metadata 104/16, gbt48347_heif 57/3,
+  gbt48347_heif_integration 95/6. Full CTest **134/134 pass, 0 fail, 8 skipped**.
+
+Still open (unchanged): JPEG container (CN06), BaseMapping/CombinedMapping pixel
+application (CN03/CN10, parse-only; 3D LUT order N not pinned by syntax), GB/T 46269.1
+dynamic-metadata semantics + display adaptation (未验证), real-device samples (none).

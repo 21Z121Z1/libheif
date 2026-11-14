@@ -124,3 +124,18 @@ conflict, concurrent_update, atomic_rejection, manifest_mismatch).
   pinned libultrahdr/libavif oracles must be built from fixed revisions.
 - Push / PR / merge / publish are **not authorized**; all publication paths are
   exercised only inside disposable local Git fixtures.
+---
+
+## Round-2 continuation state
+
+- Round-2 starting HEAD: `a3786f03998bc412c268a52cfdc1ebfdaa883081` (round-1 final, pushed).
+- Round-2 final HEAD: `02e83f0947b8f7429256db02b21e3aac97736494`.
+- Branch / worktree unchanged: `eval/gbt48347-iso-audit-20261114` in
+  `/Users/retriedstormtrooper/Documents/ChatGPT/libheif-eval-gbt48347`.
+- Round-2 commits: `f5013691` (metadata_size exact-equality fix), `02e83f09` (GB/T HEIF
+  production integration). Round-1 work, tests, logs and eval/ evidence preserved.
+- Upstream `strukturag/libheif` master still `12a259a5882dd99d45ec5fc77e296a3b620d1e2e`,
+  fully merged into both fork branches → sync remains no-op.
+- Pristine upstream worktree used for the independent bug second pass:
+  `/tmp/libheif-upstream-pristine` (detached at upstream master).
+- Full CTest at round-2 HEAD: 134/134 pass, 0 fail, 8 skipped.

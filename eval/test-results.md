@@ -151,3 +151,97 @@ Skipped items are listed explicitly in §5; none were weakened to obtain green.
   dynamic metadata + display adaptation — not implemented / unverified (see GB/T matrix).
 - licensecheck tool unavailable; clang-tidy run only on the new production module
   (tests carry Catch2 noise); full CI matrix not re-run on a new SHA.
+
+---
+
+# Round 2 (continuation) — HEAD `02e83f0947b8f7429256db02b21e3aac97736494`
+
+Round-2 starting HEAD: `a3786f03` (round-1 final). Round-2 commits:
+`f5013691` (metadata_size exact-equality fix), `02e83f09` (GB/T HEIF production
+integration). Worktree, branch, and round-1 evidence preserved.
+
+## R2.1 metadata_size defect — fail-before / pass-after
+
+Spec re-check: GB/T 48347-2026 §9.2.3a (PDF p30) defines metadata_size =
+static_metadata_size + dynamic_metadata_size (payloads only). Round-1 code accepted
+`[payloads, payloads+4]` and serialized `payloads+4` — both non-conformant.
+
+| Step | Command | Result |
+| --- | --- | --- |
+| Fail-before | `gbt48347_metadata "GB/T UWAInfo metadata_size must equal*"` vs round-1 code | **6 assertions FAILED** (payloads+1/+2/+3/+4 accepted; serializer emitted 0x07 not 0x03) |
+| Fix | parser exact equality + serializer payload total (`f5013691`) | — |
+| Pass-after | `./build-eval/tests/gbt48347_metadata` | All tests passed (104 assertions / 16 cases) |
+
+## R2.2 GB/T HEIF production integration
+
+| Test | Assertions / cases | Result |
+| --- | --- | --- |
+| gbt48347_metadata | 104 / 16 | pass |
+| gbt48347_heif | 57 / 3 | pass |
+| gbt48347_heif_integration (new) | 95 / 6 | pass |
+
+`ctest -R 'gbt48347_'` → 3/3 pass. ASan/UBSan (detect_leaks=0): all three pass, no report.
+cpplint (repo config) on new files: 0 errors. API symbols: 469 declared, all defined —
+**no ABI added** (integration is internal).
+
+## R2.3 Independent binary structure check (non-libheif)
+
+`LIBHEIF_GBT_DUMP=/tmp/gbt_sample.heic gbt48347_heif_integration "GB/T production writer*"`
+then `python3 eval/verify_gbt_structure.py /tmp/gbt_sample.heic`:
+items {1:unci base, 2:unci gain, 3:tmap, 4:it35}; `dimg from=3 count=2 to=[1,2]`
+(base first, gain second); ftyp compatible includes `tmap`; pitm=1 (base); idat present.
+→ **INDEPENDENT STRUCTURE OK**.
+
+## R2.4 Upstream test bug — independent second pass on pristine upstream
+
+Pristine upstream worktree detached at `12a259a5` (strukturag/libheif master, no fork
+changes). Built with `testing` preset; `CMAKE_COMPILE_WARNING_AS_ERROR=OFF` needed only
+for an unrelated upstream clang-21 `-Wunused-result` error in grid.cc:247.
+
+| Step | Result |
+| --- | --- |
+| Fail-before (pristine upstream) | SIGSEGV; `1 failed`, `5 assertions / 4 passed / 1 failed` |
+| Minimal patch (2 INFO lines) | `eval/0001-Fix-null-error-message-crash-in-sequence_no_decoder_.patch` |
+| Pass-after | All tests passed (1483 assertions / 8 cases) |
+| ASan/UBSan pass-after | All tests passed (1483 / 8), no report |
+
+Necessity: line 390 guard is required (success path null message); line 300 is defensive
+(its `Security_limit_exceeded` error always carries a message, track_visual.cc:58).
+PR draft: `eval/upstream-pr-draft.md`. **Not submitted upstream; no GB/T code in the patch.**
+
+## R2.5 Upstream sync re-verification
+
+- `git merge-base --is-ancestor upstream/master origin/iso21496-gain-map-metadata-core`
+  and `… origin/master` → both true: **still no-op**, no synthetic change created.
+- `python3 scripts/test-sync-iso-upstream.py` → Ran 9 tests, OK.
+- Fresh real-SHA fixture: `prepare --validate-current` → changed=false; `publish` →
+  "Everything up-to-date"; remote heads unchanged.
+- Workflow masking review: `run-ci.sh` uses `set -e`; `exit 0` branches are Coverity-skip
+  and lint-mode (checks run before exit); cpplint failure propagates via xargs. Gate jobs
+  run only when `changed || validate_current`; `publish` needs all gates with no
+  always()/failure() bypass (gate-integrity test). Failed gate ⇒ publish skipped.
+
+## R2.6 Full regression + independent oracles (current HEAD)
+
+| Command | Result |
+| --- | --- |
+| `ctest --test-dir build-eval` (full) | **134/134 pass, 0 fail, 8 skipped** |
+| `gain_map_ultrahdr` (pinned Google 66821e0a) | 16432 assertions / 3 cases pass |
+| `tmap_write 'Generate synthetic*'` | 73802 assertions pass |
+| `swift scripts/check-tmap-apple.swift build-eval/synthetic` | Apple consumer mono/rgb/ramp PASS (max linear err mono 0.00046, rgb 0.0042) |
+| `check-tmap-ultrahdr.py … google-exchange` | 14 PASS (10 containers + 4 unchanged-pixel) |
+| `tmap_interop` (Apple + external + stock-ultrahdr fixtures) | 909522 assertions / 3 cases pass, **0 skipped** |
+| ASan/UBSan ISO key (metadata/math/tmap_read/tmap_write/entity_groups) | all pass, no report |
+
+8 skipped (by design, need codecs/fixtures/env): tmap_interop (in plain ctest),
+encode, jpeg2000_openjpeg_grid_limit, jpeg2000_signed_components,
+derived_images_shared_input_threads, write_to_file, sequence_vvc_decoder_latency,
+ffmpeg_decode_bitdepth. None counted as passed; none weakened.
+
+## R2.7 Still open / unverified (round 2)
+
+- JPEG GB/T container; BaseMapping/CombinedMapping pixel application (parse-only; 3D LUT
+  order N not pinned by syntax); GB/T 46269.1 dynamic metadata + display adaptation;
+  real-device GB/T samples — unchanged from round 1, explicitly not claimed.
+- No new GitHub Actions run (push of round-2 commits not authorized this round).
+- licensecheck tool unavailable; full CI matrix not re-run on a new SHA.
