@@ -135,6 +135,55 @@ heif_gain_map_metadata metadata()
   return m;
 }
 
+// Independent sRGB EOTF (IEC 61966-2-1), not the library's colour code.
+double srgb_eotf(double codeword)
+{
+  return codeword <= 0.04045 ? codeword / 12.92
+                             : std::pow((codeword + 0.055) / 1.055, 2.4);
+}
+
+// Decode a handle to linear BT.709 RGB and return the R channel as a double in
+// [0,1] (16-bit output). Used for independent HDR pixel comparison.
+double decode_linear_r(heif_image_handle* handle)
+{
+  auto* dec = heif_decoding_options_alloc();
+  dec->output_image_nclx_profile = heif_nclx_color_profile_alloc();
+  dec->output_image_nclx_profile->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+  dec->output_image_nclx_profile->transfer_characteristics = heif_transfer_characteristic_linear;
+  dec->output_image_nclx_profile->matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
+  dec->output_image_nclx_profile->full_range_flag = 1;
+  heif_image* image = nullptr;
+  REQUIRE(heif_decode_image(handle, &image, heif_colorspace_RGB, heif_chroma_444, dec).code == heif_error_Ok);
+  size_t stride = 0;
+  const auto* pixels = reinterpret_cast<const uint16_t*>(
+      heif_image_get_plane_readonly2(image, heif_channel_R, &stride));
+  const double value = pixels[0] / 65535.0;
+  heif_image_release(image);
+  heif_nclx_color_profile_free(dec->output_image_nclx_profile);
+  dec->output_image_nclx_profile = nullptr;
+  heif_decoding_options_free(dec);
+  return value;
+}
+
+// Corrupt the second 'dimg' target of the tmap (in place, no size change) to a
+// non-existent item id, to exercise the inspector's malformed-graph rejection.
+bool corrupt_dimg_second_target(std::vector<uint8_t>& bytes, heif_item_id tmap_id)
+{
+  for (size_t i = 0; i + 12 <= bytes.size(); ++i) {
+    if (bytes[i] == 'd' && bytes[i + 1] == 'i' && bytes[i + 2] == 'm' && bytes[i + 3] == 'g') {
+      const size_t p = i + 4;  // SingleItemTypeReferenceBox payload (no FullBox)
+      const uint16_t from = static_cast<uint16_t>((uint16_t(bytes[p]) << 8) | bytes[p + 1]);
+      const uint16_t count = static_cast<uint16_t>((uint16_t(bytes[p + 2]) << 8) | bytes[p + 3]);
+      if (from == tmap_id && count == 2) {
+        bytes[p + 6] = 0xFF;  // second to_item_ID high byte -> 0xFFxx (non-existent)
+        bytes[p + 7] = 0xFE;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 const heif_color_profile_nclx kBase = nclx(heif_color_primaries_ITU_R_BT_709_5,
     heif_transfer_characteristic_IEC_61966_2_1, heif_matrix_coefficients_RGB_GBR, true);
 const heif_color_profile_nclx kGain = nclx(heif_color_primaries_unspecified,
@@ -239,18 +288,40 @@ TEST_CASE("GB/T production writer + inspector round-trip a conformant DRE-AIG")
   REQUIRE(aig->uwa.extension_present);
   CHECK(aig->uwa.extension.base.matrix[0] == 1.0f);
 
-  // The discovered tmap reconstructs HDR through the ISO path.
-  heif_image* image = nullptr;
-  REQUIRE(heif_decode_image(f.tmap, &image, heif_colorspace_undefined, heif_chroma_undefined, nullptr).code == heif_error_Ok);
-  CHECK(image != nullptr);
-  heif_image_release(image);
+  // Obtain fresh handles from the RE-READ context (not the write context).
+  heif_image_handle* read_tmap = nullptr;
+  heif_image_handle* read_base = nullptr;
+  REQUIRE(heif_context_get_image_handle(read_ctx, aig->tmap_id, &read_tmap).code == heif_error_Ok);
+  REQUIRE(heif_context_get_image_handle(read_ctx, aig->base_id, &read_base).code == heif_error_Ok);
 
-  heif_context_free(read_ctx);
+  // Destroy the original write context BEFORE decoding, so the decode below can
+  // only rely on the serialized, re-read file. This proves the full closed loop:
+  // write -> serialize -> re-read -> parse -> HDR/SDR decode -> independent pixels.
   free_built(f);
+
+  // Independent HDR oracle: base sRGB codeword 127, mono gain normalized 1.0,
+  // min=-1/max=1/gamma=1, zero offsets, W=1 -> alternate = 2 * srgb_eotf(127/255).
+  const double base_linear = srgb_eotf(127.0 / 255.0);
+  const double expected_hdr = 2.0 * base_linear;
+  const double hdr = decode_linear_r(read_tmap);
+  INFO("base_linear=" << base_linear << " hdr=" << hdr << " expected=" << expected_hdr);
+  CHECK(std::abs(hdr - expected_hdr) < 1e-4);
+
+  // SDR base after re-read: native decode returns the original sRGB codeword.
+  heif_image* sdr = nullptr;
+  REQUIRE(heif_decode_image(read_base, &sdr, heif_colorspace_RGB, heif_chroma_444, nullptr).code == heif_error_Ok);
+  int sdr_stride = 0;
+  const auto* sdr_plane = heif_image_get_plane_readonly(sdr, heif_channel_R, &sdr_stride);
+  CHECK(sdr_plane[0] == 127);
+  heif_image_release(sdr);
+
+  heif_image_handle_release(read_tmap);
+  heif_image_handle_release(read_base);
+  heif_context_free(read_ctx);
 }
 
 
-TEST_CASE("GB/T inspector accepts a DRE-AIG without the optional it35")
+TEST_CASE("GB/T DRE-AIG without it35 still re-reads and decodes HDR")
 {
   auto f = build_gbt_file(true, false);
   const auto encoded = write_ctx(f.ctx);
@@ -259,6 +330,26 @@ TEST_CASE("GB/T inspector accepts a DRE-AIG without the optional it35")
   REQUIRE(aig);
   CHECK_FALSE(aig->has_it35);
   CHECK(aig->gain_hidden);
+
+  heif_image_handle* read_tmap = nullptr;
+  REQUIRE(heif_context_get_image_handle(read_ctx, aig->tmap_id, &read_tmap).code == heif_error_Ok);
+  free_built(f);  // decode must rely only on the re-read file
+  const double hdr = decode_linear_r(read_tmap);
+  CHECK(std::abs(hdr - 2.0 * srgb_eotf(127.0 / 255.0)) < 1e-4);
+  heif_image_handle_release(read_tmap);
+  heif_context_free(read_ctx);
+}
+
+
+TEST_CASE("GB/T inspector rejects a tmap with a malformed dimg target")
+{
+  auto f = build_gbt_file(true, true);
+  auto encoded = write_ctx(f.ctx);
+  const auto tmap_id = heif_image_handle_get_item_id(f.tmap);
+  REQUIRE(corrupt_dimg_second_target(encoded, tmap_id));
+  auto* read_ctx = reopen(encoded);
+  auto aig = gbt48347::inspect_dre_aig(*read_ctx->context);
+  CHECK_FALSE(aig);  // second dimg target no longer exists
   heif_context_free(read_ctx);
   free_built(f);
 }
