@@ -11,11 +11,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   Fuzzing:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         architecture: [x86_64, i386]
         sanitizer: [address, undefined, memory]

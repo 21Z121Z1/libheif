@@ -2,7 +2,7 @@ name: sync-iso-upstream
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 */6 * * *'
   workflow_dispatch:
     inputs:
       validate_current:

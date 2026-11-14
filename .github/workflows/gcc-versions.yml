@@ -2,14 +2,22 @@ name: gcc-versions
 
 on:
   push:
+    branches: [ master ]
   pull_request:
+    branches: [ master ]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
+      max-parallel: 3
       matrix:
         env:
           - { NAME: "gcc-10", WITH_GRAPHICS: 1, WITH_X265: 1, WITH_AOM: 1, WITH_LIBDE265: 3, GCC: 10 }
@@ -21,6 +29,7 @@ jobs:
           - { NAME: "gcc-16", WITH_GRAPHICS: 1, WITH_X265: 1, WITH_AOM: 1, WITH_LIBDE265: 3, GCC: 16 }
     env: ${{ matrix.env }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
       with:
