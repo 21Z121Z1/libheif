@@ -1,0 +1,54 @@
+name: gbt-eval-conformance
+
+# Evaluation-branch-only workflow: runs the GB/T 48347 metadata + HEIF integration
+# tests (which exist only on this branch) under ASan/UBSan, plus an independent
+# non-libheif ISOBMFF structure check. It does not modify any shared workflow and
+# does not lower any test requirement.
+
+on:
+  push:
+    branches: [eval/gbt48347-iso-audit-20261114]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  gbt-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build GB/T tests with ASan and UBSan
+        run: |
+          cmake --preset testing -S . -B build-gbt \
+            -DENABLE_EXPERIMENTAL_FEATURES=ON \
+            -DWITH_EXAMPLES=OFF -DWITH_GDK_PIXBUF=OFF \
+            -DWITH_LIBDE265=OFF -DWITH_X265=OFF \
+            -DWITH_AOM_DECODER=OFF -DWITH_AOM_ENCODER=OFF \
+            -DWITH_DAV1D=OFF -DWITH_FFMPEG_DECODER=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-gbt --target gbt48347_metadata gbt48347_heif gbt48347_heif_integration --parallel 2
+      - name: Run GB/T metadata and HEIF integration regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-gbt -R 'gbt48347_' --output-on-failure
+      - name: Independent ISOBMFF structure check of a generated GB/T file
+        run: |
+          LIBHEIF_GBT_DUMP="$RUNNER_TEMP/gbt_sample.heic" \
+            build-gbt/tests/gbt48347_heif_integration "GB/T production writer*"
+          python3 eval/verify_gbt_structure.py "$RUNNER_TEMP/gbt_sample.heic"
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4.6.2
+        with:
+          name: gbt-eval-logs
+          path: build-gbt/Testing/Temporary/

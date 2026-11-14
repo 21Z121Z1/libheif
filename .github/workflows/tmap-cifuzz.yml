@@ -2,7 +2,7 @@ name: tmap-CIFuzz
 
 on:
   push:
-    branches: [ iso21496-gain-map-metadata-core ]
+    branches: [ iso21496-gain-map-metadata-core, eval/gbt48347-iso-audit-20261114 ]
   pull_request:
     branches: [ master ]
 
