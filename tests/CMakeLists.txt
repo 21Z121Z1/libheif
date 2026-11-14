@@ -46,6 +46,8 @@ else()
     add_libheif_test(gain_map_metadata)
     add_libheif_test(gain_map_math)
     add_libheif_test(gain_map_color)
+    add_libheif_test(gbt48347_metadata)
+    add_libheif_test(gbt48347_heif)
     option(LIBHEIF_TEST_LCMS "Test ISO ICC colour transforms against independent Little CMS" OFF)
     if (LIBHEIF_TEST_LCMS)
         find_package(PkgConfig REQUIRED)
@@ -270,7 +272,7 @@ endif ()
 # Catch returns 4 only when every case is skipped. Matching a partial-skip
 # summary would also hide assertion failures or sanitizer errors in that run.
 foreach(TEST_NAME IN ITEMS gain_map_metadata gain_map_math gain_map_color gain_map_ultrahdr
-                           tmap_read tmap_write tmap_interop entity_groups)
+                           gbt48347_metadata gbt48347_heif tmap_read tmap_write tmap_interop entity_groups)
     if (TEST ${TEST_NAME})
         set_tests_properties(${TEST_NAME} PROPERTIES SKIP_REGULAR_EXPRESSION "" SKIP_RETURN_CODE 4)
     endif()
