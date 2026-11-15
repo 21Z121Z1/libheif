@@ -1,8 +1,15 @@
 # Round 3 — remote CI evidence for the final SHA
 
-Final evaluation SHA: `fa66cfd382ab7232161004d0d806218d057e8b28`
-(branch `eval/gbt48347-iso-audit-20261114`, pushed fast-forward `0270817f..fa66cfd3`).
-All runs below are for **this exact SHA** (headSha verified), event=push.
+Final evaluation SHA: `0b932b601d768ad0d30161eeb50c32b7b1733c3a`
+(branch `eval/gbt48347-iso-audit-20261114`). Push history this round:
+`0270817f..fa66cfd3` (code + fixes + CI config) then `fa66cfd3..0b932b60`
+(eval documentation only; **no code change**).
+
+**All four workflows completed `success` on the final SHA `0b932b60`** (headSha
+verified, event=push): gbt-eval-conformance 43673615228, gain-map-conformance
+43673615153, tmap-CIFuzz 43673615213, gcc-versions 43673615147. The detailed job
+breakdown below was captured on the code-identical `fa66cfd3` and re-confirmed on
+`0b932b60`.
 
 ## Why earlier eval pushes lacked coverage (root cause)
 

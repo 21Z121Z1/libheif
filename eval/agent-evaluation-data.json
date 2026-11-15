@@ -87,7 +87,8 @@
   },
   "round_3": {
     "start_head": "0270817fb9eecc63b5472ed35e3a78102961f6ac",
-    "final_head": "fa66cfd382ab7232161004d0d806218d057e8b28",
+    "final_head": "0b932b601d768ad0d30161eeb50c32b7b1733c3a",
+    "code_sha_ci_verified": "fa66cfd382ab7232161004d0d806218d057e8b28",
     "remote_head_verified_at_start": "0270817fb9eecc63b5472ed35e3a78102961f6ac",
     "commits": [
       {"sha": "c25016fa", "subject": "Return heif_error_success from heif_track_decode_next_image success path"},
@@ -111,6 +112,7 @@
       "gcc_versions_run": {"id": 43614441481, "conclusion": "success"},
       "gain_map_run": {"id": 43614441615, "conclusion": "success", "jobs": "9/9 (4x ASan conformance, ultrahdr, apple macos-15+intel, windows, interop)"},
       "cifuzz_run": {"id": 43614441503, "conclusion": "success", "jobs": "4/4 fuzz"},
+      "final_sha_runs": {"sha": "0b932b60", "gbt_eval": 43673615228, "gain_map": 43673615153, "cifuzz": 43673615213, "gcc": 43673615147, "all": "success"},
       "sync_schedule": "last run 2026-11-06T21:37Z; previously throttled ~8h; exists on master; exact disable reason not inferable (API network resets); scheduler outside local control"
     },
     "full_ctest": "134/134 pass, 0 failed, 8 skipped",
