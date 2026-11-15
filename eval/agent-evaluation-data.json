@@ -109,8 +109,8 @@
       "trigger_fix": "gain-map + tmap-CIFuzz now trigger on eval branch; new eval-only gbt-eval.yml",
       "gbt_eval_run": {"id": 43614441498, "sha": "fa66cfd3", "conclusion": "success", "steps": "build ASan/UBSan + GB/T ctest + independent structure check all success"},
       "gcc_versions_run": {"id": 43614441481, "conclusion": "success"},
-      "gain_map_run": {"id": 43614441615, "status": "see round3-ci.md"},
-      "cifuzz_run": {"id": 43614441503, "status": "see round3-ci.md"},
+      "gain_map_run": {"id": 43614441615, "conclusion": "success", "jobs": "9/9 (4x ASan conformance, ultrahdr, apple macos-15+intel, windows, interop)"},
+      "cifuzz_run": {"id": 43614441503, "conclusion": "success", "jobs": "4/4 fuzz"},
       "sync_schedule": "last run 2026-11-06T21:37Z; previously throttled ~8h; exists on master; exact disable reason not inferable (API network resets); scheduler outside local control"
     },
     "full_ctest": "134/134 pass, 0 failed, 8 skipped",
